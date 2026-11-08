@@ -1,14 +1,15 @@
 """Terminal user interface of git change, for the reviewer.
 
-Started by `git change` without arguments. Three screens: the stacks in
-review (one per review branch), one change with its files and comment
-threads, and one thread.
+Started by `git change` without arguments. Two screens: the stacks in
+review (one per review branch), and one change with its files, its comment
+threads and the diff, which shows the threads under their lines.
 Keys are shown at the bottom of every screen, `?` lists them all.
 
 The change screen shows the diff as delta renders it (side by side). t hands
-over to vimdiff. Comments are written in a small box over the diff, ^E
-continues in the reviewer's editor. The screen reloads by itself when
-commits or notes change, e.g. when the author answers.
+over to vimdiff. Comments are written in a small box that opens inside the
+diff and pushes the lines below down, ^E continues in the reviewer's
+editor. The screen reloads by itself when commits or notes change, e.g.
+when the author answers.
 
 The mouse works too: a click selects, a double click opens, the wheel
 scrolls.
@@ -40,9 +41,24 @@ GO_TOP = -2
 STATE_COLOURS = {'New': 0, 'In-Review': 3, 'Submitted': 2}
 STATUS_COLOURS = {'open': 3, 'agreed': 6, 'done': 2, 'dropped': 8, 'draft': 5}
 
-STACK_KEYS = 'j/k move  l open  d diff  S submit  R reload  ? help  q quit'
-THREAD_KEYS = ('j/k scroll  r reply  e edit draft  s send  y agree  a apply  A apply all  '
-               'x drop  o reopen  h back')
+# How many lines around each change the diff shows, + and - step through
+# them. None is the whole file.
+CONTEXT_STEPS = (3, 10, 25, 100, None)
+WHOLE_FILE_LINES = 10 ** 7
+
+# Backgrounds of diff lines that differ because the changes below changed:
+# (line, changed words) of lines from below and of lines partly from below,
+# and for terminals with fewer colours
+FROM_BELOW_BACKGROUNDS = (18, 26)
+PARTLY_BACKGROUNDS = (54, 92)
+FROM_BELOW_BASIC = 4
+PARTLY_BASIC = 5
+
+# Colours of vote values
+VOTE_COLOURS = {2: 2, 1: 2, -1: 1, -2: 1}
+
+STACK_KEYS = ('j/k move  l open  d diff  v vote  V needs Verified  S submit  R reload  ? help  '
+              'q quit')
 
 HELP_TEXT = """git change: keys
 
@@ -56,31 +72,43 @@ Everywhere
               goes back to the files or comments.
   R           reload now (it also reloads by itself)
   ?           this help
-  q           quit
+  q           quit, after asking
 
 Stacks
   d           diff of the change
+  v           vote Code-Review (-2..+2) on the latest patch set
+  V           whether the change needs Verified+1 (from a check calling
+              git change vote CHANGE Verified +1)
   S           submit: moves the base branch to the change, which submits
-              the changes below it too. Asks first and lists them and
-              their unfinished comments.
+              the changes below it too. Needs Code-Review+2 (and Verified+1
+              if required) on each. Asks first and lists them and their
+              unfinished comments.
 
-Change: files and comments on the left, the diff on the right
+Change: files and comments on the left, the diff on the right. The first
+file is the commit message, with a header.
   Tab         next pane: files, comments, diff. A click focuses a pane.
   j / k       in the files: shows that file's diff. In the comments: also
               puts the diff on the thread's line. In the diff: moves the
               cursor line (^d / ^u half a page, the wheel scrolls).
   h           in the diff: back to the files or comments
-  l           on a file: into the diff. In the comments: opens the thread
-              screen. In the diff: folds or unfolds the thread at the
-              cursor. Threads are shown under their line, unfinished ones
-              and those with drafts unfolded.
+  l           on a file: into the diff. In the comments: unfolds the
+              thread and goes to it in the diff. In the diff: folds or
+              unfolds the thread at the cursor. Threads are shown under
+              their line, unfinished ones and those with drafts unfolded.
+              Threads on lines the diff doesn't show are at its top.
   i           folds all threads, or unfolds all if all are folded
   r / e       on a thread in the diff or the comments: reply / edit your
               draft, in the box below the thread. c on a thread replies.
-  c           in the diff: new comment on the cursor line. In the files:
-              asks for the line. Write it in the box: Enter saves,
-              Alt-Enter starts a new line, Esc cancels, ^E continues in
-              your editor. The comment stays a draft until you send it.
+  c           in the diff: new comment on the cursor line, or on the whole
+              file on rows without a line number. In the files: comment on
+              the whole file. Write it in the box: Enter saves, Alt-Enter
+              starts a new line, Esc cancels, ^E continues in your editor.
+              The comment stays a draft until you send it.
+  C           comment on the whole file
+  + / -       more / less context around the changes, up to the whole file
+              Comparing two patch sets, lines that differ because the
+              changes below changed (a rebase) have a blue background,
+              purple where the change itself edited them too.
   t           the file's diff in vimdiff
   p           choose the versions to compare: "1 3", "2 current" or
               "base 2" (the whole change as of PS2). Empty gives the
@@ -91,12 +119,8 @@ Change: files and comments on the left, the diff on the right
   a           apply the selected thread now (agrees to it)
   A           apply all agreed threads of this change
   x / o       drop / reopen the selected thread
+  v / V       vote Code-Review / whether Verified+1 is needed
   S           submit
-
-Thread
-  r           reply, as a draft
-  e           edit your draft. Saving it empty deletes it.
-  s y a A x o as in the change screen
 
 Press any key."""
 
@@ -128,6 +152,8 @@ class Interface:
             curses.init_pair(number, number if number < 8 else 8, -1)
         screen.timeout(RELOAD_INTERVAL_MS)
         self.colour_pairs = ColourPairs()
+        # Index into CONTEXT_STEPS, kept for all changes
+        self.context_step = 0
 
     # ── state shared by the views ─────────────────────────────────────────
 
@@ -208,7 +234,9 @@ class Interface:
     def _handle_global(self, key):
         """Handles keys that work everywhere. Returns whether it did."""
         if ord('q') == key:
-            self._views.clear()
+            # q is easy to hit by mistake, e.g. instead of a tab
+            if ord('y') == self.ask_key('Quit git change? (y/N)'):
+                self._views.clear()
             return True
         if ord('?') == key:
             self._show_help()
@@ -326,13 +354,15 @@ class Interface:
             os.unlink(path)
 
     def write_text(self, title, initial='', anchor=None):
-        """Lets the reviewer write a comment in a small box over the screen,
-        so the diff stays visible. Returns the text, '' if left empty, None
-        if cancelled.
+        """Lets the reviewer write a comment in a small box, so the diff
+        stays visible. Returns the text, '' if left empty, None if
+        cancelled.
 
-        anchor is (row, left, width): the box goes below that screen row,
-        or above it when there is no room. Without one it sits above the
-        bottom line, as wide as the screen.
+        anchor is a DiffGap: the diff makes room for the box below a row,
+        as high as the box grows, and moves the rows below down. Or anchor
+        is (row, left, width): the box goes over the screen below that
+        row, or above it when there is no room. Without one it sits above
+        the bottom line, as wide as the screen.
 
         Enter saves, Alt-Enter starts a new line, Esc cancels, ^E continues
         in the editor.
@@ -342,8 +372,14 @@ class Interface:
         self._screen.timeout(-1)
         try:
             while True:
+                place = anchor
+                if isinstance(anchor, DiffGap):
+                    # The box's height depends on its width, which the gap
+                    # gives: once to learn the width, once with the height.
+                    place = anchor.place(TEXT_BOX_ROWS + 2)
+                    place = anchor.place(text_box_height(box, place[2]))
                 self._draw(refresh=False)
-                self._draw_text_box(box, title, anchor)
+                self._draw_text_box(box, title, place)
                 self._screen.refresh()
                 key = self._screen.get_wch()
                 if key in ('\n', '\r', curses.KEY_ENTER):
@@ -364,6 +400,8 @@ class Interface:
                 else:
                     box.key(key)
         finally:
+            if isinstance(anchor, DiffGap):
+                anchor.close()
             curses.curs_set(0)
             self._screen.timeout(RELOAD_INTERVAL_MS)
 
@@ -419,17 +457,56 @@ class Interface:
             curses.curs_set(0)
             self._screen.timeout(RELOAD_INTERVAL_MS)
 
-    def confirm(self, lines, question):
-        """Shows lines and asks a yes/no question. Returns True for y."""
-        self._screen.erase()
-        for row, line in enumerate(lines):
-            self.text(row + 1, 2, line)
-        self.text(len(lines) + 2, 2, f'{question} (y/N)', curses.A_BOLD)
+    def ask_key(self, question):
+        """Shows a question in the bottom line over the screen. Returns the
+        key pressed.
+        """
+        height, width = self._screen.getmaxyx()
+        self._draw(refresh=False)
+        self._screen.move(height - 1, 0)
+        self._screen.clrtoeol()
+        self.text(height - 1, 0, question, curses.A_BOLD, width)
         self._screen.refresh()
         self._screen.timeout(-1)
-        key = self._screen.getch()
-        self._screen.timeout(RELOAD_INTERVAL_MS)
-        return ord('y') == key
+        try:
+            return self._screen.getch()
+        finally:
+            self._screen.timeout(RELOAD_INTERVAL_MS)
+
+    def dialog(self, lines, footer):
+        """Shows lines in a box in the middle of the screen, over the
+        current view, and waits for a key. Returns the key.
+        """
+        height, width = self._screen.getmaxyx()
+        inner = min(max([len(line) for line in lines] + [len(footer), 30]) + 2, width - 4)
+        shown = lines[:max(height - 6, 1)]
+        top = max((height - len(shown) - 4) // 2, 0)
+        left = max((width - inner - 2) // 2, 0)
+        self._draw(refresh=False)
+        rows = shown + ['', footer]
+        self.text(top, left, '┌' + '─' * inner + '┐', curses.A_BOLD)
+        for offset, line in enumerate(rows, start=1):
+            attributes = curses.A_BOLD if offset == len(rows) else 0
+            self.text(top + offset, left, '│', curses.A_BOLD)
+            self.text(top + offset, left + 1, f' {line:<{inner - 1}.{inner - 1}}', attributes)
+            self.text(top + offset, left + inner + 1, '│', curses.A_BOLD)
+        self.text(top + len(rows) + 1, left, '└' + '─' * inner + '┘', curses.A_BOLD)
+        self._screen.refresh()
+        self._screen.timeout(-1)
+        try:
+            return self._screen.getch()
+        finally:
+            self._screen.timeout(RELOAD_INTERVAL_MS)
+
+    def show_lines(self, lines):
+        """Shows lines in a box until a key is pressed."""
+        self.dialog(lines, 'Press any key.')
+
+    def confirm(self, lines, question):
+        """Shows lines in a box and asks a yes/no question. Returns True
+        for y.
+        """
+        return ord('y') == self.dialog(lines, f'{question} (y/N)')
 
 
 def pager_environment():
@@ -447,6 +524,38 @@ def pager_environment():
 
 # Most text rows the comment box shows, it scrolls beyond
 TEXT_BOX_ROWS = 6
+
+
+def text_box_height(box, width):
+    """Rows the comment box takes at a width, with its frame."""
+    return min(len(box.rows(max(width, 20) - 2)), TEXT_BOX_ROWS) + 2
+
+
+class DiffGap:
+    """Room for the comment box in the diff, below row `index` (-1: above
+    the first row). While the box is open, the rows below move down by its
+    height, so it hides nothing.
+    """
+
+    def __init__(self, diff, layout, index):
+        self._diff = diff
+        self._top, self._left, self._height, self._width = layout
+        self._index = index
+
+    def place(self, box_height):
+        """Opens the gap for a box this high, scrolls it into view and
+        returns where the box goes: (row above it, left, width).
+        """
+        self._diff.gap = (self._index, box_height)
+        if self._index < 0:
+            self._diff.scroll = 0
+        else:
+            self._diff.make_room_below(self._index, self._height, box_height)
+        return self._top + self._index - self._diff.scroll, self._left, self._width
+
+    def close(self):
+        """Closes the gap again."""
+        self._diff.gap = None
 
 
 class TextBox:
@@ -606,8 +715,8 @@ class StackView:
         core = self._interface.core
         out(0, 1, f'{self._repository}: {len(self._changes)} changes in review, base {self._base}',
             curses.A_BOLD)
-        out(2, 1, f'{"#":>4}  {"Change":<9} {"State":<10} {"PS":<5} {"Subject":<44} Comments',
-            curses.A_UNDERLINE)
+        out(2, 1, f'{"#":>4}  {"Change":<9} {"State":<10} {"PS":<5} {"Subject":<44} {"CR":>2} '
+            f'{"V":>2}  Comments', curses.A_UNDERLINE)
         for offset, row_content in enumerate(self._rows):
             row = self.TOP + offset
             if row >= area.height:
@@ -622,8 +731,11 @@ class StackView:
             out(row, 1, f'{index + 1:>4}  {change.short_id():<9} ', attributes)
             out(row, 17, f'{change.state():<10}',
                 attributes | curses.color_pair(STATE_COLOURS[change.state()]))
-            out(row, 28, f'{core.version_label(change):<5} {change.subject:<44.44} '
-                f'{core.comment_counts(change)}', attributes)
+            out(row, 28, f'{core.version_label(change):<5} {change.subject:<44.44} ', attributes)
+            for column, label in ((79, core.CODE_REVIEW), (82, core.VERIFIED)):
+                out(row, column, f'{core.vote_label(change, label):>2}',
+                    attributes | vote_attribute(change.label_value(label)))
+            out(row, 84, f'  {core.comment_counts(change)}', attributes)
         if not self._changes:
             out(self.TOP, 1, f'Nothing in review. Changes live on {core.REVIEW_BRANCH_PREFIX}* '
                 'branches.')
@@ -651,14 +763,52 @@ class StackView:
             self._interface.run_outside(self._interface.core.diff_command(change))
         elif ord('S') == key:
             submit_with_confirmation(self._interface, change)
+        else:
+            vote_action(self._interface, change, key)
+
+
+def vote_attribute(value):
+    """Colour for a vote's value."""
+    return curses.color_pair(VOTE_COLOURS.get(value, 0)) | (curses.A_BOLD if abs(value) > 1 else 0)
+
+
+def vote_action(interface, change, key):
+    """v votes Code-Review, V switches whether Verified+1 is needed."""
+    core = interface.core
+    if ord('v') == key:
+        if not change.patch_sets:
+            interface.say(f'{change.short_id()} has no patch set yet, nothing to vote on.')
+            return
+        answer = interface.ask(f'Code-Review on PS{change.latest_patch_set()} (+2 +1 0 -1 -2):')
+        if not answer:
+            return
+        if not re.fullmatch(r'[+-]?[0-2]', answer):
+            interface.say('A vote is one of +2, +1, 0, -1, -2.')
+            return
+        number = core.set_vote(change.change_id, core.CODE_REVIEW, int(answer))
+        interface.after_write()
+        interface.say(f'Code-Review{int(answer):+d} on PS{number}.' if int(answer)
+                      else 'Code-Review vote removed.')
+    elif ord('V') == key:
+        core.require_verified(change.change_id, not change.verified_required)
+        interface.after_write()
+        interface.say('Needs Verified+1 now.' if not change.verified_required
+                      else 'Verified+1 is not needed any more.')
 
 
 def submit_with_confirmation(interface, change):
     """Asks before submitting. Lists the changes that get submitted along
-    and the threads that are not finished.
+    and the threads that are not finished. Says first what is missing, if
+    a change lacks votes or an upload.
     """
     core = interface.core
     submitted = core.changes_submitted_with(change)
+    problems = [problem for other in submitted for problem in other.submit_problems()]
+    if problems:
+        interface.show_lines(['Cannot submit yet:', ''] + [f'  {problem}' for problem in problems]
+                             + ['', 'v gives Code-Review. Verified comes from a check calling',
+                                '  git change vote CHANGE Verified +1'])
+        return
     lines = [f'Submit to {core.base_branch()}:']
     lines += [f'  {other.short_id()}  {other.subject}' for other in submitted]
     unfinished = [(other, comment) for other in submitted
@@ -670,6 +820,9 @@ def submit_with_confirmation(interface, change):
                   f'{comment.messages[0].text.splitlines()[0]}' for other, comment in unfinished]
     else:
         lines.append('All comments are finished.')
+    drafts = sum(comment.has_draft() for other in submitted for comment in other.comments)
+    if drafts:
+        lines += ['', f'{drafts} draft(s) are not sent and stay unsent.']
     if interface.confirm(lines, 'Submit?'):
         core.submit(change.change_id, force=True)
         interface.after_write()
@@ -838,6 +991,36 @@ def plain(line):
     return ESCAPE_PATTERN.sub('', line)
 
 
+def recoloured(segments, start, end, partly=False):
+    """Segments with the coloured backgrounds between two columns replaced
+    by the colours of lines (partly) from below. The most common background
+    there is the line's, the others mark changed words.
+    """
+    characters = [(character, foreground, background, styles)
+                  for text, foreground, background, styles in segments for character in text]
+    backgrounds = [character[2] for character in characters[start:end] if character[2] >= 0]
+    if not backgrounds:
+        return segments
+    line_background = max(set(backgrounds), key=backgrounds.count)
+    for index in range(start, min(end, len(characters))):
+        character, foreground, background, styles = characters[index]
+        if background < 0:
+            continue
+        if curses.COLORS < 256:
+            background = PARTLY_BASIC if partly else FROM_BELOW_BASIC
+        else:
+            colours = PARTLY_BACKGROUNDS if partly else FROM_BELOW_BACKGROUNDS
+            background = colours[background != line_background]
+        characters[index] = (character, foreground, background, styles)
+    result = []
+    for character, *attributes in characters:
+        if result and result[-1][1:] == tuple(attributes):
+            result[-1] = (result[-1][0] + character, *attributes)
+        else:
+            result.append((character, *attributes))
+    return result
+
+
 class DiffPane:
     """The diff of one file, rendered by delta and drawn inside the screen,
     with the comment threads shown under their lines.
@@ -866,20 +1049,28 @@ class DiffPane:
         self._anchors = []
         self.cursor = 0
         self.scroll = 0
+        # (row index, height) of the comment box's room below that row, or
+        # None, see DiffGap
+        self.gap = None
+        # Whether the diff has lines from below, and lines partly from below
+        self.marks_from_below = (False, False)
 
-    def show(self, core, change, compare, path, width):
-        """Renders the diff of a file, unless it is rendered already. The
-        threads come with arrange(), call it after this.
+    def show(self, core, change, compare, path, width, context):
+        """Renders the diff of a file with context lines around the changes
+        (None: the whole file), unless it is rendered already. The threads
+        come with arrange(), call it after this.
         """
-        key = (path, core.versions_to_compare(change, *compare), width)
+        key = (path, core.versions_to_compare(change, *compare), width, context)
         if key == self._key:
             return
         is_other_file = self._path != path
         self._key = key
         self._path = path
-        (_, old), (_, new) = key[1]
-        diff = subprocess.run(['git', '-c', 'core.pager=cat', 'diff', '--color=always', old, new,
-                               '--', path], capture_output=True, text=True).stdout
+        old, new, paths = core.diff_endpoints(change, *compare, path=path)
+        lines_around = WHOLE_FILE_LINES if context is None else context
+        diff = subprocess.run(['git', '-c', 'core.pager=cat', 'diff', '--color=always',
+                               f'--unified={lines_around}', old, new, '--', *paths],
+                              capture_output=True, text=True).stdout
         try:
             rendered = subprocess.run(['delta', '--side-by-side', f'--width={width}',
                                        '--paging=never'], input=diff, capture_output=True,
@@ -889,11 +1080,21 @@ class DiffPane:
         lines = (rendered.rstrip('\n').split('\n') if rendered.strip()
                  else ['No differences in this file.'])
         self._diff_lines = [styled_segments(line) for line in lines]
+        previous_numbers = self._diff_numbers
         self._diff_numbers = []
         for line in lines:
             match = NUMBERS_PATTERN.match(plain(line))
             self._diff_numbers.append((int(match.group(1)) if match and match.group(1) else None,
                                        int(match.group(2)) if match and match.group(2) else None))
+        plain_lines = [plain(line) for line in lines]
+        from_below, partly = core.rebase_lines(change, *compare, path=path)
+        self.marks_from_below = (self._mark_from_below(plain_lines, from_below, False),
+                                 self._mark_from_below(plain_lines, partly, True))
+        if not is_other_file:
+            if self.rows and not self._keep:
+                self._keep = (self.rows[self.cursor], self._anchors[self.cursor])
+            if self._keep:
+                self._keep = self._renumbered(self._keep, previous_numbers)
         if is_other_file:
             first = next((index for index, numbers in enumerate(self._diff_numbers)
                           if any(numbers)), 0)
@@ -901,9 +1102,57 @@ class DiffPane:
             # A new file starts at its top, file threads and all.
             self.cursor = self.scroll = 0
             self._from_top = True
-        elif self.rows and not self._keep:
-            self._keep = (self.rows[self.cursor], self._anchors[self.cursor])
         self._threads_key = None
+
+    def _mark_from_below(self, plain_lines, from_below, partly):
+        """Gives the halves of rows with lines (partly) from below, as old
+        and new line numbers, other backgrounds. Rows delta wrapped are
+        marked like the row they continue. Returns whether any row was
+        marked.
+        """
+        from_below_old, from_below_new = from_below
+        if not from_below_old and not from_below_new:
+            return False
+        marked = False
+        halves = (False, False)
+        split = None
+        for index, (old, new) in enumerate(self._diff_numbers):
+            match = NUMBERS_PATTERN.match(plain_lines[index])
+            if match:
+                split = plain_lines[index].rfind('│', 0, match.start(2))
+                halves = (old in from_below_old, new in from_below_new)
+            elif not plain_lines[index].startswith('│'):
+                halves = (False, False)
+            if split is None or not any(halves):
+                continue
+            segments = self._diff_lines[index]
+            if halves[0]:
+                segments = recoloured(segments, 0, split, partly)
+            if halves[1]:
+                segments = recoloured(segments, split, len(plain_lines[index]), partly)
+            self._diff_lines[index] = segments
+            marked = True
+        return marked
+
+    def _renumbered(self, keep, previous_numbers):
+        """Moves a kept row to the new diff lines, by its line numbers. With
+        more or less context, the same line has another index.
+        """
+        def new_index(index):
+            if not 0 <= index < len(previous_numbers):
+                return index
+            old, new = previous_numbers[index]
+            if old is None and new is None:
+                return min(index, max(len(self._diff_numbers) - 1, 0))
+            column, line = (1, new) if new is not None else (0, old)
+            return next((other for other, numbers in enumerate(self._diff_numbers)
+                         if numbers[column] is not None and numbers[column] >= line),
+                        max(len(self._diff_numbers) - 1, 0))
+
+        row, anchor = keep
+        if 'diff' == row[0]:
+            row = ('diff', new_index(row[1]))
+        return row, new_index(anchor) if anchor >= 0 else anchor
 
     def forget(self):
         """Makes the next show() render again, e.g. after a reload."""
@@ -932,6 +1181,9 @@ class DiffPane:
                     self._anchors.append(anchor)
 
         add_threads(None, -1)
+        # Threads on lines the diff doesn't show come next, so none gets lost.
+        for place in sorted(place for place in blocks if place not in self.shown_places()):
+            add_threads(place, -1)
         for index, (old, new) in enumerate(self._diff_numbers):
             self.rows.append(('diff', index))
             self.lines.append(self._diff_lines[index])
@@ -940,6 +1192,11 @@ class DiffPane:
             add_threads(('new', new), index)
             add_threads(('old', old), index)
         self._place_cursor(offset)
+
+    def shown_places(self):
+        """The (side, line) places the rendered diff shows."""
+        return ({('new', new) for _, new in self._diff_numbers if new is not None}
+                | {('old', old) for old, _ in self._diff_numbers if old is not None})
 
     def _place_cursor(self, offset):
         """Puts the cursor back on the kept row: the same one, else the
@@ -1039,7 +1296,13 @@ class DiffPane:
         """(line, side) of the cursor line. New side where the line exists
         in the new version, else old side. None on rows without numbers.
         """
-        old, new = self.numbers[self.cursor] if self.numbers else (None, None)
+        index = self.cursor
+        # A row delta wrapped onto the next one belongs to the line above.
+        while (0 < index < len(self.numbers) and (None, None) == self.numbers[index]
+               and 'diff' == self.rows[index][0]
+               and ''.join(part[0] for part in self.lines[index]).startswith('│')):
+            index -= 1
+        old, new = self.numbers[index] if self.numbers else (None, None)
         if new is not None:
             return new, 'new'
         if old is not None:
@@ -1051,15 +1314,16 @@ class DiffPane:
 THREAD_INDENT = 3
 
 
-def thread_rows(comment, width, expanded, reviewer):
+def thread_rows(comment, width, expanded, reviewer, note=''):
     """A thread as rows of the diff, each a list of (text, foreground,
     background, styles). Folded it is one row with the start of the first
-    message.
+    message. note goes into the title, e.g. that its line isn't shown.
     """
     label = comment_label(comment)
     colour = STATUS_COLOURS['draft' if comment.is_draft() else comment.status]
     pad = ' ' * THREAD_INDENT
-    title = (f'#{comment.number} {label}', colour, -1, curses.A_BOLD)
+    title = (f'#{comment.number} {label}' + (f'  {note}' if note else ''), colour, -1,
+             curses.A_BOLD)
     if not expanded:
         first = comment.messages[0].text.split('\n')[0] if comment.messages else ''
         return [[(pad + '▸ ', -1, -1, curses.A_DIM), title, (f'  {first}', -1, -1, curses.A_DIM)]]
@@ -1089,12 +1353,13 @@ DIFF = 'diff'
 PANES = (FILES, COMMENTS, DIFF)
 
 PANE_KEYS = {
-    FILES: 'j/k file  tab next pane  c comment (asks line)  h back',
-    COMMENTS: 'j/k thread  l open thread  y agree  a apply  x drop  o reopen  h back',
-    DIFF: ('j/k line  gg/G  ^d/^u half page  c comment on line  l fold thread  i fold all  '
-           'r reply  e edit draft  y/a/x/o thread  h files'),
+    FILES: 'j/k file  tab next pane  c comment on file  h back',
+    COMMENTS: 'j/k thread  l go to thread  r reply  y agree  a apply  x drop  o reopen  h back',
+    DIFF: ('j/k line  gg/G  ^d/^u half page  c comment on line  C on file  +/- context  '
+           'l fold thread  i fold all  r reply  e edit draft  y/a/x/o thread  h files'),
 }
-COMMON_CHANGE_KEYS = 's send  A apply all  p patch sets  t vimdiff  S submit  ? help'
+COMMON_CHANGE_KEYS = ('s send  A apply all  v vote  V needs Verified  p patch sets  t vimdiff  '
+                      'S submit  ? help')
 
 
 # What the change screen compares at first: the whole change as of the
@@ -1132,7 +1397,8 @@ class ChangeView:
         for change in core.changes_in_stack():
             if change.change_id == self._change_id:
                 self._change = change
-                self._files = sorted(core.files_of(change.commit))
+                # The commit message comes first, like in Gerrit.
+                self._files = [core.COMMIT_MSG] + sorted(core.files_of(change.commit))
                 self._file_index = min(self._file_index, max(len(self._files) - 1, 0))
                 self._comment_index = min(self._comment_index, max(len(change.comments) - 1, 0))
                 self._diff.forget()
@@ -1180,10 +1446,32 @@ class ChangeView:
             comparing = f'comparing {first} -> {second}'
         except core.ChangeError as error:
             comparing = str(error)
-        out(1, 1, f'Patch sets: {patch_sets}   {comparing}', curses.A_DIM)
+        header = f'Patch sets: {patch_sets}   {comparing}'
+        out(1, 1, header, curses.A_DIM)
+        self._draw_votes(4 + len(header))
         self._draw_files()
         self._draw_comments()
         self._draw_diff()
+
+    def _draw_votes(self, column):
+        """Draws the votes on the latest patch set after the header, like
+        "Code-Review +2  Verified -1 ci: make check failed".
+        """
+        out = self._interface.text
+        core = self._interface.core
+        change = self._change
+        for label in (core.CODE_REVIEW, core.VERIFIED):
+            value = change.label_value(label)
+            if not value and not (core.VERIFIED == label and change.verified_required):
+                continue
+            text = f'{label} {core.vote_label(change, label)}'
+            out(1, column, text, vote_attribute(value) | (0 if value else curses.A_DIM))
+            column += len(text) + 2
+        # A failed check says why, in short.
+        failed = [vote for vote in change.current_votes(core.VERIFIED) if vote.value < 0]
+        if failed and failed[0].message:
+            lines = failed[0].message.strip().split('\n')
+            out(1, column, f'{failed[0].by}: {lines[-1]}', curses.A_DIM)
 
     def _draw_files(self):
         """Draws the file list."""
@@ -1194,7 +1482,8 @@ class ChangeView:
             selected = index == self._file_index
             attributes = curses.A_REVERSE if selected and FILES == self._focus else (
                 curses.A_BOLD if selected else 0)
-            out(top + index, left, f'{path:<{width}.{width}}', attributes, left + width)
+            name = file_label(self._interface.core, path)
+            out(top + index, left, f'{name:<{width}.{width}}', attributes, left + width)
 
     def _draw_comments(self):
         """Draws the thread list."""
@@ -1230,35 +1519,53 @@ class ChangeView:
         """Draws the diff of the selected file, with cursor and thread marks."""
         out = self._interface.text
         path = self._selected_file()
-        self._frame(DIFF, path or 'Diff')
+        context = CONTEXT_STEPS[self._interface.context_step]
+        context_label = 'whole file' if context is None else f'context {context}'
+        if path:
+            self._prepare_diff()
+        below = ''.join(legend for legend, shown in zip(
+            (', blue: from changes below', ', purple: partly from below'),
+            self._diff.marks_from_below) if shown)
+        self._frame(DIFF, f'{file_label(self._interface.core, path)}  ({context_label}{below})'
+                    if path else 'Diff')
         top, left, height, width = self._layout[DIFF]
         if not path:
             return
         self._prepare_diff()
         markers = self._markers()
-        for row in range(height):
-            index = self._diff.scroll + row
-            if index >= len(self._diff.lines):
+        gap_index, gap_height = self._diff.gap or (None, 0)
+        # The comment box's room comes below the gap's row, where draw
+        # leaves rows empty.
+        row = gap_height if gap_index is not None and gap_index < self._diff.scroll else 0
+        for index in range(self._diff.scroll, len(self._diff.lines)):
+            if row >= height:
                 break
-            old, new = self._diff.numbers[index]
-            has_thread = (('new', new) in markers) or (('old', old) in markers)
-            if self._diff.thread_at(index) is not None:
-                has_thread = False
-            # The cursor line is highlighted in every pane, the > only shows
-            # while the diff has the focus.
-            is_cursor = index == self._diff.cursor
-            gutter = '>' if is_cursor and DIFF == self._focus else ' '
-            out(top + row, left, gutter, curses.A_BOLD)
-            out(top + row, left + 1, '●' if has_thread else ' ', status_attribute('open'))
-            if is_cursor:
-                out(top + row, left + 2, ' ' * (width - 2), self._diff.cursor_line_attribute(),
-                    left + width)
-            column = left + 2
-            for text, attributes in self._diff.segments(index, is_cursor):
-                if column >= left + width:
-                    break
-                out(top + row, column, text, attributes, left + width)
-                column += len(text)
+            self._draw_diff_row(index, row, markers)
+            row += 1 + (gap_height if index == gap_index else 0)
+
+    def _draw_diff_row(self, index, row, markers):
+        """Draws one row of the diff at a screen row of the pane."""
+        out = self._interface.text
+        top, left, _height, width = self._layout[DIFF]
+        old, new = self._diff.numbers[index]
+        has_thread = (('new', new) in markers) or (('old', old) in markers)
+        if self._diff.thread_at(index) is not None:
+            has_thread = False
+        # The cursor line is highlighted in every pane, the > only shows
+        # while the diff has the focus.
+        is_cursor = index == self._diff.cursor
+        gutter = '>' if is_cursor and DIFF == self._focus else ' '
+        out(top + row, left, gutter, curses.A_BOLD)
+        out(top + row, left + 1, '●' if has_thread else ' ', status_attribute('open'))
+        if is_cursor:
+            out(top + row, left + 2, ' ' * (width - 2), self._diff.cursor_line_attribute(),
+                left + width)
+        column = left + 2
+        for text, attributes in self._diff.segments(index, is_cursor):
+            if column >= left + width:
+                break
+            out(top + row, column, text, attributes, left + width)
+            column += len(text)
 
     # ── selection ─────────────────────────────────────────────────────────
 
@@ -1288,7 +1595,8 @@ class ChangeView:
             return False
         width = self._layout[DIFF][3] - 2
         core = self._interface.core
-        self._diff.show(core, self._change, self._compare, path, width)
+        self._diff.show(core, self._change, self._compare, path, width,
+                        CONTEXT_STEPS[self._interface.context_step])
         blocks = {}
         signature = [path, width]
         for comment in self._change.comments:
@@ -1299,8 +1607,12 @@ class ChangeView:
                 continue
             expanded = self._is_expanded(comment)
             place = (comment.side, int(line)) if line else None
+            note = ''
+            if place and place not in self._diff.shown_places():
+                note = (f'on {"old " if "old" == comment.side else ""}line {line}, not in the '
+                        'diff (+ shows more context)')
             blocks.setdefault(place, []).append(
-                (comment.number, thread_rows(comment, width, expanded, core.REVIEWER)))
+                (comment.number, thread_rows(comment, width, expanded, core.REVIEWER, note)))
             signature.append((comment.number, comment.status, place, expanded,
                               tuple((message.author, message.text, message.sent)
                                     for message in comment.messages)))
@@ -1339,17 +1651,15 @@ class ChangeView:
         return self._change.comments[numbers[0] - 1] if numbers else None
 
     def _box_below_thread(self, comment):
-        """Where the comment box goes for a reply: below the thread in the
-        diff, scrolled into view. None outside the diff.
+        """Where the comment box goes for a reply: in a gap below the
+        thread in the diff. None if the diff doesn't show the thread.
         """
-        if DIFF != self._focus or not self._layout:
+        if not self._layout:
             return None
         end = self._diff.thread_end(comment.number)
         if end is None:
             return None
-        top, left, height, width = self._layout[DIFF]
-        self._diff.make_room_below(end, height, TEXT_BOX_ROWS + 2)
-        return top + end - self._diff.scroll, left - 1, width + 2
+        return DiffGap(self._diff, self._layout[DIFF], end)
 
     def _target_thread(self):
         """The thread keys like y or r act on: the selected one in the
@@ -1423,6 +1733,13 @@ class ChangeView:
             self.key(ord('r'))
         elif ord('c') == key:
             self._new_comment()
+        elif ord('C') == key:
+            self._new_comment(whole_file=True)
+        elif key in (ord('+'), ord('='), ord('-')):
+            step = interface.context_step + (-1 if ord('-') == key else 1)
+            interface.context_step = max(0, min(step, len(CONTEXT_STEPS) - 1))
+        elif key in (ord('v'), ord('V')):
+            vote_action(interface, change, key)
         elif ord('S') == key:
             submit_with_confirmation(interface, change)
         elif key in (ord('r'), ord('e')) and self._target_thread():
@@ -1453,13 +1770,20 @@ class ChangeView:
         return True
 
     def _open(self):
-        """l: in the files, shows the diff. Elsewhere, opens a thread."""
-        interface = self._interface
+        """l: in the files, shows the diff. In the comments, unfolds the
+        thread and goes to it in the diff. In the diff, folds or unfolds
+        the thread at the cursor.
+        """
+        comment = self._selected_comment()
         if FILES == self._focus:
             self._focus_pane(DIFF)
-        elif COMMENTS == self._focus and self._selected_comment():
-            interface.open(ThreadView(interface, self._change_id,
-                                      self._selected_comment().number))
+        elif COMMENTS == self._focus and comment:
+            self._expanded[comment.number] = True
+            self._show_comment_in_diff(comment)
+            if self._diff.thread_at(self._diff.cursor) == comment.number:
+                self._focus_pane(DIFF)
+            else:
+                self._interface.say(f'#{comment.number} is on a file this version doesn\'t have.')
         elif DIFF == self._focus:
             self._toggle_threads()
 
@@ -1509,38 +1833,33 @@ class ChangeView:
             self._interface.say('Give one or two of: patch set numbers, "base", "latest", '
                                 '"current".')
 
-    def _new_comment(self):
-        """Starts a draft thread: on the diff's cursor line, or, from the
-        file list, on a line that is asked for.
+    def _new_comment(self, whole_file=False):
+        """Starts a draft thread: on the diff's cursor line, or on the whole
+        file from the file list, with C, or on diff rows without a line
+        number (like the file's header).
         """
         interface = self._interface
         path = self._selected_file()
         if not path:
             return
         side = 'new'
+        line = ''
         anchor = None
-        if DIFF == self._focus:
-            place = self._diff.cursor_place()
-            if place is None:
-                interface.say('Put the cursor on a line with a line number.')
-                return
+        place = self._diff.cursor_place() if DIFF == self._focus and not whole_file else None
+        if place is None:
+            if self._layout:
+                # The box opens at the top of the diff, where file threads are.
+                anchor = DiffGap(self._diff, self._layout[DIFF], -1)
+        else:
             line, side = place
             line = str(line)
-            # The box opens right below the commented line.
-            # If the line is too far down for that, the diff scrolls up.
-            top, left, height, width = self._layout[DIFF]
-            self._diff.move_cursor(0, height)
-            self._diff.make_room_below(self._diff.cursor, height, TEXT_BOX_ROWS + 2)
-            anchor = (top + self._diff.cursor - self._diff.scroll, left - 1, width + 2)
-        else:
-            line = interface.ask(f'Line in {path} (empty for the whole file):')
-            if line is None:
-                return
-            if line and not line.isdigit():
-                interface.say('The line has to be a number.')
-                return
-        text = interface.write_text(f'Comment on {path.rsplit("/", 1)[-1]}'
-                                    + (f':{line}' if line else ''), anchor=anchor)
+            # The box opens right below the commented line, the diff scrolls
+            # if needed.
+            self._diff.move_cursor(0, self._layout[DIFF][2])
+            anchor = DiffGap(self._diff, self._layout[DIFF], self._diff.cursor)
+        name = file_label(interface.core, path).rsplit('/', 1)[-1]
+        text = interface.write_text(f'Comment on {name}' + (f':{line}' if line else
+                                                            ' (whole file)'), anchor=anchor)
         if not text:
             interface.say('Nothing saved.' if text is None else 'Empty comment, nothing saved.')
             return
@@ -1548,6 +1867,11 @@ class ChangeView:
         interface.core.add_comment(self._change_id, place, text, sent=False, side=side)
         interface.after_write()
         interface.say('Draft saved. s sends all drafts.')
+
+
+def file_label(core, path):
+    """A file's name for display. The commit message has no path."""
+    return 'Commit message' if core.COMMIT_MSG == path else path
 
 
 def reply_to_thread(interface, change_id, comment, anchor=None):
@@ -1582,8 +1906,7 @@ def edit_draft(interface, change_id, comment, anchor=None):
 def thread_action(interface, change, comment, key):
     """Handles the keys that act on a thread or on all drafts.
 
-    Shared by the change view (comment = the selected thread, or None while
-    the files are selected) and the thread view.
+    comment is the selected thread, or None while the files are selected.
     """
     core = interface.core
     if ord('s') == key:
@@ -1605,87 +1928,3 @@ def thread_action(interface, change, comment, key):
         core.set_status(change.change_id, comment.number, status)
         interface.after_write()
         interface.say(f'#{comment.number} {status}.')
-
-
-class ThreadView:
-    """One comment thread with all its messages."""
-
-    KEYS = THREAD_KEYS
-
-    def __init__(self, interface, change_id, number):
-        self._interface = interface
-        self._change_id = change_id
-        self._number = number
-        self._change = None
-        self._comment = None
-        self._quoted = ''
-        self._scroll = 0
-
-    def reload(self):
-        """Reads the thread again. Goes back if it is gone."""
-        core = self._interface.core
-        for change in core.changes_in_stack():
-            if change.change_id == self._change_id and self._number <= len(change.comments):
-                self._change = change
-                self._comment = change.comments[self._number - 1]
-                commit = change.patch_sets.get(self._comment.patch_set, change.commit)
-                self._quoted = core.line_at(commit, self._comment.place, side=self._comment.side)
-                return
-        self._interface.back()
-        self._interface.say('The thread is gone.')
-
-    def _lines(self, width):
-        """The thread as display lines: (text, attributes)."""
-        lines = []
-        for message in self._comment.messages:
-            name = 'Reviewer' if self._interface.core.REVIEWER == message.author else 'Author'
-            draft = ' (draft)' if not message.sent else ''
-            lines.append((f'{name}{draft}:', curses.A_BOLD
-                          | (status_attribute('draft') if draft else 0)))
-            for paragraph in message.text.split('\n'):
-                for line in textwrap.wrap(paragraph, max(width - 6, 20)) or ['']:
-                    lines.append((f'  {line}', 0))
-            lines.append(('', 0))
-        return lines
-
-    def draw(self, area):
-        """Draws the thread's header, the quoted line and the messages."""
-        out = self._interface.text
-        comment = self._comment
-        label = comment_label(comment)
-        out(0, 1, f'#{comment.number} ', curses.A_BOLD)
-        out(0, 5, f'[{label}]', status_attribute('draft' if comment.is_draft() else comment.status))
-        out(0, 8 + len(label), f'{comment.place_label()}  (PS{comment.patch_set})  '
-            f'{self._change.subject}', curses.A_BOLD)
-        if self._quoted:
-            out(1, 3, f'| {self._quoted}', curses.A_DIM)
-        lines = self._lines(area.width)
-        self._scroll = min(self._scroll, max(len(lines) - (area.height - 3), 0))
-        for row, (text, attributes) in enumerate(lines[self._scroll:]):
-            if 3 + row >= area.height:
-                break
-            out(3 + row, 1, text, attributes)
-
-    def mouse(self, _row, _column, kind):
-        """The wheel scrolls the thread."""
-        if wheel_key(kind):
-            self.key(wheel_key(kind))
-
-    def key(self, key, count=None):
-        """Handles a key of the thread view."""
-        interface = self._interface
-        if ord('j') == key:
-            self._scroll += count or 1
-        elif ord('k') == key:
-            self._scroll = max(self._scroll - (count or 1), 0)
-        elif GO_TOP == key:
-            self._scroll = 0
-        elif ord('G') == key:
-            # draw() limits it to the end of the thread
-            self._scroll = 1 << 30
-        elif ord('r') == key:
-            reply_to_thread(interface, self._change_id, self._comment)
-        elif ord('e') == key:
-            edit_draft(interface, self._change_id, self._comment)
-        else:
-            thread_action(interface, self._change, self._comment, key)
