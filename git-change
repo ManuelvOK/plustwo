@@ -1,0 +1,921 @@
+#!/usr/bin/env python3
+"""git change: Gerrit-like review of local commits, with patch sets and notes.
+
+A change is a commit under review. Like in Gerrit, it is identified by the
+Change-Id trailer in its commit message, which a commit-msg hook adds and
+which amends and rebases keep. So a commit prepared here can be uploaded to
+a real Gerrit later, and Gerrit sees it as the same change.
+
+Reviews happen on branches called review/<topic>. Each one holds a stack: its
+commits that are not on the base branch yet (main, or whatever the git
+config change.base says). Submitting a change moves the base branch forward
+to it, so the base branch only ever gets reviewed commits. Several stacks can
+be in review at the same time.
+
+Every uploaded version of a change is kept as a patch set under
+refs/patchsets/<Change-Id>/<number>, so versions can be compared. The review
+lives in a git note (refs/notes/review) on the commit, which follows the
+commit through amends and rebases: the comment threads and the reviewer's
+requests to apply them. The state of a change follows from git itself:
+New without a patch set, In-Review with one, Submitted once it is on the
+base branch. Nothing of this is pushed unless asked for explicitly.
+
+Two roles take part: the reviewer, who comments and decides, and the author,
+who answers and applies. The reviewer usually works in the terminal user
+interface (`git change` without arguments), the author on the command line.
+
+Usage:
+    git change                          terminal user interface
+    git change init                     installs the commit-msg hook and the
+                                        notes setup in this repository
+    git change list                     overview of the stacks in review
+    git change show CHANGE              comment threads of a change
+    git change diff CHANGE [A [B]]      diff between patch sets (side by side
+                                        with delta). --tool opens vimdiff.
+    git change rdiff CHANGE [A [B]]     range-diff between patch sets
+    git change upload CHANGE            saves the commit as the next patch set
+                                        and marks pending apply requests
+                                        handled
+    git change submit CHANGE            moves the base branch to the change,
+                                        submitting the changes below it too
+    git change comment CHANGE PLACE TEXT
+                                        adds a sent reviewer comment, PLACE
+                                        like src/main.cc:121
+    git change reply CHANGE NUMBER TEXT adds an author message to a thread
+    git change status CHANGE NUMBER STATUS [TEXT]
+                                        sets a thread's status (open, agreed,
+                                        dropped, done), TEXT becomes an author
+                                        message
+    git change inbox [REPO...]          what the author has to answer or apply
+    git change watch [REPO...]          prints one line per new sent message
+                                        or apply request, until stopped
+
+CHANGE is a change's number in the overview (counted over all stacks) or a
+unique prefix of its Change-Id (like I3f2a). A and B are patch set numbers or "current" for the
+commit as it is now. Without them, diff and rdiff compare the latest patch
+set with the current commit, or the last two patch sets if the commit is
+unchanged since. With a single patch set, they show the change itself.
+"""
+
+import argparse
+import contextlib
+import fcntl
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+NOTES_REF = 'refs/notes/review'
+PATCH_SET_PREFIX = 'refs/patchsets/'
+REVIEW_BRANCH_PREFIX = 'review/'
+DEFAULT_BASE = 'main'
+STATUSES = ('open', 'agreed', 'dropped', 'done')
+REVIEWER = 'reviewer'
+AUTHOR = 'author'
+NEW_SIDE = 'new'
+OLD_SIDE = 'old'
+APPLY = 'apply'
+APPLY_ALL = 'apply-all'
+CURRENT = 'current'
+# The parent of the other compared version, i.e. the change's own diff
+BASE = 'base'
+# The latest patch set, or the current commit before the first upload
+LATEST = 'latest'
+CHANGE_ID_PATTERN = re.compile(r'^Change-Id: (I[0-9a-f]{40})\s*$', re.MULTILINE)
+WATCH_INTERVAL_SECONDS = 1.0
+
+# The hook only calls this script, so the logic stays in one place.
+HOOK_TEXT = '#!/bin/sh\n# Installed by git change: adds a Gerrit Change-Id.\nexec git-change commit-msg-hook "$1"\n'
+
+
+class ChangeError(Exception):
+    """An error the user can fix, shown without a traceback."""
+
+
+@dataclass
+class Message:
+    """One message in a comment thread.
+
+    A reviewer's message starts as a draft (sent is False), which only the
+    reviewer sees, until the reviewer sends it.
+    """
+    author: str
+    text: str
+    sent: bool = True
+
+
+@dataclass
+class Comment:
+    """A comment thread on one place of a change, with its status.
+
+    place is a file, or a file and a line like src/main.cc:12. The line
+    counts in the new version of the file, or with side "old" in the old
+    version, for lines the change removed.
+    """
+    number: int
+    place: str
+    patch_set: int
+    status: str = 'open'
+    messages: list[Message] = field(default_factory=list)
+    side: str = NEW_SIDE
+
+    def place_label(self):
+        """The place for display, marked when it is in the old version."""
+        return self.place + (' (old)' if OLD_SIDE == self.side else '')
+
+    def is_draft(self):
+        """Whether the thread exists only as the reviewer's draft so far."""
+        return all(not message.sent for message in self.messages)
+
+    def has_draft(self):
+        """Whether the thread ends with an unsent reviewer message."""
+        return bool(self.messages) and not self.messages[-1].sent
+
+    def is_unanswered(self):
+        """Whether the last sent message is the reviewer's."""
+        sent = [message for message in self.messages if message.sent]
+        return bool(sent) and REVIEWER == sent[-1].author
+
+
+@dataclass
+class Request:
+    """The reviewer's request to apply one thread or all agreed threads."""
+    type: str
+    comment: int | None = None
+    handled: bool = False
+
+
+@dataclass
+class Change:
+    """A commit with a Change-Id: its review state, threads and patch sets."""
+    change_id: str
+    commit: str
+    subject: str
+    branch: str
+    comments: list[Comment]
+    requests: list[Request]
+    patch_sets: dict[int, str]
+
+    def latest_patch_set(self):
+        """Number of the newest patch set, 0 if none is uploaded yet."""
+        return max(self.patch_sets, default=0)
+
+    def is_uploaded(self):
+        """Whether the current commit is the newest patch set."""
+        latest = self.latest_patch_set()
+        return 0 != latest and self.patch_sets[latest] == self.commit
+
+    def short_id(self):
+        """The Change-Id shortened for display, like I3f2a9c1."""
+        return self.change_id[:8]
+
+    def state(self):
+        """Review state for display, named like in Gerrit: New, In-Review or
+        Submitted. Changes on review branches are never submitted, they
+        leave the branches when they are.
+        """
+        return 'In-Review' if self.patch_sets else 'New'
+
+    def unfinished_comments(self):
+        """Sent threads that are still open, or agreed but not done."""
+        return [comment for comment in self.comments
+                if comment.status in ('open', 'agreed') and not comment.is_draft()]
+
+    def pending_requests(self):
+        """Apply requests the author has not handled yet."""
+        return [request for request in self.requests if not request.handled]
+
+
+# ── git helpers ───────────────────────────────────────────────────────────
+
+def git(*arguments, input_text=None, check=True, repository=None):
+    """Runs git and returns its output without the final newline."""
+    command = ['git'] + (['-C', str(repository)] if repository else []) + list(arguments)
+    result = subprocess.run(command, input=input_text, text=True, capture_output=True)
+    if check and 0 != result.returncode:
+        raise ChangeError(result.stderr.strip() or f'git {arguments[0]} failed')
+    return result.stdout.rstrip('\n')
+
+
+def base_branch(repository=None):
+    """The branch reviewed changes go to: the git config change.base, else
+    main.
+    """
+    return git('config', 'change.base', check=False, repository=repository) or DEFAULT_BASE
+
+
+def review_branches(repository=None):
+    """Names of all review branches, like review/placeholder-window."""
+    output = git('for-each-ref', '--format=%(refname:short)', f'refs/heads/{REVIEW_BRANCH_PREFIX}',
+                 repository=repository)
+    return sorted(filter(None, output.split('\n')))
+
+
+def stack_commits(branch, repository=None):
+    """Commits of a review branch that are not on the base branch, oldest
+    first.
+    """
+    output = git('rev-list', '--reverse', f'{base_branch(repository)}..{branch}', check=False,
+                 repository=repository)
+    return output.split('\n') if output else []
+
+
+def change_id_of(commit, repository=None):
+    """The Change-Id in a commit's message, None if it has none."""
+    match = CHANGE_ID_PATTERN.search(git('log', '-1', '--format=%B', commit,
+                                         repository=repository))
+    return match.group(1) if match else None
+
+
+def notes_version(repository=None):
+    """Hash of the notes ref. It changes with every write to any note."""
+    return git('rev-parse', '--verify', '--quiet', NOTES_REF, check=False, repository=repository)
+
+
+def stack_version(repository=None):
+    """All refs a review depends on, with their hashes. They change with
+    every commit, amend, rebase, upload, submit and note write, so a viewer
+    knows when to reload.
+    """
+    return git('for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads/',
+               NOTES_REF, PATCH_SET_PREFIX, check=False, repository=repository)
+
+
+def read_note(commit, repository=None):
+    """The review note of a commit as a dict, empty if it has none."""
+    text = git('notes', f'--ref={NOTES_REF}', 'show', commit, check=False, repository=repository)
+    return json.loads(text) if text else {}
+
+
+def write_note(commit, note, repository=None):
+    """Stores the review note of a commit."""
+    git('notes', f'--ref={NOTES_REF}', 'add', '-f', '-F', '-', commit,
+        input_text=json.dumps(note, indent=2) + '\n', repository=repository)
+
+
+def patch_sets_of(change_id, repository=None):
+    """Uploaded patch sets of a change: number -> commit."""
+    output = git('for-each-ref', '--format=%(refname) %(objectname)',
+                 f'{PATCH_SET_PREFIX}{change_id}/', repository=repository)
+    patch_sets = {}
+    for line in filter(None, output.split('\n')):
+        ref, commit = line.split(' ')
+        patch_sets[int(ref.rsplit('/', 1)[1])] = commit
+    return patch_sets
+
+
+def files_of(commit, repository=None):
+    """Files a commit changes, with added and removed line counts.
+
+    Returns a dict: path -> (added, removed). Binary files count as 0.
+    """
+    output = git('diff-tree', '--no-commit-id', '--numstat', '-r', '--root', commit,
+                 repository=repository)
+    files = {}
+    for line in filter(None, output.split('\n')):
+        added, removed, path = line.split('\t', 2)
+        files[path] = (int(added) if added.isdigit() else 0,
+                       int(removed) if removed.isdigit() else 0)
+    return files
+
+
+def line_at(commit, place, repository=None, side=NEW_SIDE):
+    """The source line a place like src/main.cc:12 refers to, stripped.
+
+    On the old side, the line is read from the commit's parent. Empty if
+    the place has no line number or the file has no such line.
+    """
+    path, _, line = place.rpartition(':')
+    if not path or not line.isdigit():
+        return ''
+    version = f'{commit}^' if OLD_SIDE == side else commit
+    text = git('show', f'{version}:{path}', check=False, repository=repository)
+    lines = text.split('\n')
+    number = int(line)
+    return lines[number - 1].strip() if 1 <= number <= len(lines) else ''
+
+
+@contextlib.contextmanager
+def review_lock(repository=None):
+    """Lets only one process change review notes at a time.
+
+    The terminal user interface and the author's commands both read, change
+    and write notes. Without the lock, one of two writes at the same moment
+    would get lost.
+    """
+    path = Path(git('rev-parse', '--git-path', 'git-change.lock', repository=repository))
+    if repository and not path.is_absolute():
+        path = Path(repository) / path
+    with open(path, 'w') as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+# ── setup and the commit-msg hook ─────────────────────────────────────────
+
+def init_repository():
+    """Installs the commit-msg hook and makes notes follow amends and rebases."""
+    path = Path(git('rev-parse', '--git-path', 'hooks/commit-msg'))
+    if path.exists() and HOOK_TEXT != path.read_text():
+        raise ChangeError(f'{path} exists already and is not ours. Merge it by hand.')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(HOOK_TEXT)
+    path.chmod(0o755)
+    if NOTES_REF not in git('config', '--get-all', 'notes.rewriteRef', check=False).split('\n'):
+        git('config', '--add', 'notes.rewriteRef', NOTES_REF)
+
+    # Without an existing notes ref, every amend warns that it is invalid.
+    # An empty notes commit makes it exist before the first comment.
+    if not notes_version():
+        empty_tree = git('hash-object', '-t', 'tree', '-w', '--stdin', input_text='')
+        notes_commit = git('commit-tree', empty_tree, '-m', 'Notes created by git change init')
+        git('update-ref', NOTES_REF, notes_commit)
+
+
+def new_change_id(message):
+    """A new Change-Id: "I" and 40 hex digits, as Gerrit's hook makes them."""
+    seed = f'{time.time_ns()} {os.getpid()} {os.urandom(16).hex()} {message}'
+    return 'I' + hashlib.sha1(seed.encode()).hexdigest()
+
+
+def add_change_id(message_path):
+    """Adds a Change-Id trailer to a commit message file if it has none.
+
+    Like Gerrit's hook, it leaves out fixup!, squash! and amend! commits,
+    which get folded into a commit that has its own Change-Id, and empty
+    messages, which abort the commit anyway.
+    """
+    message = Path(message_path).read_text()
+    meaningful = [line for line in message.split('\n') if not line.startswith('#')]
+    if not ''.join(meaningful).strip():
+        return
+    if re.match(r'(fixup|squash|amend)! ', meaningful[0]):
+        return
+    if CHANGE_ID_PATTERN.search(message):
+        return
+    git('interpret-trailers', '--in-place', '--trailer',
+        f'Change-Id: {new_change_id(message)}', message_path)
+
+
+# ── changes ───────────────────────────────────────────────────────────────
+
+def change_from(commit, branch, note, repository=None):
+    """Builds a Change from a commit on a review branch and its note."""
+    change_id = change_id_of(commit, repository)
+    comments = []
+    for comment in note.get('comments', []):
+        messages = [Message(**message) for message in comment.pop('messages', [])]
+        comments.append(Comment(**comment, messages=messages))
+    return Change(change_id=change_id,
+                  commit=commit,
+                  subject=git('log', '-1', '--format=%s', commit, repository=repository),
+                  branch=branch,
+                  comments=comments,
+                  requests=[Request(**request) for request in note.get('requests', [])],
+                  patch_sets=patch_sets_of(change_id, repository))
+
+
+def note_of(change):
+    """The note that stores a change's review."""
+    return {'comments': [{'number': comment.number,
+                          'place': comment.place,
+                          'patch_set': comment.patch_set,
+                          'status': comment.status,
+                          'side': comment.side,
+                          'messages': [vars(message) for message in comment.messages]}
+                         for comment in change.comments],
+            'requests': [vars(request) for request in change.requests]}
+
+
+def changes_in_stack(repository=None):
+    """All commits with a Change-Id on review branches, stack by stack and
+    oldest first within a stack.
+    """
+    changes = []
+    for branch in review_branches(repository):
+        for commit in stack_commits(branch, repository):
+            if change_id_of(commit, repository) is not None:
+                changes.append(change_from(commit, branch, read_note(commit, repository),
+                                           repository))
+    return changes
+
+
+def find_change(reference, repository=None):
+    """The change an overview number or a Change-Id prefix refers to."""
+    changes = changes_in_stack(repository)
+    if reference.isdigit():
+        index = int(reference)
+        if 1 <= index <= len(changes):
+            return changes[index - 1]
+        raise ChangeError(f'no change number {index}, the review branches have {len(changes)}')
+    matches = [change for change in changes if change.change_id.startswith(reference)]
+    if 1 == len(matches):
+        return matches[0]
+    if not matches:
+        raise ChangeError(f'no change with a Change-Id starting with "{reference}"')
+    raise ChangeError(f'"{reference}" fits several changes, give more of the Change-Id')
+
+
+def update_change(change_id, edit, repository=None):
+    """Changes a change's review under the lock and stores it.
+
+    Reads the change fresh, because another process may have written since
+    it was shown, and because an amend may have given it a new commit. Then
+    calls edit(change), stores the result and returns what edit returned.
+    """
+    with review_lock(repository):
+        for change in changes_in_stack(repository):
+            if change_id == change.change_id:
+                result = edit(change)
+                write_note(change.commit, note_of(change), repository)
+                return result
+    raise ChangeError(f'the change {change_id[:8]} is not on a review branch any more')
+
+
+def comment_of(change, number):
+    """The thread with this number, or an error."""
+    if not 1 <= number <= len(change.comments):
+        raise ChangeError(f'{change.short_id()} has no comment {number}')
+    return change.comments[number - 1]
+
+
+def upload(change_id, repository=None):
+    """Saves the current commit as the next patch set, which puts the change
+    In-Review, and marks pending apply requests handled. Returns the number
+    of the patch set.
+    """
+    def edit(change):
+        if change.is_uploaded() and not change.pending_requests():
+            raise ChangeError(f'patch set {change.latest_patch_set()} already is the current commit')
+        if not change.is_uploaded():
+            number = change.latest_patch_set() + 1
+            git('update-ref', f'{PATCH_SET_PREFIX}{change.change_id}/{number}', change.commit,
+                repository=repository)
+            change.patch_sets[number] = change.commit
+        for request in change.requests:
+            request.handled = True
+        return change.latest_patch_set()
+
+    return update_change(change_id, edit, repository)
+
+
+def changes_submitted_with(change, repository=None):
+    """The changes a submit of this change submits: it and all changes below
+    it on its branch, oldest first.
+    """
+    stack = [other for other in changes_in_stack(repository) if other.branch == change.branch]
+    return stack[:[other.change_id for other in stack].index(change.change_id) + 1]
+
+
+def submit(change_id, force=False, repository=None):
+    """Moves the base branch forward to a change, which submits it and every
+    change below it on its branch, like Gerrit does with a chain. A review
+    branch with nothing left on it is deleted.
+
+    Refuses when one of these changes has no patch set or changed since its
+    last one, and when the base branch moved on and the review branch needs
+    a rebase first. Without force it also refuses while threads are open, or
+    agreed but not done, so no point gets lost. The interface uses force
+    after listing those threads and asking.
+    """
+    with review_lock(repository):
+        change = next((change for change in changes_in_stack(repository)
+                       if change_id == change.change_id), None)
+        if change is None:
+            raise ChangeError(f'the change {change_id[:8]} is not on a review branch')
+        submitted = changes_submitted_with(change, repository)
+        for other in submitted:
+            if not other.is_uploaded():
+                raise ChangeError(f'{other.short_id()} changed since its last patch set, '
+                                  'upload it first')
+        unfinished = [f'{other.short_id()} #{comment.number}' for other in submitted
+                      for comment in other.unfinished_comments()]
+        if unfinished and not force:
+            raise ChangeError(f'not finished yet: {", ".join(unfinished)}')
+
+        base = base_branch(repository)
+        is_ancestor = subprocess.run(['git', *(['-C', str(repository)] if repository else []),
+                                      'merge-base', '--is-ancestor', base, change.commit])
+        if 0 != is_ancestor.returncode:
+            raise ChangeError(f'{base} moved on, rebase {change.branch} onto it first')
+
+        # The base branch is moved like a fast-forward merge. If it is checked
+        # out, merge keeps the working copy right, update-ref would not.
+        checked_out = git('symbolic-ref', '--quiet', '--short', 'HEAD', check=False,
+                          repository=repository)
+        if base == checked_out:
+            git('merge', '--ff-only', '--quiet', change.commit, repository=repository)
+        else:
+            git('update-ref', f'refs/heads/{base}', change.commit, repository=repository)
+
+        if git('rev-parse', change.branch, repository=repository) == change.commit:
+            if change.branch == checked_out:
+                git('switch', '--quiet', base, repository=repository)
+            git('branch', '--quiet', '-D', change.branch, repository=repository)
+        return submitted
+
+
+def add_comment(change_id, place, text, sent=True, side=NEW_SIDE, repository=None):
+    """Starts a reviewer thread on the newest patch set. Returns its number."""
+    def edit(change):
+        comment = Comment(number=len(change.comments) + 1,
+                          place=place,
+                          patch_set=change.latest_patch_set(),
+                          messages=[Message(author=REVIEWER, text=text, sent=sent)],
+                          side=side)
+        change.comments.append(comment)
+        return comment.number
+
+    return update_change(change_id, edit, repository)
+
+
+def add_message(change_id, number, author, text, sent=True, repository=None):
+    """Adds a message to a thread. An author's message is always sent."""
+    def edit(change):
+        comment_of(change, number).messages.append(
+            Message(author=author, text=text, sent=sent or AUTHOR == author))
+
+    update_change(change_id, edit, repository)
+
+
+def edit_draft(change_id, number, text, repository=None):
+    """Replaces the text of the reviewer's draft at the end of a thread."""
+    def edit(change):
+        comment = comment_of(change, number)
+        if not comment.has_draft():
+            raise ChangeError(f'comment {number} has no draft')
+        comment.messages[-1].text = text
+
+    update_change(change_id, edit, repository)
+
+
+def delete_draft(change_id, number, repository=None):
+    """Deletes the reviewer's draft at the end of a thread.
+
+    A thread that was only a draft disappears completely, and the later
+    threads move up a number.
+    """
+    def edit(change):
+        comment = comment_of(change, number)
+        if not comment.has_draft():
+            raise ChangeError(f'comment {number} has no draft')
+        comment.messages.pop()
+        if not comment.messages:
+            change.comments.remove(comment)
+            for later_number, later in enumerate(change.comments, start=1):
+                later.number = later_number
+
+    update_change(change_id, edit, repository)
+
+
+def send_drafts(change_id, repository=None):
+    """Sends all of the reviewer's drafts of a change. Returns their count."""
+    def edit(change):
+        drafts = [message for comment in change.comments for message in comment.messages
+                  if not message.sent]
+        for message in drafts:
+            message.sent = True
+        return len(drafts)
+
+    return update_change(change_id, edit, repository)
+
+
+def set_status(change_id, number, status, text=None, repository=None):
+    """Sets the status of a thread. Text becomes an author message."""
+    if status not in STATUSES:
+        raise ChangeError(f'unknown status "{status}", use one of: {", ".join(STATUSES)}')
+
+    def edit(change):
+        comment = comment_of(change, number)
+        comment.status = status
+        if text:
+            comment.messages.append(Message(author=AUTHOR, text=text))
+
+    update_change(change_id, edit, repository)
+
+
+def request_apply(change_id, number=None, repository=None):
+    """The reviewer asks the author to apply a thread, or with number None
+    all agreed threads. Applying a thread means agreeing to it.
+    """
+    def edit(change):
+        if number is None:
+            if not any('agreed' == comment.status for comment in change.comments):
+                raise ChangeError('no agreed comment to apply')
+            change.requests.append(Request(type=APPLY_ALL))
+            return
+        comment = comment_of(change, number)
+        if comment.is_draft():
+            raise ChangeError(f'comment {number} is not sent yet')
+        comment.status = 'agreed'
+        change.requests.append(Request(type=APPLY, comment=number))
+
+    update_change(change_id, edit, repository)
+
+
+def versions_to_compare(change, first=None, second=None):
+    """The two versions a diff compares, as (label, commit) pairs.
+
+    Without patch sets given: the latest patch set against the current
+    commit if it changed since, else the last two patch sets, else the only
+    patch set against its parent ("base").
+    first can be "base" too: the parent of the second version, which shows
+    the whole change as of that version. Either can be "latest".
+    """
+    latest = change.latest_patch_set()
+    first, second = (
+        (str(latest) if latest else CURRENT) if LATEST == version else version
+        for version in (first, second))
+
+    def commit_of(version):
+        if CURRENT == version:
+            return change.commit
+        if int(version) not in change.patch_sets:
+            raise ChangeError(f'{change.short_id()} has no patch set {version}')
+        return change.patch_sets[int(version)]
+
+    if first is None:
+        if 0 == latest:
+            return (BASE, f'{change.commit}^'), (CURRENT, change.commit)
+        if change.is_uploaded():
+            if latest < 2:
+                return (BASE, f'{change.commit}^'), (str(latest), change.commit)
+            first, second = str(latest - 1), str(latest)
+        else:
+            first, second = str(latest), CURRENT
+    elif second is None:
+        second = CURRENT
+    if BASE == second:
+        raise ChangeError('base can only be the first of the two versions')
+    if BASE == first:
+        # The second version's own parent, so a rebase between patch sets
+        # doesn't bring other commits into the diff
+        new = commit_of(second)
+        return (BASE, f'{new}^'), (second, new)
+    return (first, commit_of(first)), (second, commit_of(second))
+
+
+def diff_command(change, first=None, second=None, tool=False, path=None):
+    """The git command showing the diff between two versions of a change.
+
+    path limits the diff to one file. Without it, the diff covers the files
+    the change touches in either version.
+    """
+    (_first, old), (_second, new) = versions_to_compare(change, first, second)
+    if path:
+        files = [path]
+    else:
+        files = sorted(set(files_of(new)) | (set() if old.endswith('^') else set(files_of(old))))
+    command = ['difftool', '-y'] if tool else ['diff']
+    return ['git', *command, old, new, '--', *files]
+
+
+def range_diff_command(change, first=None, second=None):
+    """The git command showing the range-diff between two versions."""
+    if BASE in (first, second):
+        raise ChangeError('a range-diff needs two patch sets, not base')
+    (_first, old), (_second, new) = versions_to_compare(change, first, second)
+    # Both sides hold one commit each, which are versions of the same change.
+    # The creation factor makes range-diff pair them even after big edits.
+    return ['git', 'range-diff', '--creation-factor=100', f'{old}^!', f'{new}^!']
+
+
+# ── the author's side: inbox and watch ────────────────────────────────────
+
+def repository_name(repository):
+    """Name of a repository for short messages: its directory's name."""
+    return Path(git('rev-parse', '--show-toplevel', repository=repository)).name
+
+
+def inbox_lines(repositories):
+    """What the author has to answer or apply, as short lines.
+
+    Only unanswered threads and pending requests, each thread with the
+    quoted source line, so the author needs nothing else to start.
+    """
+    lines = []
+    for repository in repositories:
+        name = repository_name(repository)
+        for change in changes_in_stack(repository):
+            for request in change.pending_requests():
+                target = f'#{request.comment}' if APPLY == request.type else 'all agreed'
+                lines.append(f'{request.type} {name} {change.short_id()} {target}')
+            for comment in change.comments:
+                if not comment.is_unanswered():
+                    continue
+                commit = change.patch_sets.get(comment.patch_set, change.commit)
+                quoted = line_at(commit, comment.place, repository, comment.side)
+                lines.append(f'{name} {change.short_id()} #{comment.number} {comment.place_label()}'
+                             + (f'  | {quoted}' if quoted else ''))
+                sent = [message for message in comment.messages if message.sent]
+                lines.append(f'    {sent[-1].text}')
+    return lines
+
+
+def events_of(repository):
+    """Everything sent or requested in a repository, as event keys."""
+    events = set()
+    for change in changes_in_stack(repository):
+        for comment in change.comments:
+            for index, message in enumerate(comment.messages):
+                if message.sent and REVIEWER == message.author:
+                    events.add(('message', change.change_id, comment.number, index))
+        for index, request in enumerate(change.requests):
+            if not request.handled:
+                events.add((request.type, change.change_id, request.comment, index))
+    return events
+
+
+def watch(repositories, output=sys.stdout):
+    """Prints one line per change with new sent messages or apply requests.
+
+    Runs until stopped. It only looks closer when a notes ref changed, and it
+    prints nothing else, so watching costs nothing while nothing happens.
+    """
+    versions = {repository: notes_version(repository) for repository in repositories}
+    known = {repository: events_of(repository) for repository in repositories}
+    while True:
+        time.sleep(WATCH_INTERVAL_SECONDS)
+        for repository in repositories:
+            version = notes_version(repository)
+            if version == versions[repository]:
+                continue
+            versions[repository] = version
+            events = events_of(repository)
+            new = events - known[repository]
+            known[repository] = events
+            name = repository_name(repository)
+            new_messages = {}
+            for event in sorted(new, key=str):
+                if 'message' == event[0]:
+                    new_messages[event[1]] = new_messages.get(event[1], 0) + 1
+                elif APPLY == event[0]:
+                    print(f'apply {name} {event[1][:8]} #{event[2]}', file=output, flush=True)
+                else:
+                    print(f'apply-all {name} {event[1][:8]}', file=output, flush=True)
+            for change_id, count in new_messages.items():
+                print(f'review {name} {change_id[:8]}: {count} new', file=output, flush=True)
+
+
+# ── command line ──────────────────────────────────────────────────────────
+
+def comment_counts(change):
+    """Thread counts per status for display, like "2 open, 1 done"."""
+    sent = [comment for comment in change.comments if not comment.is_draft()]
+    counts = [f'{sum(status == comment.status for comment in sent)} {status}'
+              for status in STATUSES if any(status == comment.status for comment in sent)]
+    drafts = sum(comment.has_draft() for comment in change.comments)
+    if drafts:
+        counts.append(f'{drafts} draft' + ('s' if drafts > 1 else ''))
+    return ', '.join(counts) or '-'
+
+
+def version_label(change):
+    """Patch set label for display: PS2, PS2+ if changed since, - if none."""
+    if not change.latest_patch_set():
+        return '-'
+    return f'PS{change.latest_patch_set()}' + ('' if change.is_uploaded() else '+')
+
+
+def print_overview(_arguments):
+    """Prints the changes of every review branch, stack by stack."""
+    changes = changes_in_stack()
+    if not changes:
+        print(f'Nothing in review: no changes on {REVIEW_BRANCH_PREFIX}* branches.')
+        return
+    branch = None
+    for index, change in enumerate(changes, start=1):
+        if change.branch != branch:
+            branch = change.branch
+            print(f'{branch}')
+        print(f'{index:>4}  {change.short_id()}  {change.state():<10} {version_label(change):<5} '
+              f'{change.subject:<48.48}  {comment_counts(change)}')
+
+
+def print_comments(arguments):
+    """Prints the threads of a change."""
+    change = find_change(arguments.change)
+    print(f'{change.short_id()} ({change.state()}): {change.subject}')
+    if not change.comments:
+        print('No comments.')
+    for comment in change.comments:
+        print(f'\n#{comment.number} [{comment.status}] {comment.place_label()} '
+              f'(PS{comment.patch_set})')
+        for message in comment.messages:
+            draft = ' (draft)' if not message.sent else ''
+            print(f'  {message.author}{draft}: {message.text}')
+
+
+def run_tui(_arguments):
+    """Starts the terminal user interface."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import git_change_tui  # pylint: disable=import-outside-toplevel
+    git_change_tui.run(sys.modules[__name__])
+
+
+def parse_arguments(argv):
+    """Parses the command line."""
+    parser = argparse.ArgumentParser(prog='git change', description=__doc__.split('\n')[0])
+    parser.set_defaults(run=run_tui)
+    commands = parser.add_subparsers()
+
+    def command(name, run, help_text, *arguments):
+        """Adds a sub-command. Arguments are names or (name, options)."""
+        sub = commands.add_parser(name, help=help_text)
+        for argument in arguments:
+            if isinstance(argument, tuple):
+                sub.add_argument(argument[0], **argument[1])
+            else:
+                sub.add_argument(argument)
+        sub.set_defaults(run=run)
+        return sub
+
+    def init_command(_arguments):
+        init_repository()
+        print('commit-msg hook installed, notes follow amends and rebases')
+
+    def upload_command(arguments):
+        change = find_change(arguments.change)
+        print(f'{change.short_id()}: patch set {upload(change.change_id)}, In-Review')
+
+    def submit_command(arguments):
+        submitted = submit(find_change(arguments.change).change_id)
+        print('Submitted: ' + ', '.join(change.short_id() for change in submitted))
+
+    def comment_command(arguments):
+        change = find_change(arguments.change)
+        number = add_comment(change.change_id, arguments.place, arguments.text)
+        print(f'{change.short_id()}: comment #{number} added')
+
+    def reply_command(arguments):
+        add_message(find_change(arguments.change).change_id, arguments.number, AUTHOR,
+                    arguments.text)
+
+    def status_command(arguments):
+        set_status(find_change(arguments.change).change_id, arguments.number, arguments.status,
+                   arguments.text)
+
+    def diff_run(arguments):
+        change = find_change(arguments.change)
+        subprocess.run(diff_command(change, arguments.first, arguments.second, arguments.tool))
+
+    def range_diff_run(arguments):
+        change = find_change(arguments.change)
+        subprocess.run(range_diff_command(change, arguments.first, arguments.second))
+
+    def inbox_command(arguments):
+        print('\n'.join(inbox_lines(arguments.repositories or ['.'])) or 'Nothing to answer.')
+
+    def watch_command(arguments):
+        with contextlib.suppress(KeyboardInterrupt):
+            watch(arguments.repositories or ['.'])
+
+    def hook_command(arguments):
+        add_change_id(arguments.message_file)
+
+    optional = {'nargs': '?'}
+    number = ('number', {'type': int})
+    repositories = ('repositories', {'nargs': '*'})
+    command('init', init_command, 'set up this repository')
+    command('list', print_overview, 'overview of the stack')
+    command('show', print_comments, 'threads of a change', 'change')
+    command('upload', upload_command, 'upload the next patch set', 'change')
+    command('submit', submit_command, 'end the review', 'change')
+    command('diff', diff_run, 'diff between patch sets', 'change', ('first', optional),
+            ('second', optional)).add_argument('--tool', action='store_true')
+    command('rdiff', range_diff_run, 'range-diff between patch sets', 'change',
+            ('first', optional), ('second', optional))
+    command('comment', comment_command, 'add a reviewer comment', 'change', 'place', 'text')
+    command('reply', reply_command, 'answer a thread', 'change', number, 'text')
+    command('status', status_command, "set a thread's status", 'change', number,
+            ('status', {'choices': STATUSES}), ('text', optional))
+    command('inbox', inbox_command, 'what to answer or apply', repositories)
+    command('watch', watch_command, 'print new messages and requests', repositories)
+    hook = commands.add_parser('commit-msg-hook', help=argparse.SUPPRESS)
+    hook.add_argument('message_file')
+    hook.set_defaults(run=hook_command)
+
+    return parser.parse_args(argv)
+
+
+def main(argv):
+    """Runs one command. Returns the exit code."""
+    arguments = parse_arguments(argv)
+    try:
+        arguments.run(arguments)
+    except ChangeError as error:
+        print(f'git change: {error}', file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))
