@@ -633,6 +633,32 @@ def read_note(commit, repository=None):
     return json.loads(text) if text else {}
 
 
+def read_notes(commits, repository=None):
+    """The review notes of several commits: commit -> dict, with two git
+    calls for all of them.
+    """
+    if not commits:
+        return {}
+    blobs = {}
+    output = git('notes', f'--ref={NOTES_REF}', 'list', check=False, repository=repository)
+    for line in filter(None, output.split('\n')):
+        blob, commit = line.split(' ')
+        blobs[commit] = blob
+    wanted = [(commit, blobs[commit]) for commit in commits if commit in blobs]
+    if not wanted:
+        return {}
+    command = ['git', *(['-C', str(repository)] if repository else []), 'cat-file', '--batch']
+    data = subprocess.run(command, input=''.join(f'{blob}\n' for _, blob in wanted).encode(),
+                          capture_output=True, check=True).stdout
+    notes = {}
+    for commit, _ in wanted:
+        header, data = data.split(b'\n', 1)
+        size = int(header.split()[2])
+        notes[commit] = json.loads(data[:size].decode('utf-8', errors='replace') or '{}')
+        data = data[size + 1:]
+    return notes
+
+
 def write_note(commit, note, repository=None):
     """Stores the review note of a commit."""
     git('notes', f'--ref={NOTES_REF}', 'add', '-f', '-F', '-', commit,
@@ -648,6 +674,23 @@ def patch_sets_of(change_id, repository=None):
         ref, commit = line.split(' ')
         patch_sets[int(ref.rsplit('/', 1)[1])] = commit
     return patch_sets
+
+
+def renames_of(commit, repository=None):
+    """Files a commit renamed: new path -> old path."""
+    output = git('diff-tree', '--no-commit-id', '-M', '-r', '--root', '--name-status', '-z',
+                 commit, repository=repository)
+    fields = output.split('\0')
+    renames = {}
+    index = 0
+    while index < len(fields) and fields[index]:
+        status = fields[index]
+        if status.startswith(('R', 'C')):
+            renames[fields[index + 2]] = fields[index + 1]
+            index += 3
+        else:
+            index += 2
+    return renames
 
 
 def files_of(commit, repository=None):
@@ -831,9 +874,12 @@ def add_change_id(message_path):
 
 # ── changes ───────────────────────────────────────────────────────────────
 
-def change_from(commit, topic, note, repository=None):
-    """Builds a Change from a commit of a stack and its note."""
-    change_id = change_id_of(commit, repository)
+def change_from(commit, topic, note, repository=None, change_id=None, subject=None,
+                patch_sets=None):
+    """Builds a Change from a commit of a stack and its note. change_id,
+    subject and patch_sets are read from git unless given.
+    """
+    change_id = change_id or change_id_of(commit, repository)
     comments = []
     for comment in note.get('comments', []):
         messages = [Message(**message) for message in comment.pop('messages', [])]
@@ -848,10 +894,12 @@ def change_from(commit, topic, note, repository=None):
         comments.append(Comment(**comment, messages=messages))
     return Change(change_id=change_id,
                   commit=commit,
-                  subject=git('log', '-1', '--format=%s', commit, repository=repository),
+                  subject=subject if subject is not None else git(
+                      'log', '-1', '--format=%s', commit, repository=repository),
                   topic=topic,
                   comments=comments,
-                  patch_sets=patch_sets_of(change_id, repository),
+                  patch_sets=(patch_sets if patch_sets is not None
+                              else patch_sets_of(change_id, repository)),
                   votes=[Vote(**vote) for vote in note.get('votes', [])],
                   verified_required=note.get('verified_required', False),
                   rebase_requested=note.get('rebase_requested', False),
@@ -882,13 +930,28 @@ def changes_in_stack(repository=None):
     within a stack.
     """
     ensure_layout(repository)
-    changes = []
+    # A few git calls for all changes, not several per change
+    all_patch_sets = {}
+    output = git('for-each-ref', '--format=%(refname) %(objectname)', PATCH_SET_PREFIX,
+                 repository=repository)
+    for line in filter(None, output.split('\n')):
+        ref, commit = line.split(' ')
+        change_id, number = ref[len(PATCH_SET_PREFIX):].rsplit('/', 1)
+        all_patch_sets.setdefault(change_id, {})[int(number)] = commit
+    stacks = []
+    base = base_branch(repository)
     for topic in topics(repository):
-        for commit in stack_commits(topic, repository):
-            if change_id_of(commit, repository) is not None:
-                changes.append(change_from(commit, topic, read_note(commit, repository),
-                                           repository))
-    return changes
+        output = git('log', '--reverse', '--format=%H%x1f%s%x1f%B%x1e',
+                     f'{base}..{stack_ref(topic)}', check=False, repository=repository)
+        for entry in filter(str.strip, output.split('\x1e')):
+            commit, subject, body = entry.strip('\n').split('\x1f', 2)
+            match = CHANGE_ID_PATTERN.search(body)
+            if match:
+                stacks.append((topic, commit, subject, match.group(1)))
+    notes = read_notes([commit for _, commit, _, _ in stacks], repository)
+    return [change_from(commit, topic, notes.get(commit, {}), repository, change_id, subject,
+                        all_patch_sets.get(change_id, {}))
+            for topic, commit, subject, change_id in stacks]
 
 
 def find_change(reference, repository=None):
@@ -1543,23 +1606,33 @@ def diff_command(change, first=None, second=None, tool=False, path=None):
     return ['git', *command, old, new, '--', *files]
 
 
-def edits_of(old, new, path, repository=None):
+# Gerrit's whitespace modes and the git diff options for them
+WHITESPACE_OPTIONS = {'none': (), 'trailing': ('--ignore-space-at-eol',),
+                      'changed': ('--ignore-space-change',), 'all': ('--ignore-all-space',)}
+WHITESPACE_MODES = tuple(WHITESPACE_OPTIONS)
+
+
+def edits_of(old, new, path, repository=None, old_path=None, whitespace='none'):
     """The edits of a file's diff: [(old begin, old end, new begin, new
     end)], line ranges counted from 1, the end not included. An insertion
-    has an empty old range, a deletion an empty new range.
+    has an empty old range, a deletion an empty new range. old_path is the
+    file's path in old if it was renamed. whitespace is one of Gerrit's
+    modes, see WHITESPACE_OPTIONS.
     """
     # Histogram is the algorithm of JGit, so the edits are the ones Gerrit
     # shows. The options make the user's diff settings not count.
     options = ('--no-color', '--no-ext-diff', '--no-textconv', '--no-renames', '--histogram',
-               '-U0')
-    output = git('diff', *options, old, new, '--', path, repository=repository)
-    if output.count('diff --git ') > 1:
+               '-U0', *WHITESPACE_OPTIONS.get(whitespace, ()))
+    output = '' if old_path else git('diff', *options, old, new, '--', path,
+                                     repository=repository)
+    if old_path or output.count('diff --git ') > 1:
         # A file that became a symbolic link or the other way round is a
         # deletion and an addition to git. Its lines are diffed as blobs.
-        blobs = [git('rev-parse', '--verify', '--quiet', f'{version}:{path}', check=False,
-                     repository=repository)
+        # A renamed file is diffed the same way.
+        blobs = [git('rev-parse', '--verify', '--quiet', f'{version}:{version_path}',
+                     check=False, repository=repository)
                  or git('hash-object', '-w', '--stdin', input_text='', repository=repository)
-                 for version in (old, new)]
+                 for version, version_path in ((old, old_path or path), (new, path))]
         output = git('diff', *options, *blobs, repository=repository)
     edits = []
     for match in re.finditer(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@', output, re.MULTILINE):
@@ -1701,15 +1774,32 @@ def expand_gaps(rows, starts, old_lines, new_lines):
     return result
 
 
-def file_diff_rows(change, first=None, second=None, path=None, context=None, repository=None):
+def old_path_of(change, first, second, path, repository=None):
+    """The path of a file in the older of two versions, if the change
+    renamed it there and the older version doesn't have it. Else None.
+    """
+    old, new, _ = diff_endpoints(change, first, second, path, repository)
+    if COMMIT_MSG == path or file_lines(old, path, repository) != []:
+        return None
+    # Renamed by the change: the new version's own rename
+    source = renames_of(new, repository).get(path)
+    return source if source and file_lines(old, source, repository) else None
+
+
+def file_diff_rows(change, first=None, second=None, path=None, context=None, repository=None,
+                   whitespace='none'):
     """The side by side rows of one file's diff between two versions of a
-    change, None if the file is binary.
+    change, None if the file is binary. A renamed file is diffed against its
+    old path. whitespace is one of WHITESPACE_MODES.
     """
     old, new, paths = diff_endpoints(change, first, second, path, repository)
-    old_lines, new_lines = (file_lines(version, paths[0], repository) for version in (old, new))
+    old_path = old_path_of(change, first, second, paths[0], repository)
+    old_lines = file_lines(old, old_path or paths[0], repository)
+    new_lines = file_lines(new, paths[0], repository)
     if old_lines is None or new_lines is None:
         return None
-    return side_by_side_rows(old_lines, new_lines, edits_of(old, new, paths[0], repository),
+    return side_by_side_rows(old_lines, new_lines,
+                             edits_of(old, new, paths[0], repository, old_path, whitespace),
                              context)
 
 
@@ -1801,7 +1891,7 @@ def repository_name(repository):
     return Path(git('rev-parse', '--show-toplevel', repository=repository)).name
 
 
-def inbox_lines(repositories):
+def inbox_lines(repositories, topic=None):
     """What the author has to answer, as short lines.
 
     Only rebase requests, negative votes and unanswered unresolved threads,
@@ -1812,6 +1902,8 @@ def inbox_lines(repositories):
     for repository in repositories:
         name = repository_name(repository)
         for change in changes_in_stack(repository):
+            if topic and topic != change.topic:
+                continue
             if change.rebase_requested:
                 lines.append(f'rebase {name} {change.topic}: conflicts with '
                              f'{base_branch(repository)}, rebase locally and upload')
@@ -1836,10 +1928,11 @@ def inbox_lines(repositories):
     return lines
 
 
-def events_of(repository):
+def events_of(repository, topic=None):
     """Everything sent, voted or rebased in a repository, as event keys."""
     events = set()
-    changes = changes_in_stack(repository)
+    changes = [change for change in changes_in_stack(repository)
+               if not topic or topic == change.topic]
     for change in changes:
         for comment in change.comments:
             for index, message in enumerate(comment.messages):
@@ -1860,15 +1953,17 @@ def events_of(repository):
     return events
 
 
-def stacks_of(repository):
+def stacks_of(repository, topic=None):
     """The changes of each stack: topic -> {Change-Id: commit}."""
     stacks = {}
     for change in changes_in_stack(repository):
+        if topic and topic != change.topic:
+            continue
         stacks.setdefault(change.topic, {})[change.change_id] = change.commit
     return stacks
 
 
-def watch(repositories, output=sys.stdout):
+def watch(repositories, output=sys.stdout, topic=None):
     """Prints one line per change with new sent messages, one per vote, and
     one per stack that was submitted, rebased or needs a rebase.
 
@@ -1877,8 +1972,8 @@ def watch(repositories, output=sys.stdout):
     nothing happens.
     """
     versions = {repository: stack_version(repository) for repository in repositories}
-    known = {repository: events_of(repository) for repository in repositories}
-    stacks = {repository: stacks_of(repository) for repository in repositories}
+    known = {repository: events_of(repository, topic) for repository in repositories}
+    stacks = {repository: stacks_of(repository, topic) for repository in repositories}
     while True:
         time.sleep(WATCH_INTERVAL_SECONDS)
         for repository in repositories:
@@ -1886,7 +1981,7 @@ def watch(repositories, output=sys.stdout):
             if version == versions[repository]:
                 continue
             versions[repository] = version
-            events = events_of(repository)
+            events = events_of(repository, topic)
             new = events - known[repository]
             known[repository] = events
             name = repository_name(repository)
@@ -1895,7 +1990,7 @@ def watch(repositories, output=sys.stdout):
                 print(line, file=output, flush=True)
 
             # Changes that left a stack and are on the base branch now
-            now = stacks_of(repository)
+            now = stacks_of(repository, topic)
             base = base_branch(repository)
             for topic, before in stacks[repository].items():
                 gone = [commit for change_id, commit in before.items()
@@ -2115,11 +2210,12 @@ def parse_arguments(argv):
         subprocess.run(range_diff_command(change, arguments.first, arguments.second))
 
     def inbox_command(arguments):
-        print('\n'.join(inbox_lines(arguments.repositories or ['.'])) or 'Nothing to answer.')
+        print('\n'.join(inbox_lines(arguments.repositories or ['.'], arguments.topic))
+              or 'Nothing to answer.')
 
     def watch_command(arguments):
         with contextlib.suppress(KeyboardInterrupt):
-            watch(arguments.repositories or ['.'])
+            watch(arguments.repositories or ['.'], topic=arguments.topic)
 
     def guide_command(_arguments):
         print(guide_text(), end='')
@@ -2163,8 +2259,10 @@ def parse_arguments(argv):
     vote.add_argument('-m', '--message')
     command('require-verified', require_verified_command, 'whether Verified+1 is needed',
             'change', ('state', {'nargs': '?', 'choices': ('on', 'off'), 'default': 'on'}))
-    command('inbox', inbox_command, 'what to answer', repositories)
-    command('watch', watch_command, 'print new messages and votes', repositories)
+    command('inbox', inbox_command, 'what to answer', repositories).add_argument(
+        '--topic', help='only this stack, e.g. for one of several agents')
+    command('watch', watch_command, 'print new messages and votes', repositories).add_argument(
+        '--topic', help='only this stack')
     command('guide', guide_command, 'the guide for agents as authors')
     config = command('config', config_command, 'show or change a setting', ('key', optional),
                      ('value', optional))

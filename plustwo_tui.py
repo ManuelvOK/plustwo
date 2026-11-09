@@ -110,6 +110,8 @@ ACTIONS = (
     ('fold-all', 'Change', 'fold all', 'fold all threads, or unfold all if all are folded'),
     ('reviewed', 'Change', 'reviewed', 'mark the file reviewed, or unmark it. The mark stays while '
      'the file\'s diff stays the same.'),
+    ('whitespace', 'Change', 'whitespace', 'which whitespace changes the diff ignores, like '
+     'Gerrit: none, trailing, changed, all'),
     ('side-old', 'Change', 'old side', 'in the diff: the cursor to the old side, comments go there'),
     ('side-new', 'Change', 'new side', 'in the diff: the cursor to the new side'),
     ('reply', 'Threads', 'reply', 'reply to the thread, as a draft'),
@@ -136,7 +138,7 @@ VIM_KEYS = {
     'comment': 'c', 'file-comment': 'C', 'more-context': '+,=', 'less-context': '-',
     'vimdiff': 't', 'patch-sets': 'p', 'fold-all': 'i',
     'reply': 'r', 'edit-draft': 'e', 'done': 'y', 'ack': 'Y', 'resolve': 'x', 'send': 's',
-    'approve': 'A', 'next-turn': 'T', 'reviewed': 'm', 'side-old': '<', 'side-new': '>',
+    'whitespace': 'W', 'approve': 'A', 'next-turn': 'T', 'reviewed': 'm', 'side-old': '<', 'side-new': '>',
 }
 PRESETS = {
     'vim': VIM_KEYS,
@@ -383,6 +385,10 @@ class Interface:
         self.colour_pairs = ColourPairs()
         # Index into CONTEXT_STEPS, kept for all changes
         self.context_step = 0
+        # Gerrit's whitespace mode of the diff, one of core.WHITESPACE_MODES
+        self.whitespace = core.setting('diff.whitespace', 'none')
+        if self.whitespace not in core.WHITESPACE_MODES:
+            self.whitespace = 'none'
 
     # ── state shared by the views ─────────────────────────────────────────
 
@@ -1506,7 +1512,7 @@ class DiffPane:
         # Whether the diff has lines from below, and lines partly from below
         self.marks_from_below = (False, False)
 
-    def show(self, core, change, compare, path, width, context):
+    def show(self, core, change, compare, path, width, context, whitespace='none'):
         """Renders the diff of a file with context lines around the changes
         (None: the whole file), unless it is rendered already. The threads
         come with arrange(), call it after this.
@@ -1514,14 +1520,16 @@ class DiffPane:
         if self._path != path:
             self.expanded_gaps = set()
         key = (path, core.versions_to_compare(change, *compare), width, context,
-               frozenset(self.expanded_gaps))
+               frozenset(self.expanded_gaps), whitespace)
         if key == self._key:
             return
         is_other_file = self._path != path
         self._key = key
         self._path = path
         old, new, paths = core.diff_endpoints(change, *compare, path=path)
-        rows = core.file_diff_rows(change, *compare, path=path, context=context)
+        rows = core.file_diff_rows(change, *compare, path=path, context=context,
+                                   whitespace=whitespace)
+        old_path = core.old_path_of(change, *compare, paths[0]) or paths[0]
         from_below, partly = core.rebase_lines(change, *compare, path=path)
         marks = ((from_below[0], partly[0]), (from_below[1], partly[1]))
         if rows is None:
@@ -1532,9 +1540,9 @@ class DiffPane:
                           False, False, None)]
         else:
             if self.expanded_gaps and any(row.skipped for row in rows):
-                rows = core.expand_gaps(rows, self.expanded_gaps,
-                                        core.file_lines(old, paths[0]), core.file_lines(new, paths[0]))
-            colours = [self._colours(core, version, paths[0]) for version in (old, new)]
+                rows = core.expand_gaps(rows, self.expanded_gaps, core.file_lines(old, old_path),
+                                        core.file_lines(new, paths[0]))
+            colours = [self._colours(core, old, old_path), self._colours(core, new, paths[0])]
             rendered = rendered_rows(core, rows, width, colours, marks)
         self._gaps = [gap for *_, gap in rendered]
         self._diff_lines = [segments for segments, *_ in rendered]
@@ -1884,6 +1892,7 @@ class ChangeView:
         self._layout = None
         # Threads folded or unfolded by hand: number -> expanded
         self._expanded = {}
+        self._renames = {}
 
     def footer(self):
         """The focused pane's actions, then the ones of the whole change."""
@@ -1896,7 +1905,10 @@ class ChangeView:
             if change.change_id == self._change_id:
                 self._change = change
                 # The commit message comes first, like in Gerrit.
-                self._files = [core.COMMIT_MSG] + sorted(core.files_of(change.commit))
+                # A renamed file is listed once, under its new name.
+                self._renames = core.renames_of(change.commit)
+                self._files = [core.COMMIT_MSG] + sorted(
+                    set(core.files_of(change.commit)) - set(self._renames.values()))
                 self._file_index = min(self._file_index, max(len(self._files) - 1, 0))
                 self._comment_index = min(self._comment_index, max(len(change.comments) - 1, 0))
                 self._diff.forget()
@@ -1982,7 +1994,7 @@ class ChangeView:
             selected = index == self._file_index
             attributes = curses.A_REVERSE if selected and FILES == self._focus else (
                 curses.A_BOLD if selected else 0)
-            name = file_label(core, path)
+            name = file_label(core, path, self._renames)
             out(top + index, left, '✓ ' if reviewed[index] else '  ',
                 attributes | curses.color_pair(2), left + width)
             out(top + index, left + 2, f'{name:<{width - 2}.{width - 2}}', attributes, left + width)
@@ -2024,12 +2036,15 @@ class ChangeView:
         path = self._selected_file()
         context = CONTEXT_STEPS[self._interface.context_step]
         context_label = 'whole file' if context is None else f'context {context}'
+        if 'none' != self._interface.whitespace:
+            context_label += f', whitespace: ignore {self._interface.whitespace}'
         if path:
             self._prepare_diff()
         below = ''.join(legend for legend, shown in zip(
             (', blue: from changes below', ', purple: partly from below'),
             self._diff.marks_from_below) if shown)
-        self._frame(DIFF, f'{file_label(self._interface.core, path)}  ({context_label}{below})'
+        self._frame(DIFF, f'{file_label(self._interface.core, path, self._renames)}  '
+                    f'({context_label}{below})'
                     if path else 'Diff')
         top, left, height, width = self._layout[DIFF]
         if not path:
@@ -2099,7 +2114,7 @@ class ChangeView:
         width = self._layout[DIFF][3] - 2
         core = self._interface.core
         self._diff.show(core, self._change, self._compare, path, width,
-                        CONTEXT_STEPS[self._interface.context_step])
+                        CONTEXT_STEPS[self._interface.context_step], self._interface.whitespace)
         blocks = {}
         signature = [path, width]
         for comment in self._change.comments:
@@ -2248,6 +2263,10 @@ class ChangeView:
                 self._diff.cursor) is not None:
             # Like in Gerrit, a gap of common lines opens.
             self._diff.expanded_gaps.add(self._diff.gap_at(self._diff.cursor))
+        elif 'whitespace' == action:
+            modes = core.WHITESPACE_MODES
+            interface.whitespace = modes[(modes.index(interface.whitespace) + 1) % len(modes)]
+            interface.say(f'Whitespace: ignore {interface.whitespace}.')
         elif action in ('side-old', 'side-new'):
             self._diff.side = 'old' if 'side-old' == action else 'new'
         elif 'reviewed' == action and self._selected_file():
@@ -2403,9 +2422,13 @@ class ChangeView:
         interface.say(f'Draft saved. {interface.keymap.label("send")} sends all drafts.')
 
 
-def file_label(core, path):
-    """A file's name for display. The commit message has no path."""
-    return 'Commit message' if core.COMMIT_MSG == path else path
+def file_label(core, path, renames=None):
+    """A file's name for display. The commit message has no path, a renamed
+    file shows its old path too.
+    """
+    if core.COMMIT_MSG == path:
+        return 'Commit message'
+    return f'{renames[path]} → {path}' if renames and path in renames else path
 
 
 def reply_to_thread(interface, change_id, comment, anchor=None):
