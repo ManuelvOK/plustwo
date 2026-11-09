@@ -67,6 +67,8 @@ Usage:
     git change watch [REPO...]          prints one line per change with new
                                         sent messages, and per vote, until
                                         stopped
+    git change guide                    the guide for agents working as the
+                                        author (AGENTS.md)
 
 CHANGE is a change's number in the overview (counted over all stacks) or a
 unique prefix of its Change-Id (like I3f2a). A and B are patch set
@@ -1249,6 +1251,17 @@ def print_comments(arguments):
             print(f'  {message.author}{draft}: {message_text(message)}')
 
 
+def guide_text():
+    """The guide for agents working as the author, AGENTS.md next to the
+    script (links resolved, like the interface's module).
+    """
+    path = Path(__file__).resolve().parent / 'AGENTS.md'
+    try:
+        return path.read_text()
+    except OSError as error:
+        raise ChangeError(f'cannot read the guide: {error}') from error
+
+
 def run_tui(_arguments):
     """Starts the terminal user interface."""
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -1334,6 +1347,9 @@ def parse_arguments(argv):
         with contextlib.suppress(KeyboardInterrupt):
             watch(arguments.repositories or ['.'])
 
+    def guide_command(_arguments):
+        print(guide_text(), end='')
+
     def hook_command(arguments):
         add_change_id(arguments.message_file)
 
@@ -1371,6 +1387,7 @@ def parse_arguments(argv):
             'change', ('state', {'nargs': '?', 'choices': ('on', 'off'), 'default': 'on'}))
     command('inbox', inbox_command, 'what to answer', repositories)
     command('watch', watch_command, 'print new messages and votes', repositories)
+    command('guide', guide_command, 'the guide for agents as authors')
     hook = commands.add_parser('commit-msg-hook', help=argparse.SUPPRESS)
     hook.add_argument('message_file')
     hook.set_defaults(run=hook_command)

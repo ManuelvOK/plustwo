@@ -5,11 +5,12 @@ and the docstring at the top of `git-change` for every command.
 
 ## Files
 
-| File                | Content                                                  |
-|---------------------|----------------------------------------------------------|
-| `git-change`        | core and command line (Python, no dependencies)          |
-| `git_change_tui.py` | curses interface for the reviewer, imported by the core  |
-| `Makefile`          | `check`, `install`, `link`, `uninstall`                  |
+| File                | Content                                                    |
+|---------------------|------------------------------------------------------------|
+| `git-change`        | core and command line (Python, no dependencies)            |
+| `git_change_tui.py` | curses interface for the reviewer, imported by the core    |
+| `AGENTS.md`         | guide for agents as authors, printed by `git change guide` |
+| `Makefile`          | `check`, `install`, `link`, `uninstall`                    |
 
 ## Design rules
 

@@ -22,7 +22,9 @@ diffs and inline threads. The author answers and applies on the command line
 branch, so it only ever gets reviewed commits.
 
 Threads work like in Gerrit: unresolved or resolved, and the author answers
-"Done" after fixing.
+"Done" after fixing. AI agents working as the author find their guide in
+[AGENTS.md](AGENTS.md), also printed by `git change guide`, so a project's
+agent instructions only need to point to that command.
 
 ## Requirements
 
