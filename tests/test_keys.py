@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Checks of the interface's keys: the presets, counts, sequences and the
 reviewer's own keys.
 """

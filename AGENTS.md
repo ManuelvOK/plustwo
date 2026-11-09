@@ -47,11 +47,13 @@ touches your branch. `plustwo pull` brings it in.
 
    After `submitted` or `rebased`, run `plustwo pull` in the branch
    before working on. After `rebase`, rebase the branch onto the base
-   yourself, resolve the conflicts and upload.
-2. On an event, run `plustwo inbox <REPO>...`. It lists every unresolved
-   thread whose last message is the reviewer's, with the quoted source line,
-   and negative votes with the end of their message. `plustwo show
-   <CHANGE>` gives all threads of a change.
+   yourself, resolve the conflicts and upload. With several agents on one
+   repository, each watches only its own stack: `--topic <topic>`.
+2. On an event, run `plustwo inbox <REPO>...` (also takes `--topic`). It
+   lists every unresolved thread whose last message is the reviewer's, with
+   the quoted source line, the reviewer's message on the whole change
+   (place `/PATCHSET_LEVEL`), and negative votes with the end of their
+   message. `plustwo show <CHANGE>` gives all threads of a change.
 3. Work through all threads of the batch before answering (see below).
 4. Fold each fix into the commit it belongs to, not into a new commit:
 

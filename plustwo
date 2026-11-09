@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """plustwo: Gerrit-like review of local commits, with patch sets and notes.
 
 A change is a commit under review. Like in Gerrit, it is identified by the
@@ -784,11 +785,15 @@ def review_lock(repository=None):
 def init_repository():
     """Installs the commit-msg hook and makes notes follow amends and rebases."""
     path = Path(git('rev-parse', '--git-path', 'hooks/commit-msg'))
-    if path.exists() and path.read_text() not in (HOOK_TEXT, *OLD_HOOK_TEXTS):
+    existing = path.read_text(errors='replace') if path.exists() else None
+    # Gerrit's own hook adds the same Change-Id trailer, so it stays.
+    is_gerrit_hook = existing is not None and 'Change-Id' in existing and 'Gerrit' in existing
+    if existing is not None and existing not in (HOOK_TEXT, *OLD_HOOK_TEXTS) and not is_gerrit_hook:
         raise ChangeError(f'{path} exists already and is not ours. Merge it by hand.')
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(HOOK_TEXT)
-    path.chmod(0o755)
+    if not is_gerrit_hook or existing in (HOOK_TEXT, *OLD_HOOK_TEXTS):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(HOOK_TEXT)
+        path.chmod(0o755)
     if NOTES_REF not in git('config', '--get-all', 'notes.rewriteRef', check=False).split('\n'):
         git('config', '--add', 'notes.rewriteRef', NOTES_REF)
 

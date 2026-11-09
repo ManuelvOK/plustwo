@@ -13,6 +13,8 @@ every command.
 | `plustwo_tui.py` | curses interface for the reviewer, imported by the core       |
 | `AGENTS.md`      | guide for agents as authors, printed by `plustwo guide`       |
 | `tests/`         | `make test`: diff rows, flows, settings and keys              |
+| `TESTING.md`     | manual walkthrough for the user, in a throwaway repository    |
+| `LICENSE`        | GPL-3.0-or-later, SPDX line in every source file              |
 | `Makefile`       | `check`, `test`, `install`, `link`, `uninstall`               |
 
 ## Design rules
@@ -44,7 +46,11 @@ every command.
   votes. The latest patch set's note is the review, upload copies it to
   the next one. `rebase_requested` marks a stack the author has to rebase. A message's `unresolved` (true, false or null) sets its thread's
   state, like in Gerrit. Older notes (a `status` per thread, `requests`)
-  are converted when read. `plustwo init` sets `notes.rewriteRef`, so
+  are converted when read. Threads have a stable `id` and numbers that
+  never change. Messages and votes carry a `time`, `uploads` the patch
+  sets' upload times: whose turn it is follows from them. `reviewed` maps
+  files to a hash of their own diff. `/PATCHSET_LEVEL` threads are
+  messages on the whole change. `plustwo init` sets `notes.rewriteRef`, so
   notes follow amends and rebases.
 - Settings: own files in git config syntax, read with `git config --file`:
   `~/.config/plustwo/config` (user) and `.git/plustwo/config` (repository,

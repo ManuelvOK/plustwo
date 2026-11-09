@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Checks of the settings files: where they are read from, which one wins,
 and the move of the old git config change.base.
 

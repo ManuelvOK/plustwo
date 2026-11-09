@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Terminal user interface of plustwo, for the reviewer.
 
 Started by `plustwo` without arguments. Two screens: the stacks in
