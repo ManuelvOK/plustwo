@@ -30,8 +30,8 @@ Usage:
                                         notes setup in this repository
     git change list                     overview of the stacks in review
     git change show CHANGE              comment threads of a change
-    git change diff CHANGE [A [B]]      diff between patch sets (side by side
-                                        with delta). --tool opens vimdiff.
+    git change diff CHANGE [A [B]]      diff between patch sets, shown by
+                                        git's pager. --tool opens vimdiff.
     git change rdiff CHANGE [A [B]]     range-diff between patch sets
     git change upload CHANGE            saves the commit as the next patch
                                         set. Other changes of the stack that
@@ -97,6 +97,7 @@ comments the same way, e.g. on /COMMIT_MSG:7.
 
 import argparse
 import contextlib
+import difflib
 import fcntl
 import hashlib
 import json
@@ -332,7 +333,10 @@ class Change:
 def git(*arguments, input_text=None, check=True, repository=None):
     """Runs git and returns its output without the final newline."""
     command = ['git'] + (['-C', str(repository)] if repository else []) + list(arguments)
-    result = subprocess.run(command, input=input_text, text=True, capture_output=True)
+    # Files need not be UTF-8, so bytes that aren't become replacement
+    # characters instead of an error.
+    result = subprocess.run(command, input=input_text, encoding='utf-8', errors='replace',
+                            capture_output=True)
     if check and 0 != result.returncode:
         raise ChangeError(result.stderr.strip() or f'git {arguments[0]} failed')
     return result.stdout.rstrip('\n')
@@ -997,8 +1001,10 @@ def edits_of(old, new, path, repository=None):
     end)], line ranges counted from 1, the end not included. An insertion
     has an empty old range, a deletion an empty new range.
     """
-    output = git('diff', '--no-color', '--no-ext-diff', '--no-renames', '-U0', old, new, '--',
-                 path, repository=repository)
+    # Histogram is the algorithm of JGit, so the edits are the ones Gerrit
+    # shows. The options make the user's diff settings not count.
+    output = git('diff', '--no-color', '--no-ext-diff', '--no-textconv', '--no-renames',
+                 '--histogram', '-U0', old, new, '--', path, repository=repository)
     edits = []
     for match in re.finditer(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@', output, re.MULTILINE):
         old_start, old_count, new_start, new_count = (
@@ -1008,6 +1014,131 @@ def edits_of(old, new, path, repository=None):
         new_begin = new_start if new_count else new_start + 1
         edits.append((old_begin, old_begin + old_count, new_begin, new_begin + new_count))
     return edits
+
+
+# Kinds of the halves of a side by side row
+CONTEXT = 'context'
+REMOVED = 'removed'
+ADDED = 'added'
+EMPTY = 'empty'
+# Intraline edits are only shown for line pairs at least this similar,
+# else the whole line counts as changed, like in Gerrit
+INTRALINE_MIN_RATIO = 0.5
+
+
+@dataclass
+class Half:
+    """One side of a side by side row: a line of one version of the file,
+    or nothing (EMPTY, number None) where the other side has more lines.
+    edits are the (begin, end) character ranges an intraline diff found.
+    """
+    kind: str
+    number: int | None = None
+    text: str = ''
+    edits: list[tuple[int, int]] = field(default_factory=list)
+
+
+@dataclass
+class Row:
+    """A row of a side by side diff: two halves, or a gap of common lines
+    left out (skipped > 0, the halves give the first line of the gap).
+    """
+    old: Half
+    new: Half
+    skipped: int = 0
+
+
+def file_lines(version, path, repository=None):
+    """The lines of a file in a commit or tree, without line ends. Empty if
+    the file isn't there. None for a binary file. Bytes that aren't UTF-8
+    become replacement characters, so every file can be shown.
+    """
+    command = ['git', *(['-C', str(repository)] if repository else []), 'cat-file', 'blob',
+               f'{version}:{path}']
+    result = subprocess.run(command, capture_output=True)
+    if 0 != result.returncode:
+        # A submodule is a commit, which git diffs as one line like this
+        entry = git('ls-tree', version, '--', path, check=False, repository=repository).split()
+        if entry and '160000' == entry[0]:
+            return [f'Subproject commit {entry[2]}']
+        return []
+    if b'\0' in result.stdout[:8000]:
+        return None
+    text = result.stdout.decode('utf-8', errors='replace')
+    return text.split('\n')[:-1] if text.endswith('\n') else text.split('\n') if text else []
+
+
+def intraline_edits(old, new):
+    """The character ranges that differ between two lines, for each line,
+    or two empty lists when the lines are too different to compare.
+    """
+    matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
+    if matcher.ratio() < INTRALINE_MIN_RATIO:
+        return [], []
+    old_edits, new_edits = [], []
+    for tag, old_begin, old_end, new_begin, new_end in matcher.get_opcodes():
+        if 'equal' == tag:
+            continue
+        if old_end > old_begin:
+            old_edits.append((old_begin, old_end))
+        if new_end > new_begin:
+            new_edits.append((new_begin, new_end))
+    return old_edits, new_edits
+
+
+def side_by_side_rows(old_lines, new_lines, edits, context=None):
+    """Lays out two versions of a file side by side, like Gerrit's diff
+    view. edits are git's, as edits_of() gives them. Each edit's removed
+    and added lines are paired in order, the shorter side filled with empty
+    halves. context is the number of common lines kept around each edit,
+    None for the whole file. Longer runs of common lines become one gap row.
+    """
+    rows = []
+
+    def common(old_begin, new_begin, count, keep_before, keep_after):
+        # Common lines from old_begin and new_begin, counted from 0. Lines
+        # beyond keep_before at the start and keep_after at the end form a gap.
+        if context is None or count <= keep_before + keep_after:
+            keep_before, keep_after = count, 0
+        for offset in range(count):
+            if keep_before <= offset < count - keep_after:
+                if keep_before == offset:
+                    rows.append(Row(Half(CONTEXT, old_begin + offset + 1),
+                                    Half(CONTEXT, new_begin + offset + 1),
+                                    skipped=count - keep_before - keep_after))
+                continue
+            rows.append(Row(Half(CONTEXT, old_begin + offset + 1, old_lines[old_begin + offset]),
+                            Half(CONTEXT, new_begin + offset + 1, new_lines[new_begin + offset])))
+
+    old_at = new_at = 0
+    for old_begin, old_end, new_begin, new_end in edits:
+        keep = 0 if context is None else context
+        common(old_at, new_at, old_begin - 1 - old_at, keep if rows else 0, keep)
+        removed = range(old_begin - 1, old_end - 1)
+        added = range(new_begin - 1, new_end - 1)
+        for pair in range(max(len(removed), len(added))):
+            old = (Half(REMOVED, removed[pair] + 1, old_lines[removed[pair]])
+                   if pair < len(removed) else Half(EMPTY))
+            new = (Half(ADDED, added[pair] + 1, new_lines[added[pair]])
+                   if pair < len(added) else Half(EMPTY))
+            if old.number and new.number:
+                old.edits, new.edits = intraline_edits(old.text, new.text)
+            rows.append(Row(old, new))
+        old_at, new_at = old_end - 1, new_end - 1
+    common(old_at, new_at, len(old_lines) - old_at, 0 if context is None else context, 0)
+    return rows
+
+
+def file_diff_rows(change, first=None, second=None, path=None, context=None, repository=None):
+    """The side by side rows of one file's diff between two versions of a
+    change, None if the file is binary.
+    """
+    old, new, paths = diff_endpoints(change, first, second, path, repository)
+    old_lines, new_lines = (file_lines(version, paths[0], repository) for version in (old, new))
+    if old_lines is None or new_lines is None:
+        return None
+    return side_by_side_rows(old_lines, new_lines, edits_of(old, new, paths[0], repository),
+                             context)
 
 
 def ranges_overlap(first_begin, first_end, second_begin, second_end):

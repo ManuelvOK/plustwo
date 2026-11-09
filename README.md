@@ -28,12 +28,16 @@ agent instructions only need to point to that command.
 
 ## Requirements
 
-| Program  | Used for                                    |
-|----------|---------------------------------------------|
-| Python 3 | everything (tested with 3.14)               |
-| git      | everything                                  |
-| delta    | side by side diffs (`git-delta` on Arch)    |
-| vim      | `t` in the interface and `diff --tool`      |
+| Program  | Used for                                                  |
+|----------|-----------------------------------------------------------|
+| Python 3 | everything (tested with 3.14)                             |
+| git      | everything                                                |
+| bat      | optional: syntax colours in the interface's diff          |
+| vim      | `t` in the interface and `diff --tool`                    |
+
+The interface draws its side by side diff itself, like Gerrit's: git
+computes the edits (histogram algorithm, as JGit), the interface lays them
+out. `make test` checks that layout against git and, if installed, delta.
 
 ## Install
 

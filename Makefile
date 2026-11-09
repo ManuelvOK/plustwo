@@ -2,6 +2,9 @@
 # /usr/local. Use PREFIX=$(HOME)/.local for a per-user one.
 #
 #   make check          compiles the sources, finds syntax errors
+#   make test           checks the diff rendering against git and delta.
+#                       TEST_REPOS=a:b also checks the history of a and b,
+#                       which are only read.
 #   make install        copies the files to $(LIBDIR), links git-change
 #                       into $(BINDIR)
 #   make link           links git-change in this checkout into $(BINDIR),
@@ -17,12 +20,15 @@ LIBDIR = $(PREFIX)/lib/plustwo
 # together and bin only gets a link.
 SOURCES = git-change git_change_tui.py
 
-.PHONY: all check install link uninstall
+.PHONY: all check test install link uninstall
 
 all: check
 
 check:
 	python3 -c 'import sys; [compile(open(f).read(), f, "exec") for f in sys.argv[1:]]' $(SOURCES)
+
+test: check
+	python3 -m unittest discover -s tests
 
 install: check
 	install -Dm755 git-change $(DESTDIR)$(LIBDIR)/git-change

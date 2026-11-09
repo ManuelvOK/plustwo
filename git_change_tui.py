@@ -5,8 +5,9 @@ review (one per review branch), and one change with its files, its comment
 threads and the diff, which shows the threads under their lines.
 Keys are shown at the bottom of every screen, `?` lists them all.
 
-The change screen shows the diff as delta renders it (side by side). t hands
-over to vimdiff. Comments are written in a small box that opens inside the
+The change screen shows the diff side by side like Gerrit, drawn here from
+the rows core.file_diff_rows() lays out, with syntax colours from bat if it
+is installed. t hands over to vimdiff. Comments are written in a small box that opens inside the
 diff and pushes the lines below down, ^E continues in the reviewer's
 editor. The screen reloads by itself when commits or notes change, e.g.
 when the author answers.
@@ -18,6 +19,7 @@ scrolls.
 import curses
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import textwrap
@@ -44,7 +46,6 @@ STATUS_COLOURS = {'unresolved': 3, 'resolved': 2, 'draft': 5}
 # How many lines around each change the diff shows, + and - step through
 # them. None is the whole file.
 CONTEXT_STEPS = (3, 10, 25, 100, None)
-WHOLE_FILE_LINES = 10 ** 7
 
 # Backgrounds of diff lines that differ because the changes below changed:
 # (line, changed words) of lines from below and of lines partly from below,
@@ -837,12 +838,9 @@ def submit_with_confirmation(interface, change):
 
 # ── the diff pane ─────────────────────────────────────────────────────────
 
-# An escape sequence in delta's output: colours and styles (SGR, ending in m),
+# An escape sequence in bat's output: colours and styles (SGR, ending in m),
 # other control sequences, and hyperlinks (OSC 8). Only SGR is used.
 ESCAPE_PATTERN = re.compile(r'\x1b\[([0-9;]*)([A-Za-z])|\x1b\]8;[^\x1b\x07]*(?:\x1b\\|\x07)')
-
-# Line numbers in delta's side by side output: "│ old │ ... │ new │"
-NUMBERS_PATTERN = re.compile(r'^│\s*(\d*)\s*│.*?│\s*(\d*)\s*│')
 
 # The 6 levels of each channel in the 256 colour palette's 6x6x6 cube
 CUBE_LEVELS = (0, 95, 135, 175, 215, 255)
@@ -881,7 +879,7 @@ class ColourPairs:
     """Hands out curses colour pairs for foreground/background combinations.
 
     curses can only draw colours through numbered pairs, so every
-    combination delta uses gets one, the first time it shows up.
+    combination the diff uses gets one, the first time it shows up.
     """
 
     def __init__(self):
@@ -992,43 +990,142 @@ def lighter(background):
     return background
 
 
-def plain(line):
-    """A line of terminal output without its escape sequences."""
-    return ESCAPE_PATTERN.sub('', line)
+# Backgrounds of removed and added lines: (line, changed characters). The
+# greens are the ones the reviewer's delta used, the reds delta's defaults.
+REMOVED_BACKGROUNDS = (palette_index(0x3f, 0x00, 0x01), palette_index(0x90, 0x10, 0x11))
+ADDED_BACKGROUNDS = (palette_index(0x1f, 0x4d, 0x2a), palette_index(0x2f, 0x7a, 0x40))
+# The same for terminals with fewer colours: red and green
+REMOVED_BASIC = 1
+ADDED_BASIC = 2
+TAB_WIDTH = 4
+# Columns between the halves of a row: a line
+HALF_SEPARATOR = '│'
 
 
-def recoloured(segments, start, end, partly=False):
-    """Segments with the coloured backgrounds between two columns replaced
-    by the colours of lines (partly) from below. The most common background
-    there is the line's, the others mark changed words.
+def highlighter():
+    """The program that colours source code: bat (batcat on Debian), None
+    without it.
     """
-    characters = [(character, foreground, background, styles)
-                  for text, foreground, background, styles in segments for character in text]
-    backgrounds = [character[2] for character in characters[start:end] if character[2] >= 0]
-    if not backgrounds:
-        return segments
-    line_background = max(set(backgrounds), key=backgrounds.count)
-    for index in range(start, min(end, len(characters))):
-        character, foreground, background, styles = characters[index]
-        if background < 0:
-            continue
-        if curses.COLORS < 256:
-            background = PARTLY_BASIC if partly else FROM_BELOW_BASIC
+    return shutil.which('bat') or shutil.which('batcat')
+
+
+def highlighted(lines, path):
+    """Colours of the lines of a file as syntax highlighting gives them:
+    for each line a list of (foreground, styles) per character. None
+    without bat, or if its output doesn't fit the lines.
+    """
+    program = highlighter()
+    if not program or not lines:
+        return None
+    result = subprocess.run([program, '--color=always', '--style=plain', '--paging=never',
+                             '--wrap=never', f'--file-name={path}'],
+                            input='\n'.join(lines) + '\n', capture_output=True, text=True,
+                            errors='replace')
+    output = result.stdout.split('\n')
+    if 0 != result.returncode or len(output) < len(lines):
+        return None
+    colours = []
+    for line, rendered in zip(lines, output):
+        segments = styled_segments(rendered)
+        if ''.join(segment[0] for segment in segments) != line:
+            return None
+        colours.append([(foreground, styles) for text, foreground, _, styles in segments
+                        for _ in text])
+    return colours
+
+
+def half_cells(core, half, colours, marks):
+    """The characters of one half of a row as (character, foreground,
+    background, styles), tabs expanded and control characters made visible.
+    colours are the line's syntax colours or None. marks are the sets of
+    line numbers (from below, partly from below) on this side.
+    """
+    if half.kind in (core.REMOVED, core.ADDED):
+        if half.number in marks[0] or half.number in marks[1]:
+            partly = half.number not in marks[0]
+            backgrounds = ((PARTLY_BASIC,) * 2 if partly else (FROM_BELOW_BASIC,) * 2) \
+                if curses.COLORS < 256 else (PARTLY_BACKGROUNDS if partly
+                                             else FROM_BELOW_BACKGROUNDS)
+        elif curses.COLORS < 256:
+            backgrounds = ((REMOVED_BASIC,) if core.REMOVED == half.kind else (ADDED_BASIC,)) * 2
         else:
-            colours = PARTLY_BACKGROUNDS if partly else FROM_BELOW_BACKGROUNDS
-            background = colours[background != line_background]
-        characters[index] = (character, foreground, background, styles)
+            backgrounds = REMOVED_BACKGROUNDS if core.REMOVED == half.kind else ADDED_BACKGROUNDS
+    else:
+        backgrounds = (-1, -1)
+    changed = set()
+    for begin, end in half.edits:
+        changed.update(range(begin, end))
+    cells = []
+    text = half.text[:-1] if half.text.endswith('\r') else half.text
+    for index, character in enumerate(text):
+        foreground, styles = colours[index] if colours and index < len(colours) else (-1, 0)
+        background = backgrounds[index in changed]
+        if '\t' == character:
+            cells += [(' ', foreground, background, styles)] * (TAB_WIDTH - len(cells) % TAB_WIDTH)
+        elif ord(character) < 32 or 127 == ord(character):
+            cells.append(('·', foreground, background, styles | curses.A_DIM))
+        else:
+            cells.append((character, foreground, background, styles))
+    return cells, backgrounds[0]
+
+
+def grouped(cells):
+    """Joins cells of the same colours into (text, foreground, background,
+    styles) segments.
+    """
+    segments = []
+    for character, *attributes in cells:
+        if segments and segments[-1][1:] == tuple(attributes):
+            segments[-1] = (segments[-1][0] + character, *attributes)
+        else:
+            segments.append((character, *attributes))
+    return segments
+
+
+def rendered_rows(core, rows, width, colours, marks):
+    """Draws side by side rows into screen rows like Gerrit's diff: old
+    number, old text, new number, new text. A long line wraps onto more
+    rows. Returns [(segments, (old number, new number), continues)], where
+    continues says that the row goes on with the line of the row above.
+    """
+    digits = max([4] + [len(str(half.number)) for row in rows for half in (row.old, row.new)
+                        if half.number])
+    half_width = max((width - len(HALF_SEPARATOR)) // 2, digits + 2)
+    text_width = half_width - digits - 1
     result = []
-    for character, *attributes in characters:
-        if result and result[-1][1:] == tuple(attributes):
-            result[-1] = (result[-1][0] + character, *attributes)
-        else:
-            result.append((character, *attributes))
+    for row in rows:
+        if row.skipped:
+            label = f'… {row.skipped} common line{"s" if row.skipped > 1 else ""} …'
+            result.append(([(label.center(width), -1, -1, curses.A_DIM)],
+                           (None, None), False))
+            continue
+        halves = []
+        for half, side in ((row.old, 0), (row.new, 1)):
+            line_colours = (colours[side][half.number - 1]
+                            if half.number and colours[side] else None)
+            cells, background = half_cells(core, half, line_colours, marks[side])
+            pieces = [cells[start:start + text_width]
+                      for start in range(0, len(cells), text_width)] or [[]]
+            halves.append((half, pieces, background))
+        for piece in range(max(len(pieces) for _, pieces, _ in halves)):
+            segments = []
+            for side, (half, pieces, background) in enumerate(halves):
+                number = f'{half.number:>{digits}} ' if half.number and 0 == piece else \
+                    ' ' * (digits + 1)
+                segments.append((number, -1, -1, curses.A_DIM))
+                cells = pieces[piece] if piece < len(pieces) else []
+                padding = text_width - len(cells)
+                fill = background if piece < len(pieces) else -1
+                segments += grouped(cells + [(' ', -1, fill, 0)] * padding)
+                if 0 == side:
+                    segments.append((HALF_SEPARATOR, -1, -1, curses.A_DIM))
+            numbers = (row.old.number, row.new.number) if 0 == piece else (None, None)
+            result.append((segments, numbers, 0 != piece))
     return result
 
 
 class DiffPane:
-    """The diff of one file, rendered by delta and drawn inside the screen,
+    """The diff of one file, side by side like in Gerrit, drawn inside the screen,
     with the comment threads shown under their lines.
 
     The rows are diff lines and thread lines. Every row has its parts
@@ -1045,6 +1142,10 @@ class DiffPane:
         self._threads_key = None
         self._diff_lines = []
         self._diff_numbers = []
+        # Whether a diff row goes on with the line of the row above (wrapped)
+        self._continues = []
+        # Syntax colours per (version, path), see _colours()
+        self._colour_cache = {}
         # The row to keep the cursor on when the rows are laid out again,
         # and whether to show the rows from the top then
         self._keep = None
@@ -1073,29 +1174,24 @@ class DiffPane:
         self._key = key
         self._path = path
         old, new, paths = core.diff_endpoints(change, *compare, path=path)
-        lines_around = WHOLE_FILE_LINES if context is None else context
-        diff = subprocess.run(['git', '-c', 'core.pager=cat', 'diff', '--color=always',
-                               f'--unified={lines_around}', old, new, '--', *paths],
-                              capture_output=True, text=True).stdout
-        try:
-            rendered = subprocess.run(['delta', '--side-by-side', f'--width={width}',
-                                       '--paging=never'], input=diff, capture_output=True,
-                                      text=True).stdout
-        except FileNotFoundError:
-            rendered = diff
-        lines = (rendered.rstrip('\n').split('\n') if rendered.strip()
-                 else ['No differences in this file.'])
-        self._diff_lines = [styled_segments(line) for line in lines]
-        previous_numbers = self._diff_numbers
-        self._diff_numbers = []
-        for line in lines:
-            match = NUMBERS_PATTERN.match(plain(line))
-            self._diff_numbers.append((int(match.group(1)) if match and match.group(1) else None,
-                                       int(match.group(2)) if match and match.group(2) else None))
-        plain_lines = [plain(line) for line in lines]
+        rows = core.file_diff_rows(change, *compare, path=path, context=context)
         from_below, partly = core.rebase_lines(change, *compare, path=path)
-        self.marks_from_below = (self._mark_from_below(plain_lines, from_below, False),
-                                 self._mark_from_below(plain_lines, partly, True))
+        marks = ((from_below[0], partly[0]), (from_below[1], partly[1]))
+        if rows is None:
+            rendered = [([('Binary file, not shown.', -1, -1, curses.A_DIM)], (None, None), False)]
+        elif not rows:
+            rendered = [([('No differences in this file.', -1, -1, curses.A_DIM)], (None, None),
+                          False)]
+        else:
+            colours = [self._colours(core, version, paths[0]) for version in (old, new)]
+            rendered = rendered_rows(core, rows, width, colours, marks)
+        self._diff_lines = [segments for segments, _, _ in rendered]
+        previous_numbers = self._diff_numbers
+        self._diff_numbers = [numbers for _, numbers, _ in rendered]
+        self._continues = [continues for _, _, continues in rendered]
+        marked = [any(numbers[side] in marks[side][kind]
+                      for numbers in self._diff_numbers for side in (0, 1)) for kind in (0, 1)]
+        self.marks_from_below = tuple(marked)
         if not is_other_file:
             if self.rows and not self._keep:
                 self._keep = (self.rows[self.cursor], self._anchors[self.cursor])
@@ -1110,35 +1206,14 @@ class DiffPane:
             self._from_top = True
         self._threads_key = None
 
-    def _mark_from_below(self, plain_lines, from_below, partly):
-        """Gives the halves of rows with lines (partly) from below, as old
-        and new line numbers, other backgrounds. Rows delta wrapped are
-        marked like the row they continue. Returns whether any row was
-        marked.
+    def _colours(self, core, version, path):
+        """Syntax colours of a file's version, see highlighted(). Kept per
+        version, so moving around doesn't run bat again.
         """
-        from_below_old, from_below_new = from_below
-        if not from_below_old and not from_below_new:
-            return False
-        marked = False
-        halves = (False, False)
-        split = None
-        for index, (old, new) in enumerate(self._diff_numbers):
-            match = NUMBERS_PATTERN.match(plain_lines[index])
-            if match:
-                split = plain_lines[index].rfind('│', 0, match.start(2))
-                halves = (old in from_below_old, new in from_below_new)
-            elif not plain_lines[index].startswith('│'):
-                halves = (False, False)
-            if split is None or not any(halves):
-                continue
-            segments = self._diff_lines[index]
-            if halves[0]:
-                segments = recoloured(segments, 0, split, partly)
-            if halves[1]:
-                segments = recoloured(segments, split, len(plain_lines[index]), partly)
-            self._diff_lines[index] = segments
-            marked = True
-        return marked
+        key = (version, path)
+        if key not in self._colour_cache:
+            self._colour_cache[key] = highlighted(core.file_lines(version, path) or [], path)
+        return self._colour_cache[key]
 
     def _renumbered(self, keep, previous_numbers):
         """Moves a kept row to the new diff lines, by its line numbers. With
@@ -1190,13 +1265,22 @@ class DiffPane:
         # Threads on lines the diff doesn't show come next, so none gets lost.
         for place in sorted(place for place in blocks if place not in self.shown_places()):
             add_threads(place, -1)
+        # A line's threads come below its last row, after the rows it
+        # wrapped onto.
+        line = None
         for index, (old, new) in enumerate(self._diff_numbers):
+            if line and not self._continues[index]:
+                add_threads(('new', line[1]), line[2])
+                add_threads(('old', line[0]), line[2])
+            if not self._continues[index]:
+                line = (old, new, index)
             self.rows.append(('diff', index))
             self.lines.append(self._diff_lines[index])
             self.numbers.append((old, new))
             self._anchors.append(index)
-            add_threads(('new', new), index)
-            add_threads(('old', old), index)
+        if line:
+            add_threads(('new', line[1]), line[2])
+            add_threads(('old', line[0]), line[2])
         self._place_cursor(offset)
 
     def shown_places(self):
@@ -1298,15 +1382,23 @@ class DiffPane:
         if not self.scroll <= self.cursor < self.scroll + height:
             self.cursor = index
 
+    def line_end(self, index):
+        """The last row of the line at row index, after the rows it wrapped
+        onto.
+        """
+        while (index + 1 < len(self.rows) and 'diff' == self.rows[index + 1][0]
+               and self._continues[self.rows[index + 1][1]]):
+            index += 1
+        return index
+
     def cursor_place(self):
         """(line, side) of the cursor line. New side where the line exists
         in the new version, else old side. None on rows without numbers.
         """
         index = self.cursor
-        # A row delta wrapped onto the next one belongs to the line above.
-        while (0 < index < len(self.numbers) and (None, None) == self.numbers[index]
-               and 'diff' == self.rows[index][0]
-               and ''.join(part[0] for part in self.lines[index]).startswith('│')):
+        # A wrapped row belongs to the line above.
+        while (0 < index < len(self.rows) and 'diff' == self.rows[index][0]
+               and self._continues[self.rows[index][1]]):
             index -= 1
         old, new = self.numbers[index] if self.numbers else (None, None)
         if new is not None:
@@ -1862,7 +1954,7 @@ class ChangeView:
             # The box opens right below the commented line, the diff scrolls
             # if needed.
             self._diff.move_cursor(0, self._layout[DIFF][2])
-            anchor = DiffGap(self._diff, self._layout[DIFF], self._diff.cursor)
+            anchor = DiffGap(self._diff, self._layout[DIFF], self._diff.line_end(self._diff.cursor))
         name = file_label(interface.core, path).rsplit('/', 1)[-1]
         text = interface.write_text(f'Comment on {name}' + (f':{line}' if line else
                                                             ' (whole file)'), anchor=anchor)

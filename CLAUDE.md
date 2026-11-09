@@ -10,7 +10,8 @@ and the docstring at the top of `git-change` for every command.
 | `git-change`        | core and command line (Python, no dependencies)            |
 | `git_change_tui.py` | curses interface for the reviewer, imported by the core    |
 | `AGENTS.md`         | guide for agents as authors, printed by `git change guide` |
-| `Makefile`          | `check`, `install`, `link`, `uninstall`                    |
+| `tests/`            | `make test`: checks of the side by side diff rows          |
+| `Makefile`          | `check`, `test`, `install`, `link`, `uninstall`            |
 
 ## Design rules
 
@@ -42,6 +43,10 @@ and the docstring at the top of `git-change` for every command.
 
 - `make check` only compiles. pylint crashes on Python 3.14 (astroid on
   `import curses`), and pyflakes/flake8 are not installed.
+- `make test` checks the diff rows the interface draws: against git (every
+  line once, in order, the changed ones exactly git's edits) and delta (same
+  lines per side). `TEST_REPOS=a:b` adds the history of other repositories,
+  which are only read.
 - Test in a scratch repository in the session scratchpad, never in a real
   one under review.
 - The interface is tested without opening windows: run it in a detached
