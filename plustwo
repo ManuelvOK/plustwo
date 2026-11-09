@@ -187,6 +187,12 @@ NO_CODE_CHANGE = 'no code change'
 # The commit message as a file of the change, named like in Gerrit. In the
 # trees built to diff it, it is a plain file called COMMIT_MSG.
 COMMIT_MSG = '/COMMIT_MSG'
+# Comments on the whole change, like the message of Gerrit's Reply dialog
+PATCHSET_LEVEL = '/PATCHSET_LEVEL'
+# Whose turn it is on a change, like Gerrit's attention set
+REVIEWER_TURN = 'reviewer'
+AUTHOR_TURN = 'author'
+SUBMITTABLE = 'submittable'
 COMMIT_MSG_NAME = 'COMMIT_MSG'
 CHANGE_ID_PATTERN = re.compile(r'^Change-Id: (I[0-9a-f]{40})\s*$', re.MULTILINE)
 WATCH_INTERVAL_SECONDS = 1.0
@@ -218,6 +224,8 @@ class Message:
     text: str
     sent: bool = True
     unresolved: bool | None = None
+    # When it was sent, seconds since 1970. 0 for drafts and older notes.
+    time: int = 0
 
 
 @dataclass
@@ -236,6 +244,9 @@ class Comment:
     patch_set: int
     messages: list[Message] = field(default_factory=list)
     side: str = NEW_SIDE
+    # Never changes, unlike a place. Numbers don't change either: deleting a
+    # draft thread leaves a gap.
+    id: str = ''
 
     @property
     def status(self):
@@ -284,11 +295,13 @@ class Vote:
     message: str = ''
     # The patch set the vote was copied from, None if given on this one
     copied_from: int | None = None
+    time: int = 0
 
     def copied(self, patch_set):
         """This vote copied to a newer patch set."""
         return Vote(label=self.label, value=self.value, by=self.by, patch_set=patch_set,
-                    message=self.message, copied_from=self.copied_from or self.patch_set)
+                    message=self.message, copied_from=self.copied_from or self.patch_set,
+                    time=self.time)
 
 
 @dataclass
@@ -307,6 +320,40 @@ class Change:
     rebase_requested: bool = False
     # The patch set the reviewer's last rebase made, 0 if none
     rebased_patch_set: int = 0
+    # Upload times of the patch sets: number -> seconds since 1970
+    uploads: dict[int, int] = field(default_factory=dict)
+    # Files the reviewer marked reviewed: path -> hash of the file's diff
+    reviewed: dict[str, str] = field(default_factory=dict)
+
+    def comment(self, number):
+        """The thread with this number, None if there is none."""
+        return next((comment for comment in self.comments if number == comment.number), None)
+
+    def turn(self):
+        """Whose turn it is, like Gerrit's attention set: whoever acted last
+        hands it to the other side. The reviewer acts by sending and voting,
+        the author by uploading and answering. SUBMITTABLE when approved and
+        nothing is unresolved.
+        """
+        if not self.patch_sets:
+            return AUTHOR_TURN
+        if not self.submit_problems() and not self.unfinished_comments():
+            return SUBMITTABLE
+        if self.rebase_requested:
+            return AUTHOR_TURN
+        sent = [message for comment in self.comments for message in comment.messages
+                if message.sent]
+        reviewer = max([message.time for message in sent if REVIEWER == message.author]
+                       + [vote.time for vote in self.votes
+                          if REVIEWER == vote.by and not vote.copied_from], default=0)
+        author = max([message.time for message in sent if AUTHOR == message.author]
+                     + list(self.uploads.values()), default=0)
+        if reviewer > author:
+            return AUTHOR_TURN
+        if reviewer == author == 0 and any(comment.is_unanswered()
+                                           for comment in self.unfinished_comments()):
+            return AUTHOR_TURN
+        return REVIEWER_TURN
 
     def latest_patch_set(self):
         """Number of the newest patch set, 0 if none is uploaded yet."""
@@ -796,6 +843,8 @@ def change_from(commit, topic, note, repository=None):
         if RESOLVED == old_status and sent and all(message.unresolved is None
                                                   for message in messages):
             sent[-1].unresolved = False
+        comment.setdefault('id', hashlib.sha1(
+            f'{change_id} {comment["number"]} {comment["place"]}'.encode()).hexdigest()[:12])
         comments.append(Comment(**comment, messages=messages))
     return Change(change_id=change_id,
                   commit=commit,
@@ -806,12 +855,15 @@ def change_from(commit, topic, note, repository=None):
                   votes=[Vote(**vote) for vote in note.get('votes', [])],
                   verified_required=note.get('verified_required', False),
                   rebase_requested=note.get('rebase_requested', False),
-                  rebased_patch_set=note.get('rebased_patch_set', 0))
+                  rebased_patch_set=note.get('rebased_patch_set', 0),
+                  uploads={int(number): time for number, time in note.get('uploads', {}).items()},
+                  reviewed=note.get('reviewed', {}))
 
 
 def note_of(change):
     """The note that stores a change's review."""
     return {'comments': [{'number': comment.number,
+                          'id': comment.id,
                           'place': comment.place,
                           'patch_set': comment.patch_set,
                           'side': comment.side,
@@ -820,7 +872,9 @@ def note_of(change):
             'votes': [vars(vote) for vote in change.votes],
             'verified_required': change.verified_required,
             'rebase_requested': change.rebase_requested,
-            'rebased_patch_set': change.rebased_patch_set}
+            'rebased_patch_set': change.rebased_patch_set,
+            'uploads': {str(number): time for number, time in change.uploads.items()},
+            'reviewed': change.reviewed}
 
 
 def changes_in_stack(repository=None):
@@ -871,9 +925,10 @@ def update_change(change_id, edit, repository=None):
 
 def comment_of(change, number):
     """The thread with this number, or an error."""
-    if not 1 <= number <= len(change.comments):
+    comment = change.comment(number)
+    if comment is None:
         raise ChangeError(f'{change.short_id()} has no comment {number}')
-    return change.comments[number - 1]
+    return comment
 
 
 def tree_of(commit, repository=None):
@@ -926,6 +981,7 @@ def add_patch_set(change, repository=None):
         change.votes += [vote.copied(number) for vote in change.current_votes(CODE_REVIEW)
                          + change.current_votes(VERIFIED) if is_kept(vote, kind)]
     change.patch_sets[number] = change.commit
+    change.uploads[number] = int(time.time())
     return number, kind
 
 
@@ -1224,13 +1280,15 @@ def add_comment(change_id, place, text, sent=True, side=NEW_SIDE, author=REVIEWE
     status = status_name(status)
 
     def edit(change):
-        comment = Comment(number=len(change.comments) + 1,
+        sent_now = sent or AUTHOR == author
+        comment = Comment(number=max((other.number for other in change.comments), default=0) + 1,
                           place=place,
                           patch_set=change.latest_patch_set(),
-                          messages=[Message(author=author, text=text,
-                                            sent=sent or AUTHOR == author,
-                                            unresolved=UNRESOLVED == status)],
-                          side=side)
+                          messages=[Message(author=author, text=text, sent=sent_now,
+                                            unresolved=UNRESOLVED == status,
+                                            time=int(time.time()) if sent_now else 0)],
+                          side=side,
+                          id=os.urandom(6).hex())
         change.comments.append(comment)
         return comment.number
 
@@ -1248,7 +1306,9 @@ def add_message(change_id, number, author, text, sent=True, status=None, reposit
         comment = comment_of(change, number)
         if AUTHOR != author and not sent and comment.has_draft():
             raise ChangeError(f'comment {number} has a draft already, edit that one')
-        comment.messages.append(Message(author=author, text=text, sent=sent or AUTHOR == author,
+        sent_now = sent or AUTHOR == author
+        comment.messages.append(Message(author=author, text=text, sent=sent_now,
+                                        time=int(time.time()) if sent_now else 0,
                                         unresolved=unresolved))
 
     update_change(change_id, edit, repository)
@@ -1268,8 +1328,8 @@ def edit_draft(change_id, number, text, repository=None):
 def delete_draft(change_id, number, repository=None):
     """Deletes the reviewer's draft at the end of a thread.
 
-    A thread that was only a draft disappears completely, and the later
-    threads move up a number.
+    A thread that was only a draft disappears completely. The other
+    threads keep their numbers.
     """
     def edit(change):
         comment = comment_of(change, number)
@@ -1278,19 +1338,28 @@ def delete_draft(change_id, number, repository=None):
         comment.messages.pop()
         if not comment.messages:
             change.comments.remove(comment)
-            for later_number, later in enumerate(change.comments, start=1):
-                later.number = later_number
 
     update_change(change_id, edit, repository)
 
 
-def send_drafts(change_id, repository=None):
-    """Sends all of the reviewer's drafts of a change. Returns their count."""
+def send_drafts(change_id, message='', repository=None):
+    """Sends all of the reviewer's drafts of a change, like Gerrit's Reply.
+    message, if given, becomes a comment on the whole change, resolved like
+    a note. Returns the number of drafts sent.
+    """
     def edit(change):
-        drafts = [message for comment in change.comments for message in comment.messages
-                  if not message.sent]
-        for message in drafts:
-            message.sent = True
+        now = int(time.time())
+        drafts = [draft for comment in change.comments for draft in comment.messages
+                  if not draft.sent]
+        for draft in drafts:
+            draft.sent = True
+            draft.time = now
+        if message:
+            change.comments.append(Comment(
+                number=max((other.number for other in change.comments), default=0) + 1,
+                place=PATCHSET_LEVEL, patch_set=change.latest_patch_set(),
+                messages=[Message(author=REVIEWER, text=message, unresolved=False, time=now)],
+                id=os.urandom(6).hex()))
         return len(drafts)
 
     return update_change(change_id, edit, repository)
@@ -1318,6 +1387,42 @@ def toggle_draft_status(change_id, number, repository=None):
             now = comment.is_unresolved() if draft.unresolved is None else draft.unresolved
             draft.unresolved = not now
         return comment.draft_status()
+
+    return update_change(change_id, edit, repository)
+
+
+def file_diff_hash(commit, path, repository=None):
+    """A hash of a file's own diff in a commit, against the commit's parent.
+    It stays the same while the file's change does, also after a rebase.
+    """
+    if COMMIT_MSG == path:
+        text = git('log', '-1', '--format=%B', commit, repository=repository)
+    else:
+        text = git('diff', '--no-color', '--no-ext-diff', '--no-textconv', '-U0', f'{commit}^',
+                   commit, '--', path, check=False, repository=repository)
+        # Line numbers move with a rebase, the edits themselves don't.
+        text = '\n'.join(line for line in text.split('\n') if not line.startswith('@@'))
+    return hashlib.sha1(text.encode()).hexdigest()[:16]
+
+
+def is_reviewed(change, path, repository=None):
+    """Whether the reviewer marked the file reviewed and its diff is the same
+    as then.
+    """
+    mark = change.reviewed.get(path)
+    return bool(mark) and mark == file_diff_hash(change.commit, path, repository)
+
+
+def toggle_reviewed(change_id, path, repository=None):
+    """Marks a file of the change reviewed, or unmarks it. Returns whether
+    it is marked now.
+    """
+    def edit(change):
+        if is_reviewed(change, path, repository):
+            del change.reviewed[path]
+            return False
+        change.reviewed[path] = file_diff_hash(change.commit, path, repository)
+        return True
 
     return update_change(change_id, edit, repository)
 
@@ -1354,6 +1459,7 @@ def set_vote(change_id, label, value, by=None, patch_set=None, message='', repos
                                 and vote.patch_set <= number)]
         if value:
             change.votes.append(Vote(label=label, value=value, by=by, patch_set=number,
+                                     time=int(time.time()),
                                      message=message))
         return number
 
@@ -1579,6 +1685,22 @@ def side_by_side_rows(old_lines, new_lines, edits, context=None):
     return rows
 
 
+def expand_gaps(rows, starts, old_lines, new_lines):
+    """The rows with the gaps that start at these old lines opened into
+    their common lines.
+    """
+    result = []
+    for row in rows:
+        if not row.skipped or row.old.number not in starts:
+            result.append(row)
+            continue
+        for offset in range(row.skipped):
+            old, new = row.old.number + offset, row.new.number + offset
+            result.append(Row(Half(CONTEXT, old, old_lines[old - 1]),
+                              Half(CONTEXT, new, new_lines[new - 1])))
+    return result
+
+
 def file_diff_rows(change, first=None, second=None, path=None, context=None, repository=None):
     """The side by side rows of one file's diff between two versions of a
     change, None if the file is binary.
@@ -1701,7 +1823,9 @@ def inbox_lines(repositories):
                         lines += [f'    {line}' for line in vote.message.split('\n')[-10:]
                                   if vote.message]
             for comment in change.comments:
-                if not comment.is_unanswered() or not comment.is_unresolved():
+                # A message on the whole change is resolved, but still news.
+                if not comment.is_unanswered() or not (comment.is_unresolved()
+                                                       or PATCHSET_LEVEL == comment.place):
                     continue
                 commit = change.patch_sets.get(comment.patch_set, change.commit)
                 quoted = line_at(commit, comment.place, repository, comment.side)
@@ -1848,7 +1972,7 @@ def print_overview(_arguments):
                 other.rebase_requested for other in changes if other.topic == topic) else ''))
         print(f'{index:>4}  {change.short_id()}  {change.state():<10} {version_label(change):<5} '
               f'{change.subject:<48.48}  {vote_label(change, CODE_REVIEW):>2} '
-              f'{vote_label(change, VERIFIED):>2}  {comment_counts(change)}')
+              f'{vote_label(change, VERIFIED):>2}  {change.turn():<11}  {comment_counts(change)}')
 
 
 def print_comments(arguments):

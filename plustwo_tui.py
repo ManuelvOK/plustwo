@@ -84,6 +84,9 @@ ACTIONS = (
     ('submit', 'Stacks and changes', 'submit', 'submit: moves the base branch to the change, '
      'which submits the changes below it too. Needs Code-Review+2 (and Verified+1 if '
      'required). Asks first and lists the unresolved comments.'),
+    ('approve', 'Stacks and changes', '+2', 'vote Code-Review+2 on the latest patch set, like '
+     'Gerrit\'s Quick approve. Offers to send your drafts along.'),
+    ('next-turn', 'Stacks', 'my turn', 'to the next change where it is your turn'),
     ('rebase', 'Stacks and changes', 'rebase', 'rebase the stack onto the base branch, without '
      'touching any checkout. On a conflict the author is asked to rebase.'),
     ('next-pane', 'Change', 'next pane', 'next pane: files, comments, diff'),
@@ -105,6 +108,10 @@ ACTIONS = (
      'current" or "base 2" (the whole change as of PS2). Empty: the whole change, latest '
      'patch set.'),
     ('fold-all', 'Change', 'fold all', 'fold all threads, or unfold all if all are folded'),
+    ('reviewed', 'Change', 'reviewed', 'mark the file reviewed, or unmark it. The mark stays while '
+     'the file\'s diff stays the same.'),
+    ('side-old', 'Change', 'old side', 'in the diff: the cursor to the old side, comments go there'),
+    ('side-new', 'Change', 'new side', 'in the diff: the cursor to the new side'),
     ('reply', 'Threads', 'reply', 'reply to the thread, as a draft'),
     ('edit-draft', 'Threads', 'edit draft', 'edit your draft in the thread. Empty deletes it.'),
     ('done', 'Threads', 'Done', 'reply "Done" as a draft, which resolves the thread'),
@@ -112,8 +119,8 @@ ACTIONS = (
     ('resolve', 'Threads', 'resolved', 'whether sending the draft resolves the thread or makes '
      'it unresolved again (Gerrit\'s Resolved checkbox). Without a draft, it makes an empty '
      'one.'),
-    ('send', 'Threads', 'send', 'send all drafts of this change, which tells the author to '
-     'start'),
+    ('send', 'Threads', 'send', 'send all drafts of this change, with an optional message on '
+     'the whole change, which tells the author to start'),
 )
 ACTION_NAMES = tuple(action[0] for action in ACTIONS)
 
@@ -129,6 +136,7 @@ VIM_KEYS = {
     'comment': 'c', 'file-comment': 'C', 'more-context': '+,=', 'less-context': '-',
     'vimdiff': 't', 'patch-sets': 'p', 'fold-all': 'i',
     'reply': 'r', 'edit-draft': 'e', 'done': 'y', 'ack': 'Y', 'resolve': 'x', 'send': 's',
+    'approve': 'A', 'next-turn': 'T', 'reviewed': 'm', 'side-old': '<', 'side-new': '>',
 }
 PRESETS = {
     'vim': VIM_KEYS,
@@ -148,7 +156,9 @@ PRESETS = {
     'gerrit': {**VIM_KEYS,
                'back': 'u,h,Esc', 'open': 'o,l,Enter',
                'next-chunk': 'n', 'prev-chunk': 'p', 'next-thread': 'N', 'prev-thread': 'P',
-               'next-file': ']', 'prev-file': '[', 'send': 'a', 'patch-sets': 'b'},
+               'next-file': ']', 'prev-file': '[', 'send': 'a', 'patch-sets': 'b',
+               # Gerrit's r marks the file reviewed
+               'reviewed': 'r,m', 'reply': 'R', 'reload': 'C-r'},
 }
 # Presets whose counts start with a key, like Emacs' C-u 15 C-n. The
 # others take digits right away, like vim's 15j.
@@ -981,7 +991,7 @@ class StackView:
         out(0, 1, f'{self._repository}: {len(self._changes)} changes in review, base {self._base}',
             curses.A_BOLD)
         out(2, 1, f'{"#":>4}  {"Change":<9} {"State":<10} {"PS":<5} {"Subject":<44} {"CR":>2} '
-            f'{"V":>2}  Comments', curses.A_UNDERLINE)
+            f'{"V":>2}  {"Turn":<11} Comments', curses.A_UNDERLINE)
         for offset, row_content in enumerate(self._rows):
             row = self.TOP + offset
             if row >= area.height:
@@ -1000,7 +1010,10 @@ class StackView:
             for column, label in ((79, core.CODE_REVIEW), (82, core.VERIFIED)):
                 out(row, column, f'{core.vote_label(change, label):>2}',
                     attributes | vote_attribute(change.label_value(label)))
-            out(row, 84, f'  {core.comment_counts(change)}', attributes)
+            turn = change.turn()
+            out(row, 84, f'  {TURN_LABELS[turn]:<11}', attributes | (
+                curses.A_BOLD if turn in MY_TURNS else curses.A_DIM))
+            out(row, 97, f' {core.comment_counts(change)}', attributes)
         if not self._changes:
             out(self.TOP, 1, 'Nothing in review. plustwo upload uploads the stack of a '
                 'branch.')
@@ -1030,8 +1043,39 @@ class StackView:
             submit_with_confirmation(self._interface, change)
         elif 'rebase' == action:
             rebase_with_confirmation(self._interface, change)
+        elif 'next-turn' == action:
+            later = [index for index in range(self._selected + 1, len(self._changes))
+                     if self._changes[index].turn() in MY_TURNS]
+            earlier = [index for index in range(self._selected + 1)
+                       if self._changes[index].turn() in MY_TURNS]
+            if later or earlier:
+                self._selected = (later or earlier)[0]
+            else:
+                self._interface.say('It is your turn nowhere.')
+        elif 'approve' == action:
+            approve(self._interface, change)
         else:
             vote_action(self._interface, change, action)
+
+
+# The turn as the stack list shows it, and the turns that are the reviewer's
+TURN_LABELS = {'reviewer': '▶ yours', 'author': 'author', 'submittable': '▶ submit'}
+MY_TURNS = ('reviewer', 'submittable')
+
+
+def approve(interface, change):
+    """Code-Review+2 on the latest patch set, sending the drafts along if
+    the reviewer wants.
+    """
+    core = interface.core
+    core.set_vote(change.change_id, core.CODE_REVIEW, 2)
+    drafts = sum(not message.sent for comment in change.comments for message in comment.messages)
+    sent = ''
+    if drafts and ord('y') == interface.ask_key(f'{drafts} draft(s) unsent. Send them along? (y/N)'):
+        core.send_drafts(change.change_id)
+        sent = f', {drafts} draft(s) sent'
+    interface.after_write()
+    interface.say(f'Code-Review+2 on PS{change.latest_patch_set()}{sent}.')
 
 
 def stack_heading(core, topic, changes, rebase_key='B'):
@@ -1376,8 +1420,9 @@ def rendered_rows(core, rows, width, colours, marks):
     """Draws side by side rows into screen rows like Gerrit's diff: old
     number, old text, new number, new text. A long line wraps onto more
     rows. Returns [(segments, (old number, new number), continues,
-    changed)], where continues says that the row goes on with the line of
-    the row above, and changed that it has removed or added lines.
+    changed, gap)], where continues says that the row goes on with the line
+    of the row above, changed that it has removed or added lines, and gap is
+    the first old line of a gap row, else None.
     """
     digits = max([4] + [len(str(half.number)) for row in rows for half in (row.old, row.new)
                         if half.number])
@@ -1388,7 +1433,7 @@ def rendered_rows(core, rows, width, colours, marks):
         if row.skipped:
             label = f'… {row.skipped} common line{"s" if row.skipped > 1 else ""} …'
             result.append(([(label.center(width), -1, -1, curses.A_DIM)],
-                           (None, None), False, False))
+                           (None, None), False, False, row.old.number))
             continue
         changed = (core.CONTEXT, core.CONTEXT) != (row.old.kind, row.new.kind)
         halves = []
@@ -1412,7 +1457,7 @@ def rendered_rows(core, rows, width, colours, marks):
                 if 0 == side:
                     segments.append((HALF_SEPARATOR, -1, -1, curses.A_DIM))
             numbers = (row.old.number, row.new.number) if 0 == piece else (None, None)
-            result.append((segments, numbers, 0 != piece, changed))
+            result.append((segments, numbers, 0 != piece, changed, None))
     return result
 
 
@@ -1440,6 +1485,11 @@ class DiffPane:
         self._changed = []
         # Syntax colours per (version, path), see _colours()
         self._colour_cache = {}
+        # Gaps of common lines the reviewer opened, by their first old line
+        self.expanded_gaps = set()
+        self._gaps = []
+        # The side of the diff the cursor is on, comments go there
+        self.side = 'new'
         # The row to keep the cursor on when the rows are laid out again,
         # and whether to show the rows from the top then
         self._keep = None
@@ -1461,7 +1511,10 @@ class DiffPane:
         (None: the whole file), unless it is rendered already. The threads
         come with arrange(), call it after this.
         """
-        key = (path, core.versions_to_compare(change, *compare), width, context)
+        if self._path != path:
+            self.expanded_gaps = set()
+        key = (path, core.versions_to_compare(change, *compare), width, context,
+               frozenset(self.expanded_gaps))
         if key == self._key:
             return
         is_other_file = self._path != path
@@ -1473,18 +1526,22 @@ class DiffPane:
         marks = ((from_below[0], partly[0]), (from_below[1], partly[1]))
         if rows is None:
             rendered = [([('Binary file, not shown.', -1, -1, curses.A_DIM)], (None, None), False,
-                          False)]
+                          False, None)]
         elif not rows:
             rendered = [([('No differences in this file.', -1, -1, curses.A_DIM)], (None, None),
-                          False, False)]
+                          False, False, None)]
         else:
+            if self.expanded_gaps and any(row.skipped for row in rows):
+                rows = core.expand_gaps(rows, self.expanded_gaps,
+                                        core.file_lines(old, paths[0]), core.file_lines(new, paths[0]))
             colours = [self._colours(core, version, paths[0]) for version in (old, new)]
             rendered = rendered_rows(core, rows, width, colours, marks)
-        self._diff_lines = [segments for segments, _, _, _ in rendered]
+        self._gaps = [gap for *_, gap in rendered]
+        self._diff_lines = [segments for segments, *_ in rendered]
         previous_numbers = self._diff_numbers
-        self._diff_numbers = [numbers for _, numbers, _, _ in rendered]
-        self._continues = [continues for _, _, continues, _ in rendered]
-        self._changed = [changed for _, _, _, changed in rendered]
+        self._diff_numbers = [numbers for _, numbers, *_ in rendered]
+        self._continues = [continues for _, _, continues, *_ in rendered]
+        self._changed = [changed for _, _, _, changed, _ in rendered]
         marked = [any(numbers[side] in marks[side][kind]
                       for numbers in self._diff_numbers for side in (0, 1)) for kind in (0, 1)]
         self.marks_from_below = tuple(marked)
@@ -1613,13 +1670,23 @@ class DiffPane:
                    if 'thread' == row[0] and number == row[1]]
         return indexes[-1] if indexes else None
 
+    def gap_at(self, index):
+        """The first old line of the gap row at index, None on other rows."""
+        row = self.rows[index] if index < len(self.rows) else ('thread',)
+        return self._gaps[row[1]] if 'diff' == row[0] and row[1] < len(self._gaps) else None
+
     def segments(self, index, highlighted):
         """The parts of a row as (text, curses attribute). The cursor row
-        is highlighted with lighter backgrounds.
+        is highlighted with lighter backgrounds, on the cursor's side only.
         """
         result = []
-        for text, foreground, background, styles in self.lines[index]:
-            if highlighted:
+        parts = self.lines[index]
+        separator = next((number for number, part in enumerate(parts)
+                          if HALF_SEPARATOR == part[0]), None)
+        for number, (text, foreground, background, styles) in enumerate(parts):
+            on_side = separator is None or (number < separator if 'old' == self.side
+                                            else number > separator)
+            if highlighted and on_side:
                 background = lighter(background)
                 styles |= 0 if curses.COLORS >= 256 else curses.A_REVERSE
             result.append((text, self._pairs.attribute(foreground, background) | styles))
@@ -1714,8 +1781,8 @@ class DiffPane:
         return index
 
     def cursor_place(self):
-        """(line, side) of the cursor line. New side where the line exists
-        in the new version, else old side. None on rows without numbers.
+        """(line, side) of the cursor line, on the cursor's side if the line
+        exists there, else on the other side. None on rows without numbers.
         """
         index = self.cursor
         # A wrapped row belongs to the line above.
@@ -1723,6 +1790,8 @@ class DiffPane:
                and self._continues[self.rows[index][1]]):
             index -= 1
         old, new = self.numbers[index] if self.numbers else (None, None)
+        if 'old' == self.side and old is not None:
+            return old, 'old'
         if new is not None:
             return new, 'new'
         if old is not None:
@@ -1905,14 +1974,18 @@ class ChangeView:
     def _draw_files(self):
         """Draws the file list."""
         out = self._interface.text
-        self._frame(FILES, 'Files')
+        core = self._interface.core
+        reviewed = [core.is_reviewed(self._change, path) for path in self._files]
+        self._frame(FILES, f'Files  {sum(reviewed)}/{len(self._files)} reviewed')
         top, left, height, width = self._layout[FILES]
         for index, path in enumerate(self._files[:height]):
             selected = index == self._file_index
             attributes = curses.A_REVERSE if selected and FILES == self._focus else (
                 curses.A_BOLD if selected else 0)
-            name = file_label(self._interface.core, path)
-            out(top + index, left, f'{name:<{width}.{width}}', attributes, left + width)
+            name = file_label(core, path)
+            out(top + index, left, '✓ ' if reviewed[index] else '  ',
+                attributes | curses.color_pair(2), left + width)
+            out(top + index, left + 2, f'{name:<{width - 2}.{width - 2}}', attributes, left + width)
 
     def _draw_comments(self):
         """Draws the thread list."""
@@ -1931,7 +2004,8 @@ class ChangeView:
             out(top + index, left + 4, f'[{label}]',
                 attributes | status_attribute('draft' if comment.is_draft() else comment.status),
                 left + width)
-            place = comment.place_label().rsplit('/', 1)[-1]
+            place = ('Change' if self._interface.core.PATCHSET_LEVEL == comment.place
+                     else comment.place_label().rsplit('/', 1)[-1])
             out(top + index, left + 6 + len(label), f' {place}', attributes, left + width)
 
     def _markers(self):
@@ -2078,7 +2152,7 @@ class ChangeView:
     def _thread_at_cursor(self):
         """The thread the diff's cursor is on, or the first on its line."""
         numbers = self._threads_at_cursor()
-        return self._change.comments[numbers[0] - 1] if numbers else None
+        return self._change.comment(numbers[0]) if numbers else None
 
     def _box_below_thread(self, comment):
         """Where the comment box goes for a reply: in a gap below the
@@ -2107,7 +2181,7 @@ class ChangeView:
         if not numbers:
             self._interface.say('No thread on this line. c starts one.')
             return
-        comments = [self._change.comments[number - 1] for number in numbers]
+        comments = [self._change.comment(number) for number in numbers]
         expand = not any(self._is_expanded(comment) for comment in comments)
         for comment in comments:
             self._expanded[comment.number] = expand
@@ -2170,6 +2244,19 @@ class ChangeView:
             self._choose_patch_sets()
         elif 'fold-all' == action:
             self._toggle_all_threads()
+        elif action in ('comment', 'open') and DIFF == self._focus and self._diff.gap_at(
+                self._diff.cursor) is not None:
+            # Like in Gerrit, a gap of common lines opens.
+            self._diff.expanded_gaps.add(self._diff.gap_at(self._diff.cursor))
+        elif action in ('side-old', 'side-new'):
+            self._diff.side = 'old' if 'side-old' == action else 'new'
+        elif 'reviewed' == action and self._selected_file():
+            marked = core.toggle_reviewed(self._change_id, self._selected_file())
+            interface.after_write()
+            interface.say(f'{file_label(core, self._selected_file())} '
+                          + ('reviewed.' if marked else 'not reviewed any more.'))
+        elif 'approve' == action:
+            approve(interface, change)
         elif 'comment' == action and DIFF == self._focus and self._diff.thread_at(
                 self._diff.cursor):
             # A comment on a thread answers it
@@ -2255,6 +2342,8 @@ class ChangeView:
                 elif DIFF == pane:
                     self._diff.cursor = min(self._diff.scroll + offset,
                                             max(len(self._diff.rows) - 1, 0))
+                    # A click picks the half of the diff, too.
+                    self._diff.side = 'old' if column < left + 2 + (width - 2) // 2 else 'new'
                 if DOUBLE_CLICK == kind:
                     self._open()
                 return
@@ -2355,9 +2444,16 @@ def thread_action(interface, change, comment, action):
     """
     core = interface.core
     if 'send' == action:
-        count = core.send_drafts(change.change_id)
+        # Like Gerrit's Reply dialog: a message on the whole change goes
+        # along, if written.
+        message = interface.write_text('Message on the whole change (optional, Enter sends)')
+        if message is None:
+            interface.say('Nothing sent.')
+            return
+        count = core.send_drafts(change.change_id, message)
         interface.after_write()
-        interface.say(f'{count} draft(s) sent.' if count else 'No drafts to send.')
+        interface.say(f'{count} draft(s) sent' + (' with a message.' if message else '.')
+                      if count or message else 'No drafts to send.')
     elif comment is None:
         return
     elif action in ('done', 'ack'):
