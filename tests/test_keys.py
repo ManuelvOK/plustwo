@@ -92,7 +92,7 @@ class EmacsTest(unittest.TestCase):
         self.assertEqual(('page-up', None), feed(self.keymap, tui.META | ord('v')))
         self.assertEqual(('top', None), feed(self.keymap, tui.META | ord('<')))
         self.assertEqual(('back', None), feed(self.keymap, ctrl('g')))
-        self.assertEqual(('quit', None), feed(self.keymap, ctrl('x'), ctrl('c')))
+        self.assertEqual(('quit-now', None), feed(self.keymap, ctrl('x'), ctrl('c')))
 
     def test_count_needs_c_u(self):
         self.assertEqual(('down', 15), feed(self.keymap, ctrl('u'), '1', '5', ctrl('n')))
