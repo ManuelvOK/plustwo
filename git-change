@@ -864,15 +864,24 @@ def branch_with_change(reference, repository=None):
     """The local branch holding a change, for an upload naming one: the
     checked out branch if it has it, else the only branch that has it.
     """
-    change_id = (find_change(reference, repository).change_id
-                 if reference.isdigit() else reference)
     base = base_branch(repository)
+    current = current_branch(repository)
+    if reference.isdigit():
+        # Numbers count uploaded changes only. A new change has none yet,
+        # so an old habit like "upload 3" uploads the checked out branch.
+        try:
+            change_id = find_change(reference, repository).change_id
+        except ChangeError:
+            if current and current != base:
+                return current
+            raise
+    else:
+        change_id = reference
 
     def has_change(branch):
         return any((change_id_of(commit, repository) or '').startswith(change_id)
                    for commit in commits_between(base, branch, repository))
 
-    current = current_branch(repository)
     if current and current != base and has_change(current):
         return current
     branches = [ref[len('refs/heads/'):] for ref in refs_with_prefix('refs/heads/',
