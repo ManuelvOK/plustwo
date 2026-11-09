@@ -30,8 +30,10 @@ and the docstring at the top of `git-change` for every command.
 ## Data
 
 - `refs/patchsets/<Change-Id>/<n>`: the patch sets.
-- `refs/notes/review`: one JSON note per commit with comment threads,
-  apply requests and votes. `git change init` sets `notes.rewriteRef`, so
+- `refs/notes/review`: one JSON note per commit with comment threads and
+  votes. A message's `unresolved` (true, false or null) sets its thread's
+  state, like in Gerrit. Older notes (a `status` per thread, `requests`)
+  are converted when read. `git change init` sets `notes.rewriteRef`, so
   notes follow amends and rebases.
 - `git config change.base`: the base branch, default main.
 

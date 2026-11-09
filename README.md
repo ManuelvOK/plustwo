@@ -21,6 +21,9 @@ diffs and inline threads. The author answers and applies on the command line
 (`git change inbox`, `reply`, `upload`). Submitting fast-forwards the base
 branch, so it only ever gets reviewed commits.
 
+Threads work like in Gerrit: unresolved or resolved, and the author answers
+"Done" after fixing.
+
 ## Requirements
 
 | Program  | Used for                                    |

@@ -15,8 +15,8 @@ be in review at the same time.
 Every uploaded version of a change is kept as a patch set under
 refs/patchsets/<Change-Id>/<number>, so versions can be compared. The review
 lives in a git note (refs/notes/review) on the commit, which follows the
-commit through amends and rebases: the comment threads and the reviewer's
-requests to apply them. The state of a change follows from git itself:
+commit through amends and rebases: the comment threads and the votes.
+The state of a change follows from git itself:
 New without a patch set, In-Review with one, Submitted once it is on the
 base branch. Nothing of this is pushed unless asked for explicitly.
 
@@ -33,23 +33,27 @@ Usage:
     git change diff CHANGE [A [B]]      diff between patch sets (side by side
                                         with delta). --tool opens vimdiff.
     git change rdiff CHANGE [A [B]]     range-diff between patch sets
-    git change upload CHANGE            saves the commit as the next patch set
-                                        and marks pending apply requests
-                                        handled. Other changes of the stack
-                                        that changed get one too.
+    git change upload CHANGE            saves the commit as the next patch
+                                        set. Other changes of the stack that
+                                        changed get one too.
     git change submit CHANGE            moves the base branch to the change,
                                         submitting the changes below it too
-    git change comment CHANGE PLACE TEXT [--author] [--status STATUS]
+    git change comment CHANGE PLACE TEXT [--author] [--resolved]
                                         adds a sent comment, PLACE like
-                                        src/main.cc:121. With --author it is
-                                        the author's, e.g. a question or a
-                                        note, and the author's inbox and
-                                        watch leave it out.
-    git change reply CHANGE NUMBER TEXT adds an author message to a thread
+                                        src/main.cc:121, unresolved unless
+                                        --resolved. With --author it is the
+                                        author's, e.g. a question or a note,
+                                        and the author's inbox and watch
+                                        leave it out.
+    git change reply CHANGE NUMBER TEXT [--resolve | --unresolve]
+                                        adds an author message to a thread
+    git change done CHANGE NUMBER [TEXT]
+                                        answers "Done" (or TEXT) and resolves
+                                        the thread
     git change status CHANGE NUMBER STATUS [TEXT]
-                                        sets a thread's status (open, agreed,
-                                        dropped, done), TEXT becomes an author
-                                        message
+                                        resolves a thread (resolved) or makes
+                                        it unresolved again (unresolved),
+                                        TEXT becomes an author message
     git change vote CHANGE LABEL VALUE [--by NAME] [--patch-set N] [-m TEXT]
                                         votes on the latest patch set (or N):
                                         Code-Review -2..+2, by the reviewer,
@@ -59,9 +63,10 @@ Usage:
     git change require-verified CHANGE [on|off]
                                         whether the change needs Verified+1
                                         to be submitted
-    git change inbox [REPO...]          what the author has to answer or apply
-    git change watch [REPO...]          prints one line per new sent message
-                                        or apply request, until stopped
+    git change inbox [REPO...]          what the author has to answer
+    git change watch [REPO...]          prints one line per change with new
+                                        sent messages, and per vote, until
+                                        stopped
 
 CHANGE is a change's number in the overview (counted over all stacks) or a
 unique prefix of its Change-Id (like I3f2a). A and B are patch set
@@ -76,6 +81,12 @@ belong to a patch set. A new one keeps them like Gerrit does by default:
 Code-Review after a trivial rebase (the same patch on another parent) or an
 edit of only the commit message, Verified only while the code stays the
 same, and a Code-Review-2 always.
+
+Comment threads work like in Gerrit: a thread is unresolved or resolved,
+and each message can change that. A new comment starts unresolved. The
+author fixes what an unresolved thread asks for, uploads and answers
+"Done", which resolves it. Submitting refuses while threads are unresolved.
+Sending the reviewer's drafts is the author's signal to start.
 
 Comments on a whole file have the file as their place. The commit message
 is the file /COMMIT_MSG, shown with a header like in Gerrit, so it gets
@@ -99,13 +110,19 @@ NOTES_REF = 'refs/notes/review'
 PATCH_SET_PREFIX = 'refs/patchsets/'
 REVIEW_BRANCH_PREFIX = 'review/'
 DEFAULT_BASE = 'main'
-STATUSES = ('open', 'agreed', 'dropped', 'done')
+# A thread is unresolved or resolved, like in Gerrit
+UNRESOLVED = 'unresolved'
+RESOLVED = 'resolved'
+STATUSES = (UNRESOLVED, RESOLVED)
+# Status names of older notes and commands, and what they mean now
+OLD_STATUSES = {'open': UNRESOLVED, 'agreed': UNRESOLVED, 'dropped': RESOLVED, 'done': RESOLVED}
+# The replies Gerrit offers with one click. Both resolve the thread.
+DONE = 'Done'
+ACK = 'Ack'
 REVIEWER = 'reviewer'
 AUTHOR = 'author'
 NEW_SIDE = 'new'
 OLD_SIDE = 'old'
-APPLY = 'apply'
-APPLY_ALL = 'apply-all'
 CURRENT = 'current'
 # The parent of the other compared version, i.e. the change's own diff
 BASE = 'base'
@@ -145,27 +162,51 @@ class Message:
     """One message in a comment thread.
 
     A reviewer's message starts as a draft (sent is False), which only the
-    reviewer sees, until the reviewer sends it.
+    reviewer sees, until the reviewer sends it. Like in Gerrit, a message
+    can resolve its thread or make it unresolved again: unresolved is
+    True or False then, None leaves the thread as it is.
     """
     author: str
     text: str
     sent: bool = True
+    unresolved: bool | None = None
 
 
 @dataclass
 class Comment:
-    """A comment thread on one place of a change, with its status.
+    """A comment thread on one place of a change.
 
     place is a file, or a file and a line like src/main.cc:12. The line
     counts in the new version of the file, or with side "old" in the old
     version, for lines the change removed.
+
+    Like in Gerrit, the thread is unresolved or resolved as its last sent
+    message that says so has set it, unresolved if none did.
     """
     number: int
     place: str
     patch_set: int
-    status: str = 'open'
     messages: list[Message] = field(default_factory=list)
     side: str = NEW_SIDE
+
+    @property
+    def status(self):
+        """unresolved or resolved, from the sent messages."""
+        flags = [message.unresolved for message in self.messages
+                 if message.sent and message.unresolved is not None]
+        return UNRESOLVED if not flags or flags[-1] else RESOLVED
+
+    def is_unresolved(self):
+        """Whether the thread is unresolved, drafts left out."""
+        return UNRESOLVED == self.status
+
+    def draft_status(self):
+        """The status the thread gets when its draft is sent, None if the
+        draft doesn't change it or there is no draft.
+        """
+        if not self.has_draft() or self.messages[-1].unresolved is None:
+            return None
+        return UNRESOLVED if self.messages[-1].unresolved else RESOLVED
 
     def place_label(self):
         """The place for display, marked when it is in the old version."""
@@ -183,14 +224,6 @@ class Comment:
         """Whether the last sent message is the reviewer's."""
         sent = [message for message in self.messages if message.sent]
         return bool(sent) and REVIEWER == sent[-1].author
-
-
-@dataclass
-class Request:
-    """The reviewer's request to apply one thread or all agreed threads."""
-    type: str
-    comment: int | None = None
-    handled: bool = False
 
 
 @dataclass
@@ -218,7 +251,6 @@ class Change:
     subject: str
     branch: str
     comments: list[Comment]
-    requests: list[Request]
     patch_sets: dict[int, str]
     votes: list[Vote] = field(default_factory=list)
     verified_required: bool = False
@@ -244,13 +276,9 @@ class Change:
         return 'In-Review' if self.patch_sets else 'New'
 
     def unfinished_comments(self):
-        """Sent threads that are still open, or agreed but not done."""
+        """Sent threads that are still unresolved."""
         return [comment for comment in self.comments
-                if comment.status in ('open', 'agreed') and not comment.is_draft()]
-
-    def pending_requests(self):
-        """Apply requests the author has not handled yet."""
-        return [request for request in self.requests if not request.handled]
+                if comment.is_unresolved() and not comment.is_draft()]
 
     def current_votes(self, label):
         """The votes of a label on the latest patch set."""
@@ -515,13 +543,18 @@ def change_from(commit, branch, note, repository=None):
     comments = []
     for comment in note.get('comments', []):
         messages = [Message(**message) for message in comment.pop('messages', [])]
+        # Notes of older versions keep a status per thread instead
+        old_status = OLD_STATUSES.get(comment.pop('status', None))
+        sent = [message for message in messages if message.sent]
+        if RESOLVED == old_status and sent and all(message.unresolved is None
+                                                  for message in messages):
+            sent[-1].unresolved = False
         comments.append(Comment(**comment, messages=messages))
     return Change(change_id=change_id,
                   commit=commit,
                   subject=git('log', '-1', '--format=%s', commit, repository=repository),
                   branch=branch,
                   comments=comments,
-                  requests=[Request(**request) for request in note.get('requests', [])],
                   patch_sets=patch_sets_of(change_id, repository),
                   votes=[Vote(**vote) for vote in note.get('votes', [])],
                   verified_required=note.get('verified_required', False))
@@ -532,11 +565,9 @@ def note_of(change):
     return {'comments': [{'number': comment.number,
                           'place': comment.place,
                           'patch_set': comment.patch_set,
-                          'status': comment.status,
                           'side': comment.side,
                           'messages': [vars(message) for message in comment.messages]}
                          for comment in change.comments],
-            'requests': [vars(request) for request in change.requests],
             'votes': [vars(vote) for vote in change.votes],
             'verified_required': change.verified_required}
 
@@ -648,7 +679,7 @@ def add_patch_set(change, repository=None):
 
 def upload(change_id, repository=None):
     """Saves the current commit as the next patch set, which puts the change
-    In-Review, and marks its pending apply requests handled.
+    In-Review.
 
     Like a push of a stack to Gerrit, every other change of the stack that
     changed since its last patch set gets a new one too, e.g. the changes
@@ -661,17 +692,12 @@ def upload(change_id, repository=None):
         if change is None:
             raise ChangeError(f'the change {change_id[:8]} is not on a review branch')
         stack = [other for other in changes if other.branch == change.branch]
-        if all(other.is_uploaded() for other in stack) and not change.pending_requests():
+        if all(other.is_uploaded() for other in stack):
             raise ChangeError(f'patch set {change.latest_patch_set()} already is the current commit')
         uploaded = []
         for other in stack:
-            changed = not other.is_uploaded()
-            if changed:
+            if not other.is_uploaded():
                 uploaded.append((other, *add_patch_set(other, repository)))
-            if other is change:
-                for request in other.requests:
-                    request.handled = True
-            if changed or other is change:
                 write_note(other.commit, note_of(other), repository)
         return uploaded
 
@@ -692,8 +718,8 @@ def submit(change_id, force=False, repository=None):
     Refuses when one of these changes has no patch set or changed since its
     last one, when it lacks the votes it needs (Code-Review+2, Verified+1
     if required), and when the base branch moved on and the review branch
-    needs a rebase first. Without force it also refuses while threads are open, or
-    agreed but not done, so no point gets lost. The interface uses force
+    needs a rebase first. Without force it also refuses while threads are
+    unresolved, so no point gets lost. The interface uses force
     after listing those threads and asking.
     """
     with review_lock(repository):
@@ -708,7 +734,7 @@ def submit(change_id, force=False, repository=None):
         unfinished = [f'{other.short_id()} #{comment.number}' for other in submitted
                       for comment in other.unfinished_comments()]
         if unfinished and not force:
-            raise ChangeError(f'not finished yet: {", ".join(unfinished)}')
+            raise ChangeError(f'unresolved threads: {", ".join(unfinished)}')
 
         base = base_branch(repository)
         is_ancestor = subprocess.run(['git', *(['-C', str(repository)] if repository else []),
@@ -732,21 +758,31 @@ def submit(change_id, force=False, repository=None):
         return submitted
 
 
-def add_comment(change_id, place, text, sent=True, side=NEW_SIDE, author=REVIEWER, status='open',
-                repository=None):
-    """Starts a thread on the newest patch set. Returns its number. The
-    author's threads are always sent.
+def status_name(name):
+    """The status a name stands for: unresolved or resolved, or one of the
+    older names open, agreed (unresolved), dropped, done (resolved).
     """
-    if status not in STATUSES:
-        raise ChangeError(f'unknown status "{status}", use one of: {", ".join(STATUSES)}')
+    status = name if name in STATUSES else OLD_STATUSES.get(name)
+    if status is None:
+        raise ChangeError(f'unknown status "{name}", use {UNRESOLVED} or {RESOLVED}')
+    return status
+
+
+def add_comment(change_id, place, text, sent=True, side=NEW_SIDE, author=REVIEWER,
+                status=UNRESOLVED, repository=None):
+    """Starts a thread on the newest patch set, unresolved like in Gerrit
+    unless status says otherwise. Returns its number. The author's threads
+    are always sent.
+    """
+    status = status_name(status)
 
     def edit(change):
         comment = Comment(number=len(change.comments) + 1,
                           place=place,
                           patch_set=change.latest_patch_set(),
-                          status=status,
                           messages=[Message(author=author, text=text,
-                                            sent=sent or AUTHOR == author)],
+                                            sent=sent or AUTHOR == author,
+                                            unresolved=UNRESOLVED == status)],
                           side=side)
         change.comments.append(comment)
         return comment.number
@@ -754,11 +790,19 @@ def add_comment(change_id, place, text, sent=True, side=NEW_SIDE, author=REVIEWE
     return update_change(change_id, edit, repository)
 
 
-def add_message(change_id, number, author, text, sent=True, repository=None):
-    """Adds a message to a thread. An author's message is always sent."""
+def add_message(change_id, number, author, text, sent=True, status=None, repository=None):
+    """Adds a message to a thread. An author's message is always sent.
+    status resolves the thread or makes it unresolved again, None leaves
+    it as it is. Like Gerrit's Reply, a reviewer has one draft per thread.
+    """
+    unresolved = None if status is None else UNRESOLVED == status_name(status)
+
     def edit(change):
-        comment_of(change, number).messages.append(
-            Message(author=author, text=text, sent=sent or AUTHOR == author))
+        comment = comment_of(change, number)
+        if AUTHOR != author and not sent and comment.has_draft():
+            raise ChangeError(f'comment {number} has a draft already, edit that one')
+        comment.messages.append(Message(author=author, text=text, sent=sent or AUTHOR == author,
+                                        unresolved=unresolved))
 
     update_change(change_id, edit, repository)
 
@@ -805,18 +849,30 @@ def send_drafts(change_id, repository=None):
     return update_change(change_id, edit, repository)
 
 
-def set_status(change_id, number, status, text=None, repository=None):
-    """Sets the status of a thread. Text becomes an author message."""
-    if status not in STATUSES:
-        raise ChangeError(f'unknown status "{status}", use one of: {", ".join(STATUSES)}')
+def set_status(change_id, number, status, text='', repository=None):
+    """The author resolves a thread or makes it unresolved again, with a
+    message (text may be empty).
+    """
+    add_message(change_id, number, AUTHOR, text or '', status=status, repository=repository)
 
+
+def toggle_draft_status(change_id, number, repository=None):
+    """The reviewer's Resolved checkbox: flips whether sending the thread's
+    draft resolves it. Without a draft, an empty one is made that flips
+    the thread's status. Returns the status the draft will give.
+    """
     def edit(change):
         comment = comment_of(change, number)
-        comment.status = status
-        if text:
-            comment.messages.append(Message(author=AUTHOR, text=text))
+        if not comment.has_draft():
+            comment.messages.append(Message(author=REVIEWER, text='', sent=False,
+                                            unresolved=not comment.is_unresolved()))
+        else:
+            draft = comment.messages[-1]
+            now = comment.is_unresolved() if draft.unresolved is None else draft.unresolved
+            draft.unresolved = not now
+        return comment.draft_status()
 
-    update_change(change_id, edit, repository)
+    return update_change(change_id, edit, repository)
 
 
 def label_name(label):
@@ -861,25 +917,6 @@ def require_verified(change_id, required, repository=None):
     """Sets whether the change needs Verified+1 to be submitted."""
     def edit(change):
         change.verified_required = required
-
-    update_change(change_id, edit, repository)
-
-
-def request_apply(change_id, number=None, repository=None):
-    """The reviewer asks the author to apply a thread, or with number None
-    all agreed threads. Applying a thread means agreeing to it.
-    """
-    def edit(change):
-        if number is None:
-            if not any('agreed' == comment.status for comment in change.comments):
-                raise ChangeError('no agreed comment to apply')
-            change.requests.append(Request(type=APPLY_ALL))
-            return
-        comment = comment_of(change, number)
-        if comment.is_draft():
-            raise ChangeError(f'comment {number} is not sent yet')
-        comment.status = 'agreed'
-        change.requests.append(Request(type=APPLY, comment=number))
 
     update_change(change_id, edit, repository)
 
@@ -1060,10 +1097,10 @@ def repository_name(repository):
 
 
 def inbox_lines(repositories):
-    """What the author has to answer or apply, as short lines.
+    """What the author has to answer, as short lines.
 
-    Only unanswered threads and pending requests, each thread with the
-    quoted source line, so the author needs nothing else to start.
+    Only unanswered unresolved threads and negative votes, each thread with
+    the quoted source line, so the author needs nothing else to start.
     """
     lines = []
     for repository in repositories:
@@ -1076,32 +1113,26 @@ def inbox_lines(repositories):
                                      f'PS{vote.patch_set} by {vote.by}')
                         lines += [f'    {line}' for line in vote.message.split('\n')[-10:]
                                   if vote.message]
-            for request in change.pending_requests():
-                target = f'#{request.comment}' if APPLY == request.type else 'all agreed'
-                lines.append(f'{request.type} {name} {change.short_id()} {target}')
             for comment in change.comments:
-                if not comment.is_unanswered():
+                if not comment.is_unanswered() or not comment.is_unresolved():
                     continue
                 commit = change.patch_sets.get(comment.patch_set, change.commit)
                 quoted = line_at(commit, comment.place, repository, comment.side)
                 lines.append(f'{name} {change.short_id()} #{comment.number} {comment.place_label()}'
                              + (f'  | {quoted}' if quoted else ''))
                 sent = [message for message in comment.messages if message.sent]
-                lines.append(f'    {sent[-1].text}')
+                lines.append(f'    {message_text(sent[-1])}')
     return lines
 
 
 def events_of(repository):
-    """Everything sent or requested in a repository, as event keys."""
+    """Everything sent or voted in a repository, as event keys."""
     events = set()
     for change in changes_in_stack(repository):
         for comment in change.comments:
             for index, message in enumerate(comment.messages):
                 if message.sent and REVIEWER == message.author:
                     events.add(('message', change.change_id, comment.number, index))
-        for index, request in enumerate(change.requests):
-            if not request.handled:
-                events.add((request.type, change.change_id, request.comment, index))
         for vote in change.votes:
             # Votes a new patch set kept were reported when they were given.
             if AUTHOR != vote.by and not vote.copied_from:
@@ -1111,8 +1142,7 @@ def events_of(repository):
 
 
 def watch(repositories, output=sys.stdout):
-    """Prints one line per change with new sent messages, apply requests or
-    votes.
+    """Prints one line per change with new sent messages, and one per vote.
 
     Runs until stopped. It only looks closer when a notes ref changed, and it
     prints nothing else, so watching costs nothing while nothing happens.
@@ -1134,22 +1164,27 @@ def watch(repositories, output=sys.stdout):
             for event in sorted(new, key=str):
                 if 'message' == event[0]:
                     new_messages[event[1]] = new_messages.get(event[1], 0) + 1
-                elif APPLY == event[0]:
-                    print(f'apply {name} {event[1][:8]} #{event[2]}', file=output, flush=True)
-                elif 'vote' == event[0]:
+                else:
                     _, change_id, label, value, patch_set, by = event
                     print(f'vote {name} {change_id[:8]} {label}{value:+d} PS{patch_set} by {by}',
                           file=output, flush=True)
-                else:
-                    print(f'apply-all {name} {event[1][:8]}', file=output, flush=True)
             for change_id, count in new_messages.items():
                 print(f'review {name} {change_id[:8]}: {count} new', file=output, flush=True)
 
 
 # ── command line ──────────────────────────────────────────────────────────
 
+def message_text(message):
+    """A message's text for display. An empty one only changed the status."""
+    if message.text:
+        return message.text
+    return f'({"unresolved" if message.unresolved else "resolved"})'
+
+
 def comment_counts(change):
-    """Thread counts per status for display, like "2 open, 1 done"."""
+    """Thread counts per status for display, like "2 unresolved, 1
+    resolved".
+    """
     sent = [comment for comment in change.comments if not comment.is_draft()]
     counts = [f'{sum(status == comment.status for comment in sent)} {status}'
               for status in STATUSES if any(status == comment.status for comment in sent)]
@@ -1211,7 +1246,7 @@ def print_comments(arguments):
               f'(PS{comment.patch_set})')
         for message in comment.messages:
             draft = ' (draft)' if not message.sent else ''
-            print(f'  {message.author}{draft}: {message.text}')
+            print(f'  {message.author}{draft}: {message_text(message)}')
 
 
 def run_tui(_arguments):
@@ -1250,8 +1285,6 @@ def parse_arguments(argv):
                     + other.current_votes(VERIFIED)]
             print(f'{other.short_id()}: patch set {number}' + (f', {kind}' if kind else '')
                   + (f', keeps {" ".join(kept)}' if kept else ''))
-        if not uploaded:
-            print(f'{change.short_id()}: apply requests marked handled')
 
     def submit_command(arguments):
         submitted = submit(find_change(arguments.change).change_id)
@@ -1265,8 +1298,13 @@ def parse_arguments(argv):
         print(f'{change.short_id()}: comment #{number} added')
 
     def reply_command(arguments):
+        status = RESOLVED if arguments.resolve else UNRESOLVED if arguments.unresolve else None
         add_message(find_change(arguments.change).change_id, arguments.number, AUTHOR,
-                    arguments.text)
+                    arguments.text, status=status)
+
+    def done_command(arguments):
+        add_message(find_change(arguments.change).change_id, arguments.number, AUTHOR,
+                    arguments.text or DONE, status=RESOLVED)
 
     def status_command(arguments):
         set_status(find_change(arguments.change).change_id, arguments.number, arguments.status,
@@ -1313,10 +1351,17 @@ def parse_arguments(argv):
             ('first', optional), ('second', optional))
     comment = command('comment', comment_command, 'add a comment', 'change', 'place', 'text')
     comment.add_argument('--author', action='store_true', help="the author's comment")
-    comment.add_argument('--status', choices=STATUSES, default='open')
-    command('reply', reply_command, 'answer a thread', 'change', number, 'text')
-    command('status', status_command, "set a thread's status", 'change', number,
-            ('status', {'choices': STATUSES}), ('text', optional))
+    status_choices = {'choices': STATUSES + tuple(OLD_STATUSES)}
+    comment.add_argument('--status', default=UNRESOLVED, **status_choices)
+    comment.add_argument('--resolved', action='store_const', const=RESOLVED, dest='status',
+                         help='start the thread resolved, e.g. a note')
+    reply = command('reply', reply_command, 'answer a thread', 'change', number, 'text')
+    reply.add_argument('--resolve', action='store_true', help='and resolve the thread')
+    reply.add_argument('--unresolve', action='store_true', help='and make it unresolved again')
+    command('done', done_command, 'answer "Done" and resolve the thread', 'change', number,
+            ('text', optional))
+    command('status', status_command, 'resolve a thread or make it unresolved again', 'change',
+            number, ('status', status_choices), ('text', optional))
     vote = command('vote', vote_command, 'vote on a patch set', 'change', 'label',
                    ('value', {'type': int}))
     vote.add_argument('--by')
@@ -1324,8 +1369,8 @@ def parse_arguments(argv):
     vote.add_argument('-m', '--message')
     command('require-verified', require_verified_command, 'whether Verified+1 is needed',
             'change', ('state', {'nargs': '?', 'choices': ('on', 'off'), 'default': 'on'}))
-    command('inbox', inbox_command, 'what to answer or apply', repositories)
-    command('watch', watch_command, 'print new messages and requests', repositories)
+    command('inbox', inbox_command, 'what to answer', repositories)
+    command('watch', watch_command, 'print new messages and votes', repositories)
     hook = commands.add_parser('commit-msg-hook', help=argparse.SUPPRESS)
     hook.add_argument('message_file')
     hook.set_defaults(run=hook_command)

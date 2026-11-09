@@ -39,7 +39,7 @@ WHEEL_DOWN = 'wheel down'
 GO_TOP = -2
 
 STATE_COLOURS = {'New': 0, 'In-Review': 3, 'Submitted': 2}
-STATUS_COLOURS = {'open': 3, 'agreed': 6, 'done': 2, 'dropped': 8, 'draft': 5}
+STATUS_COLOURS = {'unresolved': 3, 'resolved': 2, 'draft': 5}
 
 # How many lines around each change the diff shows, + and - step through
 # them. None is the whole file.
@@ -82,7 +82,7 @@ Stacks
   S           submit: moves the base branch to the change, which submits
               the changes below it too. Needs Code-Review+2 (and Verified+1
               if required) on each. Asks first and lists them and their
-              unfinished comments.
+              unresolved comments.
 
 Change: files and comments on the left, the diff on the right. The first
 file is the commit message, with a header.
@@ -94,7 +94,7 @@ file is the commit message, with a header.
   l           on a file: into the diff. In the comments: unfolds the
               thread and goes to it in the diff. In the diff: folds or
               unfolds the thread at the cursor. Threads are shown under
-              their line, unfinished ones and those with drafts unfolded.
+              their line, unresolved ones and those with drafts unfolded.
               Threads on lines the diff doesn't show are at its top.
   i           folds all threads, or unfolds all if all are folded
   r / e       on a thread in the diff or the comments: reply / edit your
@@ -113,12 +113,13 @@ file is the commit message, with a header.
   p           choose the versions to compare: "1 3", "2 current" or
               "base 2" (the whole change as of PS2). Empty gives the
               default "base latest": the whole change, latest patch set.
-  s           send all drafts of this change
-  y           agree to the selected thread (or the one at the diff's
-              cursor), apply later
-  a           apply the selected thread now (agrees to it)
-  A           apply all agreed threads of this change
-  x / o       drop / reopen the selected thread
+  s           send all drafts of this change, which tells the author to
+              start
+  y           on a thread: reply "Done" as a draft, which resolves it
+  Y           on a thread: reply "Ack" as a draft, which resolves it
+  x           on a thread: whether sending its draft resolves it, or makes
+              it unresolved again (Gerrit's Resolved checkbox). Without a
+              draft, it makes an empty one.
   v / V       vote Code-Review / whether Verified+1 is needed
   S           submit
 
@@ -645,9 +646,14 @@ def status_attribute(status):
 
 
 def comment_label(comment):
-    """Status shown for a thread: its status, or draft if unsent."""
+    """Status shown for a thread: its status, or draft if unsent. With a
+    draft that changes the status, the status it will have.
+    """
     if comment.is_draft():
-        return 'draft'
+        return 'draft' + (' resolved' if 'resolved' == comment.draft_status() else '')
+    after = comment.draft_status()
+    if after and after != comment.status:
+        return f'{comment.status} → {after} (draft)'
     return comment.status + (' +draft' if comment.has_draft() else '')
 
 
@@ -798,7 +804,7 @@ def vote_action(interface, change, key):
 
 def submit_with_confirmation(interface, change):
     """Asks before submitting. Lists the changes that get submitted along
-    and the threads that are not finished. Says first what is missing, if
+    and the unresolved threads. Says first what is missing, if
     a change lacks votes or an upload.
     """
     core = interface.core
@@ -815,11 +821,11 @@ def submit_with_confirmation(interface, change):
                   for comment in other.unfinished_comments()]
     lines.append('')
     if unfinished:
-        lines.append('These comments are not finished:')
+        lines.append('These comments are unresolved:')
         lines += [f'  {other.short_id()} #{comment.number} [{comment.status}] {comment.place_label()}: '
-                  f'{comment.messages[0].text.splitlines()[0]}' for other, comment in unfinished]
+                  f'{(comment.messages[0].text.splitlines() or [""])[0]}' for other, comment in unfinished]
     else:
-        lines.append('All comments are finished.')
+        lines.append('All comments are resolved.')
     drafts = sum(comment.has_draft() for other in submitted for comment in other.comments)
     if drafts:
         lines += ['', f'{drafts} draft(s) are not sent and stay unsent.']
@@ -1314,7 +1320,7 @@ class DiffPane:
 THREAD_INDENT = 3
 
 
-def thread_rows(comment, width, expanded, reviewer, note=''):
+def thread_rows(comment, width, expanded, core, note=''):
     """A thread as rows of the diff, each a list of (text, foreground,
     background, styles). Folded it is one row with the start of the first
     message. note goes into the title, e.g. that its line isn't shown.
@@ -1325,17 +1331,17 @@ def thread_rows(comment, width, expanded, reviewer, note=''):
     title = (f'#{comment.number} {label}' + (f'  {note}' if note else ''), colour, -1,
              curses.A_BOLD)
     if not expanded:
-        first = comment.messages[0].text.split('\n')[0] if comment.messages else ''
+        first = core.message_text(comment.messages[0]).split('\n')[0] if comment.messages else ''
         return [[(pad + '▸ ', -1, -1, curses.A_DIM), title, (f'  {first}', -1, -1, curses.A_DIM)]]
     inner = max(width - THREAD_INDENT - 2, 20)
     rows = [[(pad + '┌ ', -1, -1, curses.A_DIM), title,
              (' ' + '─' * max(inner - len(title[0]) - 2, 0), -1, -1, curses.A_DIM)]]
     for message in comment.messages:
-        name = ('Reviewer' if reviewer == message.author else 'Author') + (
+        name = ('Reviewer' if core.REVIEWER == message.author else 'Author') + (
             ' (draft)' if not message.sent else '')
         name_colour = STATUS_COLOURS['draft'] if not message.sent else -1
         prefix = f'{name}: '
-        lines = [line for paragraph in message.text.split('\n')
+        lines = [line for paragraph in core.message_text(message).split('\n')
                  for line in textwrap.wrap(paragraph, max(inner - len(prefix), 10)) or ['']]
         for number, line in enumerate(lines):
             start = (prefix, name_colour, -1, curses.A_BOLD) if 0 == number else (
@@ -1354,11 +1360,11 @@ PANES = (FILES, COMMENTS, DIFF)
 
 PANE_KEYS = {
     FILES: 'j/k file  tab next pane  c comment on file  h back',
-    COMMENTS: 'j/k thread  l go to thread  r reply  y agree  a apply  x drop  o reopen  h back',
+    COMMENTS: 'j/k thread  l go to thread  r reply  y Done  Y Ack  x resolved  h back',
     DIFF: ('j/k line  gg/G  ^d/^u half page  c comment on line  C on file  +/- context  '
-           'l fold thread  i fold all  r reply  e edit draft  y/a/x/o thread  h files'),
+           'l fold thread  i fold all  r reply  e edit draft  y Done  Y Ack  x resolved  h files'),
 }
-COMMON_CHANGE_KEYS = ('s send  A apply all  v vote  V needs Verified  p patch sets  t vimdiff  '
+COMMON_CHANGE_KEYS = ('s send  v vote  V needs Verified  p patch sets  t vimdiff  '
                       'S submit  ? help')
 
 
@@ -1556,7 +1562,7 @@ class ChangeView:
         is_cursor = index == self._diff.cursor
         gutter = '>' if is_cursor and DIFF == self._focus else ' '
         out(top + row, left, gutter, curses.A_BOLD)
-        out(top + row, left + 1, '●' if has_thread else ' ', status_attribute('open'))
+        out(top + row, left + 1, '●' if has_thread else ' ', status_attribute('unresolved'))
         if is_cursor:
             out(top + row, left + 2, ' ' * (width - 2), self._diff.cursor_line_attribute(),
                 left + width)
@@ -1580,10 +1586,10 @@ class ChangeView:
         return self._layout[DIFF][2] if self._layout else 20
 
     def _is_expanded(self, comment):
-        """Whether a thread shows all its messages in the diff. Unfinished
+        """Whether a thread shows all its messages in the diff. Unresolved
         ones and those with drafts do, unless folded by hand.
         """
-        default = 'open' == comment.status or comment.has_draft() or comment.is_draft()
+        default = comment.is_unresolved() or comment.has_draft() or comment.is_draft()
         return self._expanded.get(comment.number, default)
 
     def _prepare_diff(self):
@@ -1612,9 +1618,9 @@ class ChangeView:
                 note = (f'on {"old " if "old" == comment.side else ""}line {line}, not in the '
                         'diff (+ shows more context)')
             blocks.setdefault(place, []).append(
-                (comment.number, thread_rows(comment, width, expanded, core.REVIEWER, note)))
+                (comment.number, thread_rows(comment, width, expanded, core, note)))
             signature.append((comment.number, comment.status, place, expanded,
-                              tuple((message.author, message.text, message.sent)
+                              tuple((message.author, message.text, message.sent, message.unresolved)
                                     for message in comment.messages)))
         self._diff.arrange(blocks, tuple(signature))
         return True
@@ -1913,18 +1919,18 @@ def thread_action(interface, change, comment, key):
         count = core.send_drafts(change.change_id)
         interface.after_write()
         interface.say(f'{count} draft(s) sent.' if count else 'No drafts to send.')
-    elif ord('A') == key:
-        core.request_apply(change.change_id)
-        interface.after_write()
-        interface.say('Asked to apply all agreed comments.')
     elif comment is None:
         return
-    elif ord('a') == key:
-        core.request_apply(change.change_id, comment.number)
+    elif key in (ord('y'), ord('Y')):
+        if comment.has_draft():
+            interface.say(f'#{comment.number} has a draft already. e edits it.')
+            return
+        text = core.DONE if ord('y') == key else core.ACK
+        core.add_message(change.change_id, comment.number, core.REVIEWER, text, sent=False,
+                         status=core.RESOLVED)
         interface.after_write()
-        interface.say(f'Asked to apply #{comment.number}.')
-    elif key in (ord('y'), ord('x'), ord('o')):
-        status = {ord('y'): 'agreed', ord('x'): 'dropped', ord('o'): 'open'}[key]
-        core.set_status(change.change_id, comment.number, status)
+        interface.say(f'"{text}" saved as a draft, it resolves #{comment.number}. s sends.')
+    elif ord('x') == key:
+        status = core.toggle_draft_status(change.change_id, comment.number)
         interface.after_write()
-        interface.say(f'#{comment.number} {status}.')
+        interface.say(f'Sending the draft makes #{comment.number} {status}. s sends.')
