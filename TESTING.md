@@ -1,0 +1,62 @@
+# Trying plustwo by hand
+
+A walkthrough in a throwaway repository: you as the reviewer in the
+interface, a second terminal as the author. If `plustwo` isn't on PATH,
+run `make link PREFIX=~/.local` here first, or use `git change` instead.
+
+## Setup
+
+In terminal 2 (the author), paste:
+
+    cd "$(mktemp -d)" && git init -q -b main && pwd
+    seq 1 60 | sed 's/^/line /' > a.txt && printf 'x = 1\n' > b.py
+    git add . && git commit -qm 'Initial commit'
+    plustwo init
+    git switch -qc feature
+    sed -i 's/^line 30$/line thirty/' a.txt && git commit -qam 'Spell out thirty'
+    printf 'x = 2\ny = 3\n' > b.py && git commit -qam 'Change b.py'
+    plustwo upload
+    plustwo watch . &
+
+In terminal 1 (you), `cd` to the printed directory and start `plustwo`.
+
+## As the reviewer
+
+| #   | Do                                                     | Expect                                           |
+|-----|--------------------------------------------------------|--------------------------------------------------|
+| 1   | look at the list                                       | one stack `feature`, two changes, Turn `▶ yours` |
+| 2   | `l` on the first change                                | files left, side by side diff right              |
+| 3   | `j` to a.txt, `l` into the diff                        | a gap row `26 common lines`, then line 30        |
+| 4   | `c` on the gap row                                     | the gap opens                                    |
+| 5   | `]c`, then `c`, write "Why words?", Enter              | a draft thread under line 30                     |
+| 6   | `<`, `c`, write "old side", Enter                      | a second draft, marked `(old)`                   |
+| 7   | `m`                                                    | `✓` before a.txt, title `1/2 reviewed`           |
+| 8   | `W` a few times                                        | the title shows the whitespace mode              |
+| 9   | `s`, write "Looks good otherwise", Enter               | drafts sent. Terminal 2 prints `review ...`      |
+| 10  | `h`, `h` back to the list                              | Turn of the first change is now `author`         |
+
+## As the author
+
+In terminal 2:
+
+| #   | Do                                                         | Expect                                     |
+|-----|------------------------------------------------------------|--------------------------------------------|
+| 11  | `plustwo inbox`                                            | both threads and the change message        |
+| 12  | `plustwo reply 1 1 "The spec says so."`                    | the thread stays unresolved                |
+| 13  | `plustwo done 1 2`                                         | the second thread is resolved              |
+| 14  | `plustwo guide \| head -20`                                | the agent guide                            |
+
+## Back as the reviewer
+
+| #   | Do                                                     | Expect                                           |
+|-----|--------------------------------------------------------|--------------------------------------------------|
+| 15  | wait a second                                          | the list reloads, Turn `▶ yours` again           |
+| 16  | open the change, go to thread #1, `Y`, `s`, Enter      | Ack sent, the thread is resolved                 |
+| 17  | `A`                                                    | `CR +2` badge, Turn `▶ submit`                   |
+| 18  | `S`, `y`                                               | submitted. Terminal 2 prints `submitted ...`     |
+| 19  | in terminal 2: `plustwo pull`                          | the branch now starts after the submitted change |
+| 20  | `?` in the interface                                   | all keys, `q` quits                              |
+
+To try other keys: `plustwo config --global keys.preset emacs` (or
+`gerrit`), then restart the interface. `plustwo config --global --unset
+keys.preset` goes back to vim keys. Stop the watcher with `kill %1`.
