@@ -22,7 +22,6 @@ scrolls.
 import curses
 import os
 import re
-import shutil
 import subprocess
 import tempfile
 import textwrap
@@ -1118,14 +1117,12 @@ def approve(interface, change):
     the reviewer wants.
     """
     core = interface.core
-    core.set_vote(change.change_id, core.CODE_REVIEW, 2)
     drafts = sum(not message.sent for comment in change.comments for message in comment.messages)
-    sent = ''
-    if drafts and ord('y') == interface.ask_key(f'{drafts} draft(s) unsent. Send them along? (y/N)'):
-        core.send_drafts(change.change_id)
-        sent = f', {drafts} draft(s) sent'
+    send = bool(drafts) and ord('y') == interface.ask_key(
+        f'{drafts} draft(s) unsent. Send them along? (y/N)')
+    number, sent = core.quick_approve(change.change_id, send)
     interface.after_write()
-    interface.say(f'Code-Review+2 on PS{change.latest_patch_set()}{sent}.')
+    interface.say(f'Code-Review+2 on PS{number}' + (f', {sent} draft(s) sent.' if sent else '.'))
 
 
 def stack_heading(core, topic, changes, rebase_key='B'):
@@ -1222,10 +1219,6 @@ def submit_with_confirmation(interface, change):
 
 # ── the diff pane ─────────────────────────────────────────────────────────
 
-# An escape sequence in bat's output: colours and styles (SGR, ending in m),
-# other control sequences, and hyperlinks (OSC 8). Only SGR is used.
-ESCAPE_PATTERN = re.compile(r'\x1b\[([0-9;]*)([A-Za-z])|\x1b\]8;[^\x1b\x07]*(?:\x1b\\|\x07)')
-
 # The 6 levels of each channel in the 256 colour palette's 6x6x6 cube
 CUBE_LEVELS = (0, 95, 135, 175, 215, 255)
 
@@ -1282,61 +1275,6 @@ class ColourPairs:
         return curses.color_pair(self._pairs[key])
 
 
-def colour_from(codes, index):
-    """Reads a colour after 38 or 48 in an SGR code list.
-
-    Returns the palette colour and the index after it.
-    """
-    if index + 1 < len(codes) and 5 == codes[index + 1] and index + 2 < len(codes):
-        return codes[index + 2], index + 3
-    if index + 1 < len(codes) and 2 == codes[index + 1] and index + 4 < len(codes):
-        return palette_index(*codes[index + 2:index + 5]), index + 5
-    return -1, len(codes)
-
-
-def styled_segments(line):
-    """Splits a line of terminal output into (text, foreground, background,
-    styles) parts. Colours are palette numbers, -1 the default.
-    """
-    segments = []
-    foreground, background, styles = -1, -1, 0
-    position = 0
-    for match in ESCAPE_PATTERN.finditer(line):
-        if match.start() > position:
-            segments.append((line[position:match.start()], foreground, background, styles))
-        position = match.end()
-        if 'm' != match.group(2):
-            continue
-        codes = [int(code) if code else 0 for code in match.group(1).split(';')]
-        index = 0
-        while index < len(codes):
-            code = codes[index]
-            index += 1
-            if 0 == code:
-                foreground, background, styles = -1, -1, 0
-            elif code in (1, 2, 3, 4, 7):
-                styles |= {1: curses.A_BOLD, 2: curses.A_DIM, 3: curses.A_ITALIC,
-                           4: curses.A_UNDERLINE, 7: curses.A_REVERSE}[code]
-            elif code in (22, 23, 24, 27):
-                styles &= ~{22: curses.A_BOLD | curses.A_DIM, 23: curses.A_ITALIC,
-                            24: curses.A_UNDERLINE, 27: curses.A_REVERSE}[code]
-            elif 30 <= code <= 37 or 90 <= code <= 97:
-                foreground = code - 30 if code < 90 else code - 82
-            elif 40 <= code <= 47 or 100 <= code <= 107:
-                background = code - 40 if code < 100 else code - 92
-            elif 38 == code:
-                foreground, index = colour_from(codes, index - 1)
-            elif 48 == code:
-                background, index = colour_from(codes, index - 1)
-            elif 39 == code:
-                foreground = -1
-            elif 49 == code:
-                background = -1
-    if position < len(line):
-        segments.append((line[position:], foreground, background, styles))
-    return segments
-
-
 # Approximate colours of the 16 basic palette entries (xterm's defaults).
 # The terminal may use others, good enough for lightening them a bit.
 BASIC_COLOURS = ((0, 0, 0), (205, 0, 0), (0, 205, 0), (205, 205, 0), (0, 0, 238), (205, 0, 205),
@@ -1386,35 +1324,29 @@ TAB_WIDTH = 4
 HALF_SEPARATOR = '│'
 
 
-def highlighter():
-    """The program that colours source code: bat (batcat on Debian), None
-    without it.
-    """
-    return shutil.which('bat') or shutil.which('batcat')
+STYLE_ATTRIBUTES = {'bold': curses.A_BOLD, 'italic': curses.A_ITALIC,
+                    'underline': curses.A_UNDERLINE}
 
 
-def highlighted(lines, path):
+def highlighted(core, lines, path):
     """Colours of the lines of a file as syntax highlighting gives them:
     for each line a list of (foreground, styles) per character. None
     without bat, or if its output doesn't fit the lines.
     """
-    program = highlighter()
-    if not program or not lines:
-        return None
-    result = subprocess.run([program, '--color=always', '--style=plain', '--paging=never',
-                             '--wrap=never', f'--file-name={path}'],
-                            input='\n'.join(lines) + '\n', capture_output=True, text=True,
-                            errors='replace')
-    output = result.stdout.split('\n')
-    if 0 != result.returncode or len(output) < len(lines):
+    segments = core.syntax_segments(lines, path)
+    if segments is None:
         return None
     colours = []
-    for line, rendered in zip(lines, output):
-        segments = styled_segments(rendered)
-        if ''.join(segment[0] for segment in segments) != line:
-            return None
-        colours.append([(foreground, styles) for text, foreground, _, styles in segments
-                        for _ in text])
+    for line in segments:
+        cells = []
+        for text, colour, styles in line:
+            foreground = -1 if colour is None else palette_index(
+                *(int(colour[index:index + 2], 16) for index in (1, 3, 5)))
+            attributes = 0
+            for style in styles:
+                attributes |= STYLE_ATTRIBUTES[style]
+            cells += [(foreground, attributes)] * len(text)
+        colours.append(cells)
     return colours
 
 
@@ -1617,7 +1549,7 @@ class DiffPane:
         """
         key = (version, path)
         if key not in self._colour_cache:
-            self._colour_cache[key] = highlighted(core.file_lines(version, path) or [], path)
+            self._colour_cache[key] = highlighted(core, core.file_lines(version, path) or [], path)
         return self._colour_cache[key]
 
     def _renumbered(self, keep, previous_numbers):

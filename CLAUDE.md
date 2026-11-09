@@ -11,8 +11,10 @@ every command.
 | `plustwo`        | core and command line (Python, no dependencies)               |
 | `git-change`     | link to `plustwo`, the old name, which older hooks call       |
 | `plustwo_tui.py` | curses interface for the reviewer, imported by the core       |
+| `plustwo_web.py` | web interface (`plustwo serve`), stdlib HTTP server, JSON API |
+| `web/`           | the page: index.html, app.js, style.css, no build step        |
 | `AGENTS.md`      | guide for agents as authors, printed by `plustwo guide`       |
-| `tests/`         | `make test`: diff rows, flows, settings and keys              |
+| `tests/`         | `make test`: diff rows, flows, settings, keys and web API     |
 | `TESTING.md`     | manual walkthrough for the user, in a throwaway repository    |
 | `LICENSE`        | GPL-3.0-or-later, SPDX line in every source file              |
 | `Makefile`       | `check`, `test`, `install`, `link`, `uninstall`               |
@@ -20,8 +22,12 @@ every command.
 ## Design rules
 
 - All review logic lives in plain functions in `plustwo`. The command
-  line, the curses interface and a planned web interface are thin frontends
-  that call them. Never put logic into argparse handlers or curses code.
+  line, the curses interface and the web interface are thin frontends
+  that call them. Never put logic into argparse handlers, curses code,
+  HTTP handlers or the page's JavaScript.
+- The web server binds to 127.0.0.1 and requires its random token on
+  every API request and checks Host and Origin, because any page in the
+  browser could otherwise send requests to it.
 - Gerrit compatibility is a goal: the `Change-Id:` trailer, patch set refs,
   label names and vote rules follow Gerrit, so commits can go to a real
   Gerrit later. Check how Gerrit does something before inventing a variant.

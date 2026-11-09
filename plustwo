@@ -84,6 +84,8 @@ Usage:
                                         sent messages, per vote, and per stack
                                         submitted, rebased or to rebase, until
                                         stopped
+    plustwo serve [--port N] [REPO...]  web interface for the reviewer, on
+                                        127.0.0.1 only (port 8022)
     plustwo guide                       the guide for agents working as the
                                         author (AGENTS.md)
     plustwo config [--global] [--unset] [KEY [VALUE]]
@@ -138,6 +140,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -1539,6 +1542,15 @@ def set_vote(change_id, label, value, by=None, patch_set=None, message='', repos
     return update_change(change_id, edit, repository)
 
 
+def quick_approve(change_id, send=False, repository=None):
+    """Code-Review+2 on the latest patch set, like Gerrit's Quick approve.
+    With send, the reviewer's drafts are sent along. Returns (patch set,
+    number of drafts sent).
+    """
+    sent = send_drafts(change_id, repository=repository) if send else 0
+    return set_vote(change_id, CODE_REVIEW, 2, repository=repository), sent
+
+
 def require_verified(change_id, required, repository=None):
     """Sets whether the change needs Verified+1 to be submitted."""
     def edit(change):
@@ -1705,6 +1717,106 @@ def file_lines(version, path, repository=None):
         return None
     text = result.stdout.decode('utf-8', errors='replace')
     return text.split('\n')[:-1] if text.endswith('\n') else text.split('\n') if text else []
+
+
+# An SGR escape sequence (colours and styles) in a highlighter's output
+SGR_PATTERN = re.compile(r'\x1b\[([0-9;]*)m|\x1b\[[0-9;]*[A-Za-z]')
+SGR_STYLES = {1: 'bold', 3: 'italic', 4: 'underline'}
+SGR_RESETS = {22: 'bold', 23: 'italic', 24: 'underline'}
+# xterm's 16 basic colours, for highlighters that use them
+BASIC_HEX = ('#000000', '#cd0000', '#00cd00', '#cdcd00', '#0000ee', '#cd00cd', '#00cdcd',
+             '#e5e5e5', '#7f7f7f', '#ff0000', '#00ff00', '#ffff00', '#5c5cff', '#ff00ff',
+             '#00ffff', '#ffffff')
+
+
+def palette_hex(index):
+    """The colour of an entry of the 256 colour palette, as #rrggbb."""
+    if index < 16:
+        return BASIC_HEX[index]
+    if index >= 232:
+        grey = 8 + 10 * (index - 232)
+        return f'#{grey:02x}{grey:02x}{grey:02x}'
+    levels = (0, 95, 135, 175, 215, 255)
+    index -= 16
+    return '#' + ''.join(f'{levels[value]:02x}' for value in
+                         (index // 36, index // 6 % 6, index % 6))
+
+
+def sgr_segments(line):
+    """Splits a line of terminal output into (text, colour, styles) parts:
+    colour as #rrggbb or None for the default, styles a tuple of bold,
+    italic and underline.
+    """
+    segments = []
+    colour, styles = None, set()
+    position = 0
+    for match in SGR_PATTERN.finditer(line):
+        if match.start() > position:
+            segments.append((line[position:match.start()], colour, tuple(sorted(styles))))
+        position = match.end()
+        if match.group(1) is None:
+            continue
+        codes = [int(code) if code else 0 for code in match.group(1).split(';')]
+        index = 0
+        while index < len(codes):
+            code = codes[index]
+            index += 1
+            if 0 == code:
+                colour, styles = None, set()
+            elif code in SGR_STYLES:
+                styles.add(SGR_STYLES[code])
+            elif code in SGR_RESETS:
+                styles.discard(SGR_RESETS[code])
+            elif 30 <= code <= 37 or 90 <= code <= 97:
+                colour = BASIC_HEX[code - 30 if code < 90 else code - 82]
+            elif 39 == code:
+                colour = None
+            elif code in (38, 48) and index < len(codes):
+                if 5 == codes[index] and index + 1 < len(codes):
+                    value, index = palette_hex(codes[index + 1]), index + 2
+                elif 2 == codes[index] and index + 3 < len(codes):
+                    value = '#' + ''.join(f'{part:02x}' for part in codes[index + 1:index + 4])
+                    index += 4
+                else:
+                    value, index = None, len(codes)
+                if 38 == code:
+                    colour = value
+    if position < len(line):
+        segments.append((line[position:], colour, tuple(sorted(styles))))
+    return segments
+
+
+def highlighter():
+    """The program that colours source code: bat (batcat on Debian), None
+    without it.
+    """
+    return shutil.which('bat') or shutil.which('batcat')
+
+
+def syntax_segments(lines, path, theme=None):
+    """Syntax colours of a file's lines, from bat: for each line a list of
+    (text, colour, styles), see sgr_segments(). None without bat, or if
+    its output doesn't fit the lines. Both interfaces draw these. theme is
+    a bat theme, None for bat's own choice.
+    """
+    program = highlighter()
+    if not program or not lines:
+        return None
+    result = subprocess.run([program, '--color=always', '--style=plain', '--paging=never',
+                             '--wrap=never', f'--file-name={path}',
+                             *([f'--theme={theme}'] if theme else [])],
+                            input='\n'.join(lines) + '\n', capture_output=True, text=True,
+                            errors='replace', env={**os.environ, 'COLORTERM': 'truecolor'})
+    output = result.stdout.split('\n')
+    if 0 != result.returncode or len(output) < len(lines):
+        return None
+    highlighted = []
+    for line, rendered in zip(lines, output):
+        segments = sgr_segments(rendered)
+        if ''.join(segment[0] for segment in segments) != line:
+            return None
+        highlighted.append(segments)
+    return highlighted
 
 
 def intraline_edits(old, new):
@@ -2231,6 +2343,14 @@ def parse_arguments(argv):
     def guide_command(_arguments):
         print(guide_text(), end='')
 
+    def serve_command(arguments):
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import plustwo_web  # pylint: disable=import-outside-toplevel
+        repositories = arguments.repositories or ['.']
+        for repository in repositories:
+            ensure_layout(repository)
+        plustwo_web.serve(sys.modules[__name__], repositories, arguments.port)
+
     def hook_command(arguments):
         add_change_id(arguments.message_file)
 
@@ -2275,6 +2395,8 @@ def parse_arguments(argv):
     command('watch', watch_command, 'print new messages and votes', repositories).add_argument(
         '--topic', help='only this stack')
     command('guide', guide_command, 'the guide for agents as authors')
+    command('serve', serve_command, 'web interface', repositories).add_argument(
+        '--port', type=int, default=8022)
     config = command('config', config_command, 'show or change a setting', ('key', optional),
                      ('value', optional))
     config.add_argument('--global', dest='user', action='store_true',

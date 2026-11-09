@@ -61,7 +61,15 @@ You review it with `plustwo`:
 6. `A` votes Code-Review+2, `S` submits: the base branch moves forward to
    the change.
 
-`?` lists all keys. The author's side is in [AGENTS.md](AGENTS.md), which
+`?` lists all keys.
+
+The same review works in the browser: `plustwo serve` (or `plustwo serve
+REPO...` for several repositories) prints a local address, only reachable
+from this machine. Click a line number to comment, Reply sends the drafts
+with a message and a vote, +2 approves. The keys are the same presets.
+Submit and rebase stay in the terminal for now.
+
+The author's side is in [AGENTS.md](AGENTS.md), which
 `plustwo guide` prints. A project's agent instructions only need to point
 to that command. [TESTING.md](TESTING.md) walks through everything by hand.
 

@@ -15,11 +15,12 @@ PREFIX = /usr/local
 BINDIR = $(PREFIX)/bin
 LIBDIR = $(PREFIX)/lib/plustwo
 
-# plustwo imports the interface and reads the guide (AGENTS.md) from the
-# directory it really lives in, following symbolic links. So the files stay
-# together and bin only gets links. git-change is the old name, which hooks
-# of older repositories call.
-SOURCES = plustwo plustwo_tui.py
+# plustwo imports the interfaces and reads the guide (AGENTS.md) from the
+# directory it really lives in, following symbolic links, the web interface
+# its page from web/ there. So the files stay together and bin only gets
+# links. git-change is the old name, which hooks of older repositories call.
+SOURCES = plustwo plustwo_tui.py plustwo_web.py
+WEB = web/index.html web/app.js web/style.css
 NAMES = plustwo git-change
 
 .PHONY: all check test install link uninstall
@@ -35,6 +36,8 @@ test: check
 install: check
 	install -Dm755 plustwo $(DESTDIR)$(LIBDIR)/plustwo
 	install -Dm644 plustwo_tui.py $(DESTDIR)$(LIBDIR)/plustwo_tui.py
+	install -Dm644 plustwo_web.py $(DESTDIR)$(LIBDIR)/plustwo_web.py
+	install -Dm644 -t $(DESTDIR)$(LIBDIR)/web $(WEB)
 	install -Dm644 AGENTS.md $(DESTDIR)$(LIBDIR)/AGENTS.md
 	install -d $(DESTDIR)$(BINDIR)
 	for name in $(NAMES); do \

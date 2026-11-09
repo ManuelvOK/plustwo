@@ -60,3 +60,20 @@ In terminal 2:
 To try other keys: `plustwo config --global keys.preset emacs` (or
 `gerrit`), then restart the interface. `plustwo config --global --unset
 keys.preset` goes back to vim keys. Stop the watcher with `kill %1`.
+
+## In the browser
+
+Repeat the setup in a new throwaway repository, then:
+
+| #   | Do                                                  | Expect                                       |
+|-----|-----------------------------------------------------|----------------------------------------------|
+| 21  | terminal 1: `plustwo serve .`, open the address     | the stack `feature` with both changes        |
+| 22  | click "Spell out thirty"                            | file list left, side by side diff right      |
+| 23  | click the new side's number of line 30, write, Save | a draft thread under the line                |
+| 24  | Reply, pick `+1`, Send                              | the draft is sent, `CR +1` badge             |
+| 25  | terminal 2: `plustwo reply 1 1 'ok'`                | within a second the answer shows in the page |
+| 26  | Done on the thread, Reply, Send                     | the thread is resolved                       |
+| 27  | tick the file's checkbox, then +2                   | `1/2 reviewed`, `CR +2`, `submittable`       |
+| 28  | `?`                                                 | the keys of your preset                      |
+
+Stop the server with Ctrl-C.

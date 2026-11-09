@@ -1,0 +1,41 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>plustwo</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body data-token="{{TOKEN}}">
+<header id="top">
+  <a href="#/" class="brand">plustwo</a>
+  <select id="repo" hidden></select>
+  <span id="message"></span>
+  <span class="spacer"></span>
+  <button id="help-button" title="Keys (?)">?</button>
+</header>
+<main id="view"></main>
+<dialog id="reply-dialog">
+  <form method="dialog">
+    <h2>Reply</h2>
+    <p id="reply-drafts"></p>
+    <label>Message on the whole change
+      <textarea id="reply-text" rows="4"></textarea></label>
+    <fieldset id="reply-vote"><legend>Code-Review</legend></fieldset>
+    <menu>
+      <button value="cancel">Cancel</button>
+      <button value="send" id="reply-send" class="primary">Send</button>
+    </menu>
+  </form>
+</dialog>
+<dialog id="help-dialog">
+  <form method="dialog">
+    <h2>Keys</h2>
+    <div id="help-keys"></div>
+    <menu><button value="close">Close</button></menu>
+  </form>
+</dialog>
+<script src="/app.js"></script>
+</body>
+</html>
