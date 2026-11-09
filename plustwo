@@ -8,8 +8,8 @@ a real Gerrit later, and Gerrit sees it as the same change.
 
 Like with a Gerrit server, the review has its own place, refs/plustwo/,
 apart from the author's branches. The author works on any local branch and
-uploads its stack: the commits not on the base branch yet (main, or what
-the git config change.base says), as refs/plustwo/stacks/<topic>. The
+uploads its stack: the commits not on the base branch yet (main, or the
+setting review.base), as refs/plustwo/stacks/<topic>. The
 reviewer's actions (a rebase, a submit) change only that place and the
 base branch, never a checkout. plustwo pull brings them into the
 author's branch. Submitting a change moves the base branch forward to it,
@@ -85,6 +85,9 @@ Usage:
                                         stopped
     plustwo guide                       the guide for agents working as the
                                         author (AGENTS.md)
+    plustwo config [--global] [--unset] [KEY [VALUE]]
+                                        shows or changes a setting, all of
+                                        them without KEY
 
 CHANGE is a change's number in the overview (counted over all stacks) or a
 unique prefix of its Change-Id (like I3f2a). A and B are patch set
@@ -109,6 +112,20 @@ Sending the reviewer's drafts is the author's signal to start.
 Comments on a whole file have the file as their place. The commit message
 is the file /COMMIT_MSG, shown with a header like in Gerrit, so it gets
 comments the same way, e.g. on /COMMIT_MSG:7.
+
+Settings are kept in files of their own, in git config syntax, not in
+git's config: ~/.config/plustwo/config for the user ($XDG_CONFIG_HOME
+moves it) and .git/plustwo/config for a repository, which wins.
+plustwo config changes them, git config --file works too. Settings:
+    review.base                         the base branch, default main.
+                                        Older versions used the git config
+                                        change.base, still read, which init
+                                        moves out of .git/config.
+    keys.preset                         the interface's keys: vim (the
+                                        default), emacs or gerrit
+    keys.ACTION                         keys of one action of the
+                                        interface, like keys.reply = R or
+                                        C-r,R. Its help (?) lists the actions.
 """
 
 import argparse
@@ -375,11 +392,114 @@ def git(*arguments, input_text=None, check=True, repository=None):
     return result.stdout.rstrip('\n')
 
 
+# ── settings ──────────────────────────────────────────────────────────────
+
+# Settings that lived in git config before, read from there as a fallback
+LEGACY_SETTINGS = {'review.base': 'change.base'}
+
+
+def user_config_path():
+    """The user's settings file, in git config syntax."""
+    home = os.environ.get('XDG_CONFIG_HOME') or str(Path.home() / '.config')
+    return Path(home) / 'plustwo' / 'config'
+
+
+def repository_config_path(repository=None):
+    """The repository's settings file, in git config syntax, inside .git."""
+    path = Path(git('rev-parse', '--git-path', 'plustwo/config', repository=repository))
+    return Path(repository) / path if repository and not path.is_absolute() else path.absolute()
+
+
+def config_files(repository=None):
+    """The settings files, the one that wins first: the repository's, then
+    the user's. The repository's only inside a repository.
+    """
+    inside = subprocess.run(['git', *(['-C', str(repository)] if repository else []),
+                             'rev-parse', '--git-dir'], capture_output=True).returncode == 0
+    return ([repository_config_path(repository)] if inside else []) + [user_config_path()]
+
+
+def setting(key, default=None, repository=None):
+    """A setting like review.base: from the repository's file, else the
+    user's, else (for older settings) git config, else default. The files
+    use git config syntax and are read with git config --file, so no
+    setting of ours goes into git's own config.
+    """
+    for path in config_files(repository):
+        if path.exists():
+            value = git('config', '--file', str(path), '--get', key, check=False)
+            if value:
+                return value
+    legacy = LEGACY_SETTINGS.get(key)
+    if legacy:
+        value = git('config', legacy, check=False, repository=repository)
+        if value:
+            return value
+    return default
+
+
+def settings_section(section, repository=None):
+    """All settings of a section like keys, as {name: value}, the
+    repository's over the user's.
+    """
+    values = {}
+    for path in reversed(config_files(repository)):
+        if not path.exists():
+            continue
+        output = git('config', '--file', str(path), '--get-regexp', rf'^{re.escape(section)}\.',
+                     check=False)
+        for line in filter(None, output.split('\n')):
+            key, _, value = line.partition(' ')
+            values[key[len(section) + 1:]] = value
+    return values
+
+
+def set_setting(key, value, user=False, repository=None):
+    """Stores a setting in the repository's file, or with user in the
+    user's. Value None removes it.
+    """
+    path = user_config_path() if user else repository_config_path(repository)
+    if value is None:
+        if path.exists():
+            git('config', '--file', str(path), '--unset', key, check=False)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    git('config', '--file', str(path), key, value)
+
+
+def list_settings(repository=None):
+    """Every setting as "key=value (file)" lines, the user's first."""
+    lines = []
+    for path in reversed(config_files(repository)):
+        if path.exists():
+            output = git('config', '--file', str(path), '--list', check=False)
+            lines += [f'{line}  ({path})' for line in filter(None, output.split('\n'))]
+    return lines
+
+
+def migrate_settings(repository=None):
+    """Moves settings of older versions out of the repository's git config
+    into its own file. Ones in the user's global git config are left
+    alone, they still count as a fallback. Returns the moved keys.
+    """
+    moved = []
+    for key, legacy in LEGACY_SETTINGS.items():
+        value = git('config', '--local', legacy, check=False, repository=repository)
+        if not value:
+            continue
+        path = repository_config_path(repository)
+        if not (path.exists() and git('config', '--file', str(path), '--get', key, check=False)):
+            set_setting(key, value, repository=repository)
+        git('config', '--local', '--unset', legacy, repository=repository)
+        moved.append(f'{legacy} -> {key}')
+    return moved
+
+
 def base_branch(repository=None):
-    """The branch reviewed changes go to: the git config change.base, else
+    """The branch reviewed changes go to: the setting review.base, else
     main.
     """
-    return git('config', 'change.base', check=False, repository=repository) or DEFAULT_BASE
+    return setting('review.base', DEFAULT_BASE, repository)
 
 
 def refs_with_prefix(*prefixes, repository=None):
@@ -589,6 +709,7 @@ def init_repository():
         notes_commit = git('commit-tree', empty_tree, '-m', 'Notes created by plustwo init')
         git('update-ref', NOTES_REF, notes_commit)
     migrate_layout(remove_old=True)
+    return migrate_settings()
 
 
 def migrate_layout(remove_old=False, repository=None):
@@ -1788,8 +1909,23 @@ def parse_arguments(argv):
         return sub
 
     def init_command(_arguments):
-        init_repository()
+        moved = init_repository()
         print('commit-msg hook installed, notes follow amends and rebases')
+        for line in moved:
+            print(f'moved setting {line}')
+
+    def config_command(arguments):
+        if arguments.key is None:
+            print('\n'.join(list_settings()))
+        elif arguments.unset:
+            set_setting(arguments.key, None, arguments.user)
+        elif arguments.value is None:
+            value = setting(arguments.key)
+            if value is None:
+                raise ChangeError(f'{arguments.key} is not set')
+            print(value)
+        else:
+            set_setting(arguments.key, arguments.value, arguments.user)
 
     def upload_command(arguments):
         branch = branch_with_change(arguments.change) if arguments.change else None
@@ -1906,6 +2042,11 @@ def parse_arguments(argv):
     command('inbox', inbox_command, 'what to answer', repositories)
     command('watch', watch_command, 'print new messages and votes', repositories)
     command('guide', guide_command, 'the guide for agents as authors')
+    config = command('config', config_command, 'show or change a setting', ('key', optional),
+                     ('value', optional))
+    config.add_argument('--global', dest='user', action='store_true',
+                        help="the user's settings instead of the repository's")
+    config.add_argument('--unset', action='store_true', help='remove the setting')
     hook = commands.add_parser('commit-msg-hook', help=argparse.SUPPRESS)
     hook.add_argument('message_file')
     hook.set_defaults(run=hook_command)

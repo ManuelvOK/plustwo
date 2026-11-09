@@ -62,3 +62,19 @@ For development, `make link PREFIX=~/.local` links the checkout instead.
     plustwo                           # review it
 
 `plustwo --help` lists all commands.
+
+## Settings
+
+Settings live in files of their own, in git config syntax, so nothing goes
+into git's config: `~/.config/plustwo/config` for you and
+`.git/plustwo/config` for one repository, which wins.
+
+    plustwo config review.base develop        # this repository's base branch
+    plustwo config --global keys.preset emacs # vim (default), emacs, gerrit
+    plustwo config                            # lists all settings
+
+| Key             | Meaning                                              |
+|-----------------|------------------------------------------------------|
+| `review.base`   | the base branch, default `main`                      |
+| `keys.preset`   | the interface's keys: `vim`, `emacs` or `gerrit`     |
+| `keys.<action>` | keys of one action, e.g. `keys.reply = R`, see `?`   |

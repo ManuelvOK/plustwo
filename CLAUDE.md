@@ -46,7 +46,11 @@ every command.
   state, like in Gerrit. Older notes (a `status` per thread, `requests`)
   are converted when read. `plustwo init` sets `notes.rewriteRef`, so
   notes follow amends and rebases.
-- `git config change.base`: the base branch, default main.
+- Settings: own files in git config syntax, read with `git config --file`:
+  `~/.config/plustwo/config` (user) and `.git/plustwo/config` (repository,
+  wins). `review.base` is the base branch, default main. The old git
+  config `change.base` is still read, `plustwo init` moves it. Never put
+  settings into git's own config (the user's wish).
 
 ## Checking changes
 
