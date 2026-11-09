@@ -12,7 +12,7 @@ every command.
 | `git-change`     | link to `plustwo`, the old name, which older hooks call       |
 | `plustwo_tui.py` | curses interface for the reviewer, imported by the core       |
 | `AGENTS.md`      | guide for agents as authors, printed by `plustwo guide`       |
-| `tests/`         | `make test`: diff rows, and upload/submit/rebase/pull flows   |
+| `tests/`         | `make test`: diff rows, flows, settings and keys              |
 | `Makefile`       | `check`, `test`, `install`, `link`, `uninstall`               |
 
 ## Design rules

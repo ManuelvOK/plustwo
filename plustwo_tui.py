@@ -3,7 +3,9 @@
 Started by `plustwo` without arguments. Two screens: the stacks in
 review (one per topic), and one change with its files, its comment
 threads and the diff, which shows the threads under their lines.
-Keys are shown at the bottom of every screen, `?` lists them all.
+Keys are shown at the bottom of every screen, `?` lists them all. Every
+key is an action, see ACTIONS. The setting keys.preset picks vim (the
+default), emacs or gerrit keys, keys.<action> sets single ones.
 
 The change screen shows the diff side by side like Gerrit, drawn here from
 the rows core.file_diff_rows() lays out, with syntax colours from bat if it
@@ -37,8 +39,6 @@ DOUBLE_CLICK = 'double click'
 WHEEL_UP = 'wheel up'
 WHEEL_DOWN = 'wheel down'
 
-# The key views get for gg. curses keys are positive, so this one is free.
-GO_TOP = -2
 
 STATE_COLOURS = {'New': 0, 'In-Review': 3, 'Submitted': 2}
 STATUS_COLOURS = {'unresolved': 3, 'resolved': 2, 'draft': 5}
@@ -55,81 +55,294 @@ PARTLY_BACKGROUNDS = (54, 92)
 FROM_BELOW_BASIC = 4
 PARTLY_BASIC = 5
 
+# ── keys ──────────────────────────────────────────────────────────────────
+
+# Alt plus a key arrives as Esc and the key. It becomes the key plus this.
+META = 1 << 24
+
+# Every action of the interface: (name, group, short label for the footer,
+# description for the help). The keys come from a preset.
+ACTIONS = (
+    ('quit', 'Everywhere', 'quit', 'quit, after asking'),
+    ('help', 'Everywhere', 'help', 'this help'),
+    ('reload', 'Everywhere', 'reload', 'reload now (it also reloads by itself)'),
+    ('back', 'Everywhere', 'back', 'back (not on the first screen, quit quits). In the diff, '
+     'back to the files or comments.'),
+    ('down', 'Moving', 'move', 'down. A count before moves that far, e.g. 15 down.'),
+    ('up', 'Moving', 'move', 'up'),
+    ('top', 'Moving', 'top', 'to the top. With a count to that row.'),
+    ('bottom', 'Moving', 'bottom', 'to the bottom. With a count to that row, in the diff to '
+     'that line of the new version.'),
+    ('page-down', 'Moving', 'half page', 'half a page down'),
+    ('page-up', 'Moving', 'half page', 'half a page up'),
+    ('open', 'Moving', 'open', 'open. On a file: into the diff. In the comments: unfolds the '
+     'thread and goes to it in the diff. In the diff: folds or unfolds the thread.'),
+    ('diff', 'Stacks', 'diff', 'the diff of the change in git\'s pager'),
+    ('vote', 'Stacks and changes', 'vote', 'vote Code-Review (-2..+2) on the latest patch set'),
+    ('verified', 'Stacks and changes', 'needs Verified', 'whether the change needs Verified+1 '
+     '(from a check calling plustwo vote CHANGE Verified +1)'),
+    ('submit', 'Stacks and changes', 'submit', 'submit: moves the base branch to the change, '
+     'which submits the changes below it too. Needs Code-Review+2 (and Verified+1 if '
+     'required). Asks first and lists the unresolved comments.'),
+    ('rebase', 'Stacks and changes', 'rebase', 'rebase the stack onto the base branch, without '
+     'touching any checkout. On a conflict the author is asked to rebase.'),
+    ('next-pane', 'Change', 'next pane', 'next pane: files, comments, diff'),
+    ('next-file', 'Change', 'file', 'next file'),
+    ('prev-file', 'Change', 'file', 'previous file'),
+    ('next-chunk', 'Change', 'chunk', 'in the diff: to the next changed lines'),
+    ('prev-chunk', 'Change', 'chunk', 'in the diff: to the previous changed lines'),
+    ('next-thread', 'Change', 'thread', 'in the diff: to the next thread'),
+    ('prev-thread', 'Change', 'thread', 'in the diff: to the previous thread'),
+    ('comment', 'Change', 'comment', 'in the diff: comment on the cursor line, or on the whole '
+     'file on rows without a line number. On a thread it replies. In the files: comment on '
+     'the file. It stays a draft until sent.'),
+    ('file-comment', 'Change', 'on file', 'comment on the whole file'),
+    ('more-context', 'Change', 'context', 'more context around the changes, up to the whole '
+     'file'),
+    ('less-context', 'Change', 'context', 'less context around the changes'),
+    ('vimdiff', 'Change', 'vimdiff', 'the file\'s diff in vimdiff'),
+    ('patch-sets', 'Change', 'patch sets', 'choose the versions to compare: "1 3", "2 '
+     'current" or "base 2" (the whole change as of PS2). Empty: the whole change, latest '
+     'patch set.'),
+    ('fold-all', 'Change', 'fold all', 'fold all threads, or unfold all if all are folded'),
+    ('reply', 'Threads', 'reply', 'reply to the thread, as a draft'),
+    ('edit-draft', 'Threads', 'edit draft', 'edit your draft in the thread. Empty deletes it.'),
+    ('done', 'Threads', 'Done', 'reply "Done" as a draft, which resolves the thread'),
+    ('ack', 'Threads', 'Ack', 'reply "Ack" as a draft, which resolves the thread'),
+    ('resolve', 'Threads', 'resolved', 'whether sending the draft resolves the thread or makes '
+     'it unresolved again (Gerrit\'s Resolved checkbox). Without a draft, it makes an empty '
+     'one.'),
+    ('send', 'Threads', 'send', 'send all drafts of this change, which tells the author to '
+     'start'),
+)
+ACTION_NAMES = tuple(action[0] for action in ACTIONS)
+
+# The keys of each action, per preset. Alternatives are separated by
+# commas, the keys of a sequence like gg by spaces. C-x is Ctrl, M-x Alt.
+VIM_KEYS = {
+    'quit': 'q', 'help': '?', 'reload': 'R', 'back': 'h,Esc',
+    'down': 'j,Down', 'up': 'k,Up', 'top': 'g g,Home', 'bottom': 'G,End',
+    'page-down': 'C-d,PageDown', 'page-up': 'C-u,PageUp', 'open': 'l,Enter',
+    'diff': 'd', 'vote': 'v', 'verified': 'V', 'submit': 'S', 'rebase': 'B',
+    'next-pane': 'Tab', 'next-file': '] f', 'prev-file': '[ f',
+    'next-chunk': '] c', 'prev-chunk': '[ c', 'next-thread': '] t', 'prev-thread': '[ t',
+    'comment': 'c', 'file-comment': 'C', 'more-context': '+,=', 'less-context': '-',
+    'vimdiff': 't', 'patch-sets': 'p', 'fold-all': 'i',
+    'reply': 'r', 'edit-draft': 'e', 'done': 'y', 'ack': 'Y', 'resolve': 'x', 'send': 's',
+}
+PRESETS = {
+    'vim': VIM_KEYS,
+    # Emacs moves with C-n, C-p, C-v, M-v, M-< and M->, and C-g cancels.
+    # Like in its diff-mode, n and p go to the next and previous changes,
+    # N and P to the next and previous file. Counts start with C-u.
+    'emacs': {**VIM_KEYS,
+              'quit': 'q,C-x C-c', 'reload': 'g,R', 'back': 'C-g,Esc,C-b',
+              'down': 'C-n,Down', 'up': 'C-p,Up', 'top': 'M-<,Home', 'bottom': 'M->,End',
+              'page-down': 'C-v,PageDown', 'page-up': 'M-v,PageUp', 'open': 'Enter,C-f',
+              'next-chunk': 'n', 'prev-chunk': 'p', 'next-file': 'N', 'prev-file': 'P',
+              'next-thread': ']', 'prev-thread': '[', 'patch-sets': 'b'},
+    # Gerrit's web interface: j and k move, n and p go to the next and
+    # previous changes, N and P to the next and previous thread, ] and [ to
+    # the next and previous file, u goes up, o opens, c comments, and a
+    # opens the reply dialog, which sends the drafts.
+    'gerrit': {**VIM_KEYS,
+               'back': 'u,h,Esc', 'open': 'o,l,Enter',
+               'next-chunk': 'n', 'prev-chunk': 'p', 'next-thread': 'N', 'prev-thread': 'P',
+               'next-file': ']', 'prev-file': '[', 'send': 'a', 'patch-sets': 'b'},
+}
+# Presets whose counts start with a key, like Emacs' C-u 15 C-n. The
+# others take digits right away, like vim's 15j.
+COUNT_PREFIXES = {'emacs': 'C-u'}
+
+NAMED_KEYS = {
+    'Enter': (10, 13, curses.KEY_ENTER), 'Esc': (27,), 'Tab': (9,), 'S-Tab': (curses.KEY_BTAB,),
+    'Space': (32,), 'Comma': (ord(','),), 'Up': (curses.KEY_UP,), 'Down': (curses.KEY_DOWN,),
+    'Left': (curses.KEY_LEFT,), 'Right': (curses.KEY_RIGHT,), 'PageUp': (curses.KEY_PPAGE,),
+    'PageDown': (curses.KEY_NPAGE,), 'Home': (curses.KEY_HOME,), 'End': (curses.KEY_END,),
+    'Backspace': (curses.KEY_BACKSPACE, 127, 8),
+}
+
+
+def key_codes(token):
+    """The key codes a key like j, C-n, M-v or Enter stands for."""
+    if token in NAMED_KEYS:
+        return NAMED_KEYS[token]
+    if token.startswith('M-') and len(token) > 2:
+        return tuple(META | code for code in key_codes(token[2:]))
+    if token.startswith('C-') and 3 == len(token):
+        return ((ord(token[2].lower()) & 0x1f) if token[2].isalpha() else ord(token[2]) & 0x1f,)
+    if 1 == len(token):
+        return (ord(token),)
+    raise ValueError(f'unknown key "{token}"')
+
+
+def key_sequences(spec):
+    """The key code sequences of a spec like "g g,Home"."""
+    sequences = []
+    for alternative in filter(None, (part.strip() for part in spec.split(','))):
+        options = [()]
+        for token in alternative.split():
+            options = [sequence + (code,) for sequence in options for code in key_codes(token)]
+        sequences += options
+    return sequences
+
+
+def key_label(alternative):
+    """A key alternative for display: gg for "g g", C-x C-c stays."""
+    tokens = alternative.split()
+    return ''.join(tokens) if all(1 == len(token) for token in tokens) else ' '.join(tokens)
+
+
+# What Keymap.feed() returns while a count or a key sequence goes on
+PENDING = 'pending'
+
+
+class Keymap:
+    """The keys of a preset, with the reviewer's own on top, turned into
+    actions. Counts and key sequences like gg are collected here, so the
+    views only see actions.
+    """
+
+    def __init__(self, preset='vim', overrides=None):
+        self.errors = []
+        if preset not in PRESETS:
+            self.errors.append(f'unknown keys.preset "{preset}", using vim')
+            preset = 'vim'
+        self.preset = preset
+        specs = dict(PRESETS[preset])
+        overrides = dict(overrides or {})
+        for name in list(overrides):
+            if name not in ACTION_NAMES:
+                self.errors.append(f'unknown action keys.{name}')
+                del overrides[name]
+        specs.update(overrides)
+        self._sequences = {}
+        # The reviewer's own keys are bound last, so they win over the
+        # preset's.
+        for name in sorted(specs, key=lambda name: name in overrides):
+            try:
+                sequences = key_sequences(specs[name])
+            except ValueError as error:
+                self.errors.append(f'keys.{name}: {error}')
+                continue
+            for sequence in sequences:
+                self._sequences[sequence] = name
+        self._prefixes = {sequence[:end] for sequence in self._sequences
+                          for end in range(1, len(sequence))}
+        self._labels = {}
+        for name, spec in specs.items():
+            alternatives = [part.strip() for part in spec.split(',') if part.strip()]
+            self._labels[name] = [alternative for alternative in alternatives
+                                  if self._is_bound(alternative, name)]
+        prefix = COUNT_PREFIXES.get(preset)
+        self._count_key = key_codes(prefix)[0] if prefix else None
+        self._pending = ()
+        self._count = ''
+        self._counting = False
+
+    def _is_bound(self, alternative, name):
+        try:
+            return all(name == self._sequences.get(sequence)
+                       for sequence in key_sequences(alternative))
+        except ValueError:
+            return False
+
+    def labels(self, name):
+        """The keys of an action for display, like ['j', 'Down']."""
+        return self._labels.get(name, [])
+
+    def label(self, name):
+        """The first key of an action for display, '' if it has none."""
+        labels = self.labels(name)
+        return key_label(labels[0]) if labels else ''
+
+    def typed(self):
+        """What is typed so far of a count or sequence, for display."""
+        return self._count + ''.join(chr(code) if code < 0x110000 and chr(code).isprintable()
+                                     else '' for code in self._pending)
+
+    def reset(self):
+        """Forgets a count or sequence typed so far."""
+        self._pending, self._count, self._counting = (), '', False
+
+    def feed(self, code):
+        """Takes one key code. Returns PENDING while a count or sequence
+        goes on, else (action or None, count or None).
+        """
+        if 27 == code and (self._pending or self._count or self._counting):
+            # Esc cancels a count or sequence, like in vim
+            self.reset()
+            return PENDING
+        takes_digits = self._count_key is None or self._counting
+        if takes_digits and not self._pending and (
+                ord('1') <= code <= ord('9') or (ord('0') == code and self._count)):
+            self._count += chr(code)
+            return PENDING
+        if code == self._count_key and not self._pending and not self._counting:
+            self._counting = True
+            return PENDING
+        self._counting = False
+        sequence = self._pending + (code,)
+        if sequence in self._prefixes:
+            self._pending = sequence
+            return PENDING
+        self._pending = ()
+        count = int(self._count) if self._count else None
+        self._count = ''
+        return self._sequences.get(sequence), count
+
+    def footer(self, entries):
+        """Footer text from entries ((action, ...), label): "j/k move"."""
+        parts = []
+        for names, label in entries:
+            keys = '/'.join(filter(None, (self.label(name) for name in names)))
+            if keys:
+                parts.append(f'{keys} {label}')
+        return '  '.join(parts)
+
+    def help_lines(self, width):
+        """The help screen: every action with its keys, by group."""
+        lines = [f'plustwo: keys ({self.preset})', '']
+        group = None
+        key_width = 14
+        for name, action_group, _label, description in ACTIONS:
+            if action_group != group:
+                if group:
+                    lines.append('')
+                lines.append(action_group)
+                group = action_group
+            keys = ', '.join(key_label(label) for label in self.labels(name)) or '-'
+            wrapped = textwrap.wrap(description, max(width - key_width - 4, 20))
+            lines.append(f'  {keys:<{key_width - 1}} {wrapped[0]}')
+            lines += [' ' * (key_width + 2) + line for line in wrapped[1:]]
+        lines += ['', 'Mouse: a click selects, a double click opens, the wheel scrolls.',
+                  'Comment box: Enter saves, ' + ('M-Enter starts a new line, C-g cancels, '
+                                                  'C-x C-e continues in your editor.'
+                                                  if 'emacs' == self.preset else
+                                                  'Alt-Enter starts a new line, Esc cancels, '
+                                                  '^E continues in your editor.'),
+                  'Comparing two patch sets, lines that differ because the changes below '
+                  'changed',
+                  'have a blue background, purple where the change itself edited them too.',
+                  'Keys: plustwo config --global keys.preset vim|emacs|gerrit, or one action',
+                  'like keys.reply = R.']
+        return lines
+
+
+def keymap_from_settings(core):
+    """The keymap the settings ask for."""
+    overrides = core.settings_section('keys')
+    preset = overrides.pop('preset', 'vim')
+    return Keymap(preset, overrides)
+
+
 # Colours of vote values
 VOTE_COLOURS = {2: 2, 1: 2, -1: 1, -2: 1}
 
-STACK_KEYS = ('j/k move  l open  d diff  v vote  V needs Verified  B rebase  S submit  R reload  '
-              '? help  '
-              'q quit')
-
-HELP_TEXT = """plustwo: keys
-
-Everywhere
-  j / k       move down / up. A count before moves that far: 15j
-  gg / G      to the top / bottom. With a count to that row, in the diff
-              to that line of the new version: 120G
-  mouse       click selects, double click opens, the wheel scrolls
-  l, Enter    open
-  h, Esc      back (not on the first screen, q quits). In the diff, h
-              goes back to the files or comments.
-  R           reload now (it also reloads by itself)
-  ?           this help
-  q           quit, after asking
-
-Stacks
-  d           diff of the change
-  v           vote Code-Review (-2..+2) on the latest patch set
-  V           whether the change needs Verified+1 (from a check calling
-              plustwo vote CHANGE Verified +1)
-  S           submit: moves the base branch to the change, which submits
-              the changes below it too. Needs Code-Review+2 (and Verified+1
-              if required) on each. Asks first and lists them and their
-              unresolved comments.
-  B           rebase the stack onto the base branch, without touching
-              any checkout. Every change gets a new patch set. On a
-              conflict nothing changes and the author is asked to rebase.
-
-Change: files and comments on the left, the diff on the right. The first
-file is the commit message, with a header.
-  Tab         next pane: files, comments, diff. A click focuses a pane.
-  j / k       in the files: shows that file's diff. In the comments: also
-              puts the diff on the thread's line. In the diff: moves the
-              cursor line (^d / ^u half a page, the wheel scrolls).
-  h           in the diff: back to the files or comments
-  l           on a file: into the diff. In the comments: unfolds the
-              thread and goes to it in the diff. In the diff: folds or
-              unfolds the thread at the cursor. Threads are shown under
-              their line, unresolved ones and those with drafts unfolded.
-              Threads on lines the diff doesn't show are at its top.
-  i           folds all threads, or unfolds all if all are folded
-  r / e       on a thread in the diff or the comments: reply / edit your
-              draft, in the box below the thread. c on a thread replies.
-  c           in the diff: new comment on the cursor line, or on the whole
-              file on rows without a line number. In the files: comment on
-              the whole file. Write it in the box: Enter saves, Alt-Enter
-              starts a new line, Esc cancels, ^E continues in your editor.
-              The comment stays a draft until you send it.
-  C           comment on the whole file
-  + / -       more / less context around the changes, up to the whole file
-              Comparing two patch sets, lines that differ because the
-              changes below changed (a rebase) have a blue background,
-              purple where the change itself edited them too.
-  t           the file's diff in vimdiff
-  p           choose the versions to compare: "1 3", "2 current" or
-              "base 2" (the whole change as of PS2). Empty gives the
-              default "base latest": the whole change, latest patch set.
-  s           send all drafts of this change, which tells the author to
-              start
-  y           on a thread: reply "Done" as a draft, which resolves it
-  Y           on a thread: reply "Ack" as a draft, which resolves it
-  x           on a thread: whether sending its draft resolves it, or makes
-              it unresolved again (Gerrit's Resolved checkbox). Without a
-              draft, it makes an empty one.
-  v / V       vote Code-Review / whether Verified+1 is needed
-  S           submit
-  B           rebase the stack onto the base branch
-
-Press any key."""
+STACK_FOOTER = ((('down', 'up'), 'move'), (('open',), 'open'), (('diff',), 'diff'),
+                (('vote',), 'vote'), (('verified',), 'needs Verified'), (('rebase',), 'rebase'),
+                (('submit',), 'submit'), (('reload',), 'reload'), (('help',), 'help'),
+                (('quit',), 'quit'))
 
 
 def run(core):
@@ -146,10 +359,9 @@ class Interface:
         self._views = [StackView(self)]
         self._message = ''
         self._version = None
-        # A count typed before a key, like vim's 15j, and a g waiting for
-        # the second g of gg
-        self._count = ''
-        self._g_pending = False
+        self.keymap = keymap_from_settings(core)
+        if self.keymap.errors:
+            self._message = 'Settings: ' + '; '.join(self.keymap.errors)
         curses.curs_set(0)
         curses.set_escdelay(ESC_DELAY_MS)
         curses.mousemask(curses.ALL_MOUSE_EVENTS)
@@ -200,60 +412,52 @@ class Interface:
                 continue
             self._message = ''
             if curses.KEY_MOUSE == key:
-                self._count, self._g_pending = '', False
+                self.keymap.reset()
                 self._handle_mouse()
                 continue
-            key = self._take_prefix(key)
-            if key is None:
+            result = self.keymap.feed(self._with_meta(key))
+            if PENDING == result:
                 continue
-            count = int(self._count) if self._count else None
-            self._count = ''
-            if not self._handle_global(key):
+            action, count = result
+            if action is None:
+                continue
+            if not self._handle_global(action):
                 try:
-                    self._views[-1].key(key, count)
+                    self._views[-1].action(action, count)
                 except self._core.ChangeError as error:
                     self.say(str(error))
             if not self._views:
                 return
 
-    def _take_prefix(self, key):
-        """Collects a count and the first g of gg. Returns the key to
-        handle, GO_TOP for gg, or None while the prefix isn't complete.
-        Esc cancels a prefix, like in vim.
+    def _with_meta(self, key):
+        """Alt plus a key arrives as Esc and the key: then the key plus
+        META. A lone Esc stays Esc.
         """
-        if self._g_pending:
-            self._g_pending = False
-            if ord('g') == key:
-                return GO_TOP
-            self._count = ''
-            return None
-        if ord('1') <= key <= ord('9') or (ord('0') == key and self._count):
-            self._count += chr(key)
-            return None
-        if ord('g') == key:
-            self._g_pending = True
-            return None
-        if 27 == key and self._count:
-            self._count = ''
-            return None
-        return key
+        if 27 != key:
+            return key
+        self._screen.timeout(ESC_DELAY_MS)
+        try:
+            following = self._screen.getch()
+        finally:
+            self._screen.timeout(RELOAD_INTERVAL_MS)
+        return key if following in (-1, 27) else META | following
 
-    def _handle_global(self, key):
-        """Handles keys that work everywhere. Returns whether it did."""
-        if ord('q') == key:
-            # q is easy to hit by mistake, e.g. instead of a tab
+    def _handle_global(self, action):
+        """Handles actions that work everywhere. Returns whether it did."""
+        if 'quit' == action:
+            # Quitting is easy by mistake, e.g. q instead of a tab
             if ord('y') == self.ask_key('Quit plustwo? (y/N)'):
                 self._views.clear()
             return True
-        if ord('?') == key:
+        if 'help' == action:
             self._show_help()
             return True
-        if ord('R') == key:
+        if 'reload' == action:
             self._views[-1].reload()
             return True
-        if ord('h') == key and getattr(self._views[-1], 'go_left', lambda: False)():
-            return True
-        if key in (ord('h'), 27):
+        if 'back' == action:
+            if getattr(self._views[-1], 'go_left', lambda: False)():
+                return True
             # On the first screen, back does nothing: a stray Esc, e.g. from
             # a key sequence curses didn't understand, must not quit.
             self.back()
@@ -301,13 +505,14 @@ class Interface:
         height, width = self._screen.getmaxyx()
         view = self._views[-1]
         # The keys wrap onto at most two lines above the message line.
-        key_lines = textwrap.wrap(view.KEYS, max(width - 1, 20), break_on_hyphens=False)[:2]
+        key_lines = textwrap.wrap(self.keymap.footer(view.footer()), max(width - 1, 20),
+                                  break_on_hyphens=False)[:2]
         view.draw(Area(self._screen, 0, height - 1 - len(key_lines), width))
         for offset, line in enumerate(key_lines):
             self.text(height - 1 - len(key_lines) + offset, 0, line, curses.A_DIM, width)
         self.text(height - 1, 0, self._message, curses.A_BOLD, width)
         # The typed prefix in the bottom right corner, like vim's showcmd
-        prefix = self._count + ('g' if self._g_pending else '')
+        prefix = self.keymap.typed()
         if prefix:
             self.text(height - 1, width - len(prefix) - 2, prefix, curses.A_BOLD)
         if refresh:
@@ -326,14 +531,34 @@ class Interface:
             pass
 
     def _show_help(self):
-        """Shows the key overview until a key is pressed."""
-        self._screen.erase()
-        for row, line in enumerate(HELP_TEXT.split('\n')):
-            self.text(row, 1, line)
-        self._screen.refresh()
+        """Shows every action with its keys. The moving keys scroll, any
+        other key closes it.
+        """
+        height, width = self._screen.getmaxyx()
+        lines = self.keymap.help_lines(width - 2)
+        first = 0
         self._screen.timeout(-1)
-        self._screen.getch()
-        self._screen.timeout(RELOAD_INTERVAL_MS)
+        try:
+            while True:
+                self._screen.erase()
+                shown = lines[first:first + height - 1]
+                for row, line in enumerate(shown):
+                    self.text(row, 1, line)
+                more = len(lines) > height - 1
+                self.text(height - 1, 1, (f'{self.keymap.label("down")}/'
+                                          f'{self.keymap.label("up")} scroll, ' if more else '')
+                          + 'any other key closes', curses.A_DIM)
+                self._screen.refresh()
+                result = self.keymap.feed(self._with_meta(self._screen.getch()))
+                if PENDING == result:
+                    continue
+                step = {'down': 1, 'up': -1, 'page-down': height // 2,
+                        'page-up': -(height // 2)}.get(result[0])
+                if step is None:
+                    return
+                first = max(0, min(first + step, max(len(lines) - height + 1, 0)))
+        finally:
+            self._screen.timeout(RELOAD_INTERVAL_MS)
 
     # ── leaving the screen for other programs ─────────────────────────────
 
@@ -371,10 +596,12 @@ class Interface:
         row, or above it when there is no room. Without one it sits above
         the bottom line, as wide as the screen.
 
-        Enter saves, Alt-Enter starts a new line, Esc cancels, ^E continues
-        in the editor.
+        Enter saves, Alt-Enter starts a new line, Esc or C-g cancels, ^E
+        continues in the editor. With the emacs keys, C-e goes to the end of
+        the line, and C-x C-e continues in the editor.
         """
-        box = TextBox(initial)
+        emacs = 'emacs' == self.keymap.preset
+        box = TextBox(initial, emacs)
         curses.curs_set(1)
         self._screen.timeout(-1)
         try:
@@ -391,6 +618,13 @@ class Interface:
                 key = self._screen.get_wch()
                 if key in ('\n', '\r', curses.KEY_ENTER):
                     return box.text.strip()
+                if '\x07' == key:
+                    return None
+                if emacs and '\x18' == key:
+                    # C-x C-e continues in the editor, like in a shell
+                    if '\x05' == self._screen.get_wch():
+                        return self.edit_text(box.text)
+                    continue
                 if '\x1b' == key:
                     # Alt-Enter arrives as Esc and Enter, a lone Esc cancels.
                     self._screen.timeout(ESC_DELAY_MS)
@@ -402,7 +636,7 @@ class Interface:
                         self._screen.timeout(-1)
                     if following in ('\n', '\r'):
                         box.insert('\n')
-                elif '\x05' == key:
+                elif '\x05' == key and not emacs:
                     return self.edit_text(box.text)
                 else:
                     box.key(key)
@@ -424,7 +658,8 @@ class Interface:
         top = row + 1
         if not anchor or top + inside + 2 > height - 1:
             top = max(row - inside - 2, 0)
-        hint = ' Enter save  Alt-Enter new line  Esc cancel  ^E editor '
+        hint = (' Enter save  M-Enter new line  C-g cancel  C-x C-e editor '
+                if box.emacs else ' Enter save  Alt-Enter new line  Esc cancel  ^E editor ')
         self.text(top, left, '┌' + '─' * (box_width - 2) + '┐', curses.A_BOLD)
         self.text(top, left + 2, f' {title} ', curses.A_BOLD)
         self.text(top + inside + 1, left, '└' + '─' * (box_width - 2) + '┘', curses.A_BOLD)
@@ -454,7 +689,7 @@ class Interface:
                 key = self._screen.get_wch()
                 if key in ('\n', '\r'):
                     return answer.strip()
-                if '\x1b' == key:
+                if key in ('\x1b', '\x07'):
                     return None
                 if key in ('\x7f', '\b', curses.KEY_BACKSPACE):
                     answer = answer[:-1]
@@ -572,9 +807,11 @@ class TextBox:
     text has one place on the screen.
     """
 
-    def __init__(self, text=''):
+    def __init__(self, text='', emacs=False):
         self.text = text
         self.position = len(text)
+        # Whether Emacs' editing keys work: C-a, C-e, C-f, C-b, C-k, C-d
+        self.emacs = emacs
 
     def insert(self, characters):
         """Inserts at the cursor."""
@@ -583,8 +820,17 @@ class TextBox:
 
     def key(self, key):
         """Handles an editing key from get_wch()."""
+        if self.emacs:
+            key = {'\x06': curses.KEY_RIGHT, '\x02': curses.KEY_LEFT, '\x05': curses.KEY_END,
+                   '\x04': curses.KEY_DC}.get(key, key)
         before, after = self.text[:self.position], self.text[self.position:]
-        if key in ('\x7f', '\b', curses.KEY_BACKSPACE):
+        if self.emacs and '\x0b' == key:
+            # C-k deletes to the end of the line, or the line end itself
+            end = self.text.find('\n', self.position)
+            end = len(self.text) if -1 == end else end
+            self.text = before + self.text[max(end, self.position + 1)
+                                           if end == self.position else end:]
+        elif key in ('\x7f', '\b', curses.KEY_BACKSPACE):
             if before:
                 self.text, self.position = before[:-1] + after, self.position - 1
         elif curses.KEY_DC == key:
@@ -663,27 +909,30 @@ def comment_label(comment):
     return comment.status + (' +draft' if comment.has_draft() else '')
 
 
-# Keys that move in a list
-LIST_KEYS = (ord('j'), ord('k'), curses.KEY_DOWN, curses.KEY_UP, GO_TOP, ord('G'))
+# Actions that move in a list
+LIST_ACTIONS = ('down', 'up', 'top', 'bottom', 'page-down', 'page-up')
+# How far page-down and page-up move in a list
+LIST_PAGE = 10
 
 
-def wheel_key(kind):
-    """The key a wheel turn stands for: j down, k up, None otherwise."""
-    return {WHEEL_DOWN: ord('j'), WHEEL_UP: ord('k')}.get(kind)
+def wheel_action(kind):
+    """The action a wheel turn stands for: down, up, None otherwise."""
+    return {WHEEL_DOWN: 'down', WHEEL_UP: 'up'}.get(kind)
 
 
-def move(index, key, length, count=None):
-    """New list position after j, k, gg or G, staying inside the list.
-    A count moves that many rows, or with gg and G goes to that row.
+def move(index, action, length, count=None):
+    """New list position after down, up, top, bottom or a page, staying
+    inside the list. A count moves that many rows, or with top and bottom
+    goes to that row.
     """
     if not length:
         return 0
-    if ord('j') == key or curses.KEY_DOWN == key:
-        return min(index + (count or 1), length - 1)
-    if ord('k') == key or curses.KEY_UP == key:
-        return max(index - (count or 1), 0)
-    if key in (GO_TOP, ord('G')):
-        last = 0 if GO_TOP == key else length - 1
+    steps = {'down': count or 1, 'up': -(count or 1), 'page-down': LIST_PAGE,
+             'page-up': -LIST_PAGE}.get(action)
+    if steps is not None:
+        return max(0, min(index + steps, length - 1))
+    if action in ('top', 'bottom'):
+        last = 0 if 'top' == action else length - 1
         return min(count - 1, length - 1) if count else last
     return index
 
@@ -691,7 +940,10 @@ def move(index, key, length, count=None):
 class StackView:
     """The stacks in review, one per topic, like Gerrit's dashboard."""
 
-    KEYS = STACK_KEYS
+    @staticmethod
+    def footer():
+        """The footer's actions, see Keymap.footer()."""
+        return STACK_FOOTER
 
     # First screen row of the list
     TOP = 3
@@ -718,7 +970,8 @@ class StackView:
         for index, change in enumerate(self._changes):
             if change.topic != topic:
                 topic = change.topic
-                self._rows.append(stack_heading(core, topic, self._changes))
+                self._rows.append(stack_heading(core, topic, self._changes,
+                                                self._interface.keymap.label('rebase')))
             self._rows.append(index)
 
     def draw(self, area):
@@ -754,41 +1007,41 @@ class StackView:
 
     def mouse(self, row, _column, kind):
         """A click selects a change, a double click opens it."""
-        if wheel_key(kind):
-            self.key(wheel_key(kind))
+        if wheel_action(kind):
+            self.action(wheel_action(kind))
             return
         offset = row - self.TOP
         if 0 <= offset < len(self._rows) and not isinstance(self._rows[offset], str):
             self._selected = self._rows[offset]
             if DOUBLE_CLICK == kind:
-                self.key(ord('l'))
+                self.action('open')
 
-    def key(self, key, count=None):
-        """Handles a key of the stack view."""
-        self._selected = move(self._selected, key, len(self._changes), count)
+    def action(self, action, count=None):
+        """Handles an action of the stack view."""
+        self._selected = move(self._selected, action, len(self._changes), count)
         if not self._changes:
             return
         change = self._changes[self._selected]
-        if key in (ord('l'), ord('\n'), curses.KEY_ENTER):
+        if 'open' == action:
             self._interface.open(ChangeView(self._interface, change.change_id))
-        elif ord('d') == key:
+        elif 'diff' == action:
             self._interface.run_outside(self._interface.core.diff_command(change))
-        elif ord('S') == key:
+        elif 'submit' == action:
             submit_with_confirmation(self._interface, change)
-        elif ord('B') == key:
+        elif 'rebase' == action:
             rebase_with_confirmation(self._interface, change)
         else:
-            vote_action(self._interface, change, key)
+            vote_action(self._interface, change, action)
 
 
-def stack_heading(core, topic, changes):
+def stack_heading(core, topic, changes, rebase_key='B'):
     """A stack's heading in the list: its topic and whether it needs a
-    rebase.
+    rebase, which rebase_key does.
     """
     if any(change.rebase_requested for change in changes if change.topic == topic):
         return f'{topic}  (conflicts with {core.base_branch()}, the author rebases)'
     if core.needs_rebase(topic):
-        return f'{topic}  ({core.base_branch()} moved on, B rebases)'
+        return f'{topic}  ({core.base_branch()} moved on, {rebase_key} rebases)'
     return topic
 
 
@@ -814,10 +1067,12 @@ def vote_attribute(value):
     return curses.color_pair(VOTE_COLOURS.get(value, 0)) | (curses.A_BOLD if abs(value) > 1 else 0)
 
 
-def vote_action(interface, change, key):
-    """v votes Code-Review, V switches whether Verified+1 is needed."""
+def vote_action(interface, change, action):
+    """vote votes Code-Review, verified switches whether Verified+1 is
+    needed.
+    """
     core = interface.core
-    if ord('v') == key:
+    if 'vote' == action:
         if not change.patch_sets:
             interface.say(f'{change.short_id()} has no patch set yet, nothing to vote on.')
             return
@@ -831,7 +1086,7 @@ def vote_action(interface, change, key):
         interface.after_write()
         interface.say(f'Code-Review{int(answer):+d} on PS{number}.' if int(answer)
                       else 'Code-Review vote removed.')
-    elif ord('V') == key:
+    elif 'verified' == action:
         core.require_verified(change.change_id, not change.verified_required)
         interface.after_write()
         interface.say('Needs Verified+1 now.' if not change.verified_required
@@ -1120,8 +1375,9 @@ def grouped(cells):
 def rendered_rows(core, rows, width, colours, marks):
     """Draws side by side rows into screen rows like Gerrit's diff: old
     number, old text, new number, new text. A long line wraps onto more
-    rows. Returns [(segments, (old number, new number), continues)], where
-    continues says that the row goes on with the line of the row above.
+    rows. Returns [(segments, (old number, new number), continues,
+    changed)], where continues says that the row goes on with the line of
+    the row above, and changed that it has removed or added lines.
     """
     digits = max([4] + [len(str(half.number)) for row in rows for half in (row.old, row.new)
                         if half.number])
@@ -1132,8 +1388,9 @@ def rendered_rows(core, rows, width, colours, marks):
         if row.skipped:
             label = f'… {row.skipped} common line{"s" if row.skipped > 1 else ""} …'
             result.append(([(label.center(width), -1, -1, curses.A_DIM)],
-                           (None, None), False))
+                           (None, None), False, False))
             continue
+        changed = (core.CONTEXT, core.CONTEXT) != (row.old.kind, row.new.kind)
         halves = []
         for half, side in ((row.old, 0), (row.new, 1)):
             line_colours = (colours[side][half.number - 1]
@@ -1155,7 +1412,7 @@ def rendered_rows(core, rows, width, colours, marks):
                 if 0 == side:
                     segments.append((HALF_SEPARATOR, -1, -1, curses.A_DIM))
             numbers = (row.old.number, row.new.number) if 0 == piece else (None, None)
-            result.append((segments, numbers, 0 != piece))
+            result.append((segments, numbers, 0 != piece, changed))
     return result
 
 
@@ -1177,8 +1434,10 @@ class DiffPane:
         self._threads_key = None
         self._diff_lines = []
         self._diff_numbers = []
-        # Whether a diff row goes on with the line of the row above (wrapped)
+        # Whether a diff row goes on with the line of the row above (wrapped),
+        # and whether it has removed or added lines
         self._continues = []
+        self._changed = []
         # Syntax colours per (version, path), see _colours()
         self._colour_cache = {}
         # The row to keep the cursor on when the rows are laid out again,
@@ -1213,17 +1472,19 @@ class DiffPane:
         from_below, partly = core.rebase_lines(change, *compare, path=path)
         marks = ((from_below[0], partly[0]), (from_below[1], partly[1]))
         if rows is None:
-            rendered = [([('Binary file, not shown.', -1, -1, curses.A_DIM)], (None, None), False)]
+            rendered = [([('Binary file, not shown.', -1, -1, curses.A_DIM)], (None, None), False,
+                          False)]
         elif not rows:
             rendered = [([('No differences in this file.', -1, -1, curses.A_DIM)], (None, None),
-                          False)]
+                          False, False)]
         else:
             colours = [self._colours(core, version, paths[0]) for version in (old, new)]
             rendered = rendered_rows(core, rows, width, colours, marks)
-        self._diff_lines = [segments for segments, _, _ in rendered]
+        self._diff_lines = [segments for segments, _, _, _ in rendered]
         previous_numbers = self._diff_numbers
-        self._diff_numbers = [numbers for _, numbers, _ in rendered]
-        self._continues = [continues for _, _, continues in rendered]
+        self._diff_numbers = [numbers for _, numbers, _, _ in rendered]
+        self._continues = [continues for _, _, continues, _ in rendered]
+        self._changed = [changed for _, _, _, changed in rendered]
         marked = [any(numbers[side] in marks[side][kind]
                       for numbers in self._diff_numbers for side in (0, 1)) for kind in (0, 1)]
         self.marks_from_below = tuple(marked)
@@ -1399,6 +1660,32 @@ class DiffPane:
                 self._jump(index, height)
                 return
 
+    def go_to_chunk(self, forward, height):
+        """Puts the cursor on the first row of the next (or previous)
+        changed lines, like Gerrit's n and p. Returns whether there is one.
+        """
+        starts = [index for index, row in enumerate(self.rows)
+                  if 'diff' == row[0] and self._changed[row[1]]
+                  and not (row[1] and self._changed[row[1] - 1])]
+        return self._jump_to_one_of(starts, forward, height)
+
+    def go_to_next_thread(self, forward, height):
+        """Puts the cursor on the first row of the next (or previous)
+        thread. Returns whether there is one.
+        """
+        starts = [index for index, row in enumerate(self.rows)
+                  if 'thread' == row[0] and 0 == row[2]]
+        return self._jump_to_one_of(starts, forward, height)
+
+    def _jump_to_one_of(self, indexes, forward, height):
+        """Jumps to the nearest of these rows after (or before) the cursor."""
+        candidates = ([index for index in indexes if index > self.cursor] if forward
+                      else [index for index in indexes if index < self.cursor])
+        if not candidates:
+            return False
+        self._jump(candidates[0] if forward else candidates[-1], height)
+        return True
+
     def go_to_thread(self, number, height):
         """Puts the cursor on a thread's first row. Returns whether the
         thread is shown.
@@ -1485,14 +1772,24 @@ COMMENTS = 'comments'
 DIFF = 'diff'
 PANES = (FILES, COMMENTS, DIFF)
 
-PANE_KEYS = {
-    FILES: 'j/k file  tab next pane  c comment on file  h back',
-    COMMENTS: 'j/k thread  l go to thread  r reply  y Done  Y Ack  x resolved  h back',
-    DIFF: ('j/k line  gg/G  ^d/^u half page  c comment on line  C on file  +/- context  '
-           'l fold thread  i fold all  r reply  e edit draft  y Done  Y Ack  x resolved  h files'),
+PANE_FOOTERS = {
+    FILES: ((('down', 'up'), 'file'), (('next-pane',), 'next pane'),
+            (('comment',), 'comment on file'), (('back',), 'back')),
+    COMMENTS: ((('down', 'up'), 'thread'), (('open',), 'go to thread'), (('reply',), 'reply'),
+               (('done',), 'Done'), (('ack',), 'Ack'), (('resolve',), 'resolved'),
+               (('back',), 'back')),
+    DIFF: ((('down', 'up'), 'line'), (('top', 'bottom'), 'top/bottom'),
+           (('page-down', 'page-up'), 'half page'), (('next-chunk', 'prev-chunk'), 'chunk'),
+           (('next-thread', 'prev-thread'), 'thread'), (('next-file', 'prev-file'), 'file'),
+           (('comment',), 'comment on line'), (('file-comment',), 'on file'),
+           (('more-context', 'less-context'), 'context'), (('open',), 'fold thread'),
+           (('fold-all',), 'fold all'), (('reply',), 'reply'), (('edit-draft',), 'edit draft'),
+           (('done',), 'Done'), (('ack',), 'Ack'), (('resolve',), 'resolved'),
+           (('back',), 'files')),
 }
-COMMON_CHANGE_KEYS = ('s send  v vote  V needs Verified  p patch sets  t vimdiff  B rebase  '
-                      'S submit  ? help')
+CHANGE_FOOTER = ((('send',), 'send'), (('vote',), 'vote'), (('verified',), 'needs Verified'),
+                 (('patch-sets',), 'patch sets'), (('vimdiff',), 'vimdiff'),
+                 (('rebase',), 'rebase'), (('submit',), 'submit'), (('help',), 'help'))
 
 
 # What the change screen compares at first: the whole change as of the
@@ -1519,10 +1816,9 @@ class ChangeView:
         # Threads folded or unfolded by hand: number -> expanded
         self._expanded = {}
 
-    @property
-    def KEYS(self):  # pylint: disable=invalid-name
-        """The keys of the focused pane, then the ones that work everywhere."""
-        return f'{PANE_KEYS[self._focus]}  {COMMON_CHANGE_KEYS}'
+    def footer(self):
+        """The focused pane's actions, then the ones of the whole change."""
+        return PANE_FOOTERS[self._focus] + CHANGE_FOOTER
 
     def reload(self):
         """Reads the change again. Goes back if it is gone."""
@@ -1743,7 +2039,8 @@ class ChangeView:
             note = ''
             if place and place not in self._diff.shown_places():
                 note = (f'on {"old " if "old" == comment.side else ""}line {line}, not in the '
-                        'diff (+ shows more context)')
+                        f'diff ({self._interface.keymap.label("more-context")} shows more '
+                        'context)')
             blocks.setdefault(place, []).append(
                 (comment.number, thread_rows(comment, width, expanded, core, note)))
             signature.append((comment.number, comment.status, place, expanded,
@@ -1823,69 +2120,82 @@ class ChangeView:
 
     # ── keys and mouse ────────────────────────────────────────────────────
 
-    def key(self, key, count=None):
-        """Handles a key of the change view. count is a typed count, e.g.
-        the 15 of 15j, or None.
+    def action(self, action, count=None):
+        """Handles an action of the change view. count is a typed count,
+        e.g. the 15 of 15j, or None.
         """
         interface = self._interface
         core = interface.core
         change = self._change
-        if ord('\t') == key:
+        height = self._diff_height()
+        diff_moves = {
+            'down': lambda: self._diff.move_cursor(count or 1, height),
+            'up': lambda: self._diff.move_cursor(-(count or 1), height),
+            'top': lambda: (self._diff.go_to_new_line(count, height) if count
+                            else self._diff.move_cursor(-self._diff.cursor, height)),
+            'bottom': lambda: (self._diff.go_to_new_line(count, height) if count
+                               else self._diff.move_cursor(len(self._diff.rows), height)),
+            'page-down': lambda: self._diff.move_cursor(height // 2, height),
+            'page-up': lambda: self._diff.move_cursor(-(height // 2), height),
+        }
+        if 'next-pane' == action:
             self._focus_pane(PANES[(PANES.index(self._focus) + 1) % len(PANES)])
-        elif FILES == self._focus and key in LIST_KEYS:
-            self._file_index = move(self._file_index, key, len(self._files), count)
-        elif COMMENTS == self._focus and key in LIST_KEYS:
-            self._comment_index = move(self._comment_index, key, len(change.comments), count)
+        elif FILES == self._focus and action in LIST_ACTIONS:
+            self._file_index = move(self._file_index, action, len(self._files), count)
+        elif COMMENTS == self._focus and action in LIST_ACTIONS:
+            self._comment_index = move(self._comment_index, action, len(change.comments), count)
             if self._selected_comment():
                 self._show_comment_in_diff(self._selected_comment())
-        elif DIFF == self._focus and key in (ord('j'), curses.KEY_DOWN):
-            self._diff.move_cursor(count or 1, self._diff_height())
-        elif DIFF == self._focus and key in (ord('k'), curses.KEY_UP):
-            self._diff.move_cursor(-(count or 1), self._diff_height())
-        elif DIFF == self._focus and key in (GO_TOP, ord('G')) and count:
-            self._diff.go_to_new_line(count, self._diff_height())
-        elif DIFF == self._focus and GO_TOP == key:
-            self._diff.move_cursor(-self._diff.cursor, self._diff_height())
-        elif DIFF == self._focus and ord('G') == key:
-            self._diff.move_cursor(len(self._diff.rows), self._diff_height())
-        elif DIFF == self._focus and 4 == key:
-            self._diff.move_cursor(self._diff_height() // 2, self._diff_height())
-        elif DIFF == self._focus and 21 == key:
-            self._diff.move_cursor(-(self._diff_height() // 2), self._diff_height())
-        elif key in (ord('l'), ord('\n'), curses.KEY_ENTER):
+        elif DIFF == self._focus and action in diff_moves:
+            diff_moves[action]()
+        elif action in ('next-file', 'prev-file'):
+            step = (count or 1) * (1 if 'next-file' == action else -1)
+            self._file_index = max(0, min(self._file_index + step, len(self._files) - 1))
+        elif action in ('next-chunk', 'prev-chunk', 'next-thread', 'prev-thread'):
+            self._focus_pane(DIFF)
+            # The diff may not be laid out for this file yet
+            self._prepare_diff()
+            forward = action.startswith('next')
+            moved = (self._diff.go_to_chunk(forward, height) if action.endswith('chunk')
+                     else self._diff.go_to_next_thread(forward, height))
+            if not moved:
+                interface.say('No more changes in this direction.' if action.endswith('chunk')
+                              else 'No more threads in this direction.')
+        elif 'open' == action:
             self._open()
-        elif ord('t') == key and self._selected_file():
+        elif 'vimdiff' == action and self._selected_file():
             interface.run_outside(core.diff_command(change, *self._compare, tool=True,
                                                     path=self._selected_file()))
-        elif ord('p') == key:
+        elif 'patch-sets' == action:
             self._choose_patch_sets()
-        elif ord('i') == key:
+        elif 'fold-all' == action:
             self._toggle_all_threads()
-        elif ord('c') == key and DIFF == self._focus and self._diff.thread_at(self._diff.cursor):
-            # c on a thread answers it
-            self.key(ord('r'))
-        elif ord('c') == key:
+        elif 'comment' == action and DIFF == self._focus and self._diff.thread_at(
+                self._diff.cursor):
+            # A comment on a thread answers it
+            self.action('reply')
+        elif 'comment' == action:
             self._new_comment()
-        elif ord('C') == key:
+        elif 'file-comment' == action:
             self._new_comment(whole_file=True)
-        elif key in (ord('+'), ord('='), ord('-')):
-            step = interface.context_step + (-1 if ord('-') == key else 1)
+        elif action in ('more-context', 'less-context'):
+            step = interface.context_step + (-1 if 'less-context' == action else 1)
             interface.context_step = max(0, min(step, len(CONTEXT_STEPS) - 1))
-        elif key in (ord('v'), ord('V')):
-            vote_action(interface, change, key)
-        elif ord('S') == key:
+        elif action in ('vote', 'verified'):
+            vote_action(interface, change, action)
+        elif 'submit' == action:
             submit_with_confirmation(interface, change)
-        elif ord('B') == key:
+        elif 'rebase' == action:
             rebase_with_confirmation(interface, change)
-        elif key in (ord('r'), ord('e')) and self._target_thread():
+        elif action in ('reply', 'edit-draft') and self._target_thread():
             comment = self._target_thread()
             anchor = self._box_below_thread(comment)
-            if ord('r') == key:
+            if 'reply' == action:
                 reply_to_thread(interface, self._change_id, comment, anchor)
             else:
                 edit_draft(interface, self._change_id, comment, anchor)
         else:
-            thread_action(interface, change, self._target_thread(), key)
+            thread_action(interface, change, self._target_thread(), action)
 
     def _focus_pane(self, pane):
         """Moves the focus. Remembers the pane left for the diff, h goes
@@ -1931,10 +2241,10 @@ class ChangeView:
         for pane, (top, left, height, width) in self._layout.items():
             if top <= row < top + height and left <= column < left + width:
                 self._focus_pane(pane)
-                if wheel_key(kind):
+                if wheel_action(kind):
                     steps = 3 if DIFF == pane else 1
                     for _ in range(steps):
-                        self.key(wheel_key(kind))
+                        self.action(wheel_action(kind))
                     return
                 offset = row - top
                 if FILES == pane and offset < len(self._files):
@@ -2001,7 +2311,7 @@ class ChangeView:
         place = f'{path}:{line}' if line else path
         interface.core.add_comment(self._change_id, place, text, sent=False, side=side)
         interface.after_write()
-        interface.say('Draft saved. s sends all drafts.')
+        interface.say(f'Draft saved. {interface.keymap.label("send")} sends all drafts.')
 
 
 def file_label(core, path):
@@ -2012,14 +2322,14 @@ def file_label(core, path):
 def reply_to_thread(interface, change_id, comment, anchor=None):
     """r: writes a reply as a draft, in the comment box at anchor."""
     if comment.has_draft():
-        interface.say('You have a draft already. e edits it.')
+        interface.say(f'You have a draft already. {interface.keymap.label("edit-draft")} edits it.')
         return
     text = interface.write_text(f'Reply to #{comment.number}', anchor=anchor)
     if text:
         core = interface.core
         core.add_message(change_id, comment.number, core.REVIEWER, text, sent=False)
         interface.after_write()
-        interface.say('Reply saved as a draft. s sends all drafts.')
+        interface.say(f'Reply saved as a draft. {interface.keymap.label("send")} sends all drafts.')
 
 
 def edit_draft(interface, change_id, comment, anchor=None):
@@ -2038,28 +2348,31 @@ def edit_draft(interface, change_id, comment, anchor=None):
     interface.after_write()
 
 
-def thread_action(interface, change, comment, key):
-    """Handles the keys that act on a thread or on all drafts.
+def thread_action(interface, change, comment, action):
+    """Handles the actions on a thread or on all drafts.
 
     comment is the selected thread, or None while the files are selected.
     """
     core = interface.core
-    if ord('s') == key:
+    if 'send' == action:
         count = core.send_drafts(change.change_id)
         interface.after_write()
         interface.say(f'{count} draft(s) sent.' if count else 'No drafts to send.')
     elif comment is None:
         return
-    elif key in (ord('y'), ord('Y')):
+    elif action in ('done', 'ack'):
         if comment.has_draft():
-            interface.say(f'#{comment.number} has a draft already. e edits it.')
+            interface.say(f'#{comment.number} has a draft already. '
+                          f'{interface.keymap.label("edit-draft")} edits it.')
             return
-        text = core.DONE if ord('y') == key else core.ACK
+        text = core.DONE if 'done' == action else core.ACK
         core.add_message(change.change_id, comment.number, core.REVIEWER, text, sent=False,
                          status=core.RESOLVED)
         interface.after_write()
-        interface.say(f'"{text}" saved as a draft, it resolves #{comment.number}. s sends.')
-    elif ord('x') == key:
+        interface.say(f'"{text}" saved as a draft, it resolves #{comment.number}. '
+                      f'{interface.keymap.label("send")} sends.')
+    elif 'resolve' == action:
         status = core.toggle_draft_status(change.change_id, comment.number)
         interface.after_write()
-        interface.say(f'Sending the draft makes #{comment.number} {status}. s sends.')
+        interface.say(f'Sending the draft makes #{comment.number} {status}. '
+                      f'{interface.keymap.label("send")} sends.')

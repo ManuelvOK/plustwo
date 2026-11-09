@@ -20,8 +20,8 @@ everything in the repository itself:
   the latest patch set.
 
 Two roles take part. The reviewer usually works in the terminal user
-interface (`plustwo` without arguments), with vim-style keys, side by side
-diffs and inline threads. The author answers and applies on the command line
+interface (`plustwo` without arguments), with vim, Emacs or Gerrit keys, side
+by side diffs and inline threads. The author answers and applies on the command line
 (`plustwo inbox`, `reply`, `upload`, and `pull` for what the reviewer
 changed). Submitting fast-forwards the base branch, so it only ever gets
 reviewed commits.
