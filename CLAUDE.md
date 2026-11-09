@@ -81,9 +81,3 @@ every command.
 - Mouse input: X10 sequences sent with `send-keys -l`, built with Python.
   SGR sequences are not recognised in tmux and arrive as Esc, and zsh's
   `printf %b` mangles octal escapes.
-
-## Live use
-
-The tool is used for real reviews in ~/projects/prosarius (prs2d, circles,
-prs_devtools), with Claude as the author. A broken `git change` or
-`plustwo` on PATH breaks those reviews, so keep the installed copy working.
