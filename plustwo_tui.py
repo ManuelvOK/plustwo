@@ -109,6 +109,8 @@ ACTIONS = (
      'current" or "base 2" (the whole change as of PS2). Empty: the whole change, latest '
      'patch set.'),
     ('fold-all', 'Change', 'fold all', 'fold all threads, or unfold all if all are folded'),
+    ('unfold-every', 'Change', 'unfold all', 'unfold all threads'),
+    ('fold-every', 'Change', 'fold all', 'fold all threads'),
     ('reviewed', 'Change', 'reviewed', 'mark the file reviewed, or unmark it. The mark stays while '
      'the file\'s diff stays the same.'),
     ('whitespace', 'Change', 'whitespace', 'which whitespace changes the diff ignores, like '
@@ -137,7 +139,8 @@ VIM_KEYS = {
     'next-pane': 'Tab', 'next-file': '] f', 'prev-file': '[ f',
     'next-chunk': '] c', 'prev-chunk': '[ c', 'next-thread': '] t', 'prev-thread': '[ t',
     'comment': 'c', 'file-comment': 'C', 'more-context': '+,=', 'less-context': '-',
-    'vimdiff': 't', 'patch-sets': 'p', 'fold-all': 'i',
+    'vimdiff': 't', 'patch-sets': 'p', 'fold-all': 'i', 'unfold-every': 'z R',
+    'fold-every': 'z M',
     'reply': 'r', 'edit-draft': 'e', 'done': 'y', 'ack': 'Y', 'resolve': 'x', 'send': 's',
     'whitespace': 'W', 'approve': 'A', 'next-turn': 'T', 'reviewed': 'm', 'side-old': '<', 'side-new': '>',
 }
@@ -161,7 +164,9 @@ PRESETS = {
                'next-chunk': 'n', 'prev-chunk': 'p', 'next-thread': 'N', 'prev-thread': 'P',
                'next-file': ']', 'prev-file': '[', 'send': 'a', 'patch-sets': 'b',
                # Gerrit's r marks the file reviewed
-               'reviewed': 'r,m', 'reply': 'R', 'reload': 'C-r'},
+               'reviewed': 'r,m', 'reply': 'R', 'reload': 'C-r',
+               # e and E unfold and fold all threads, so drafts are edited with w
+               'unfold-every': 'e', 'fold-every': 'E', 'edit-draft': 'w'},
 }
 # Presets whose counts start with a key, like Emacs' C-u 15 C-n. The
 # others take digits right away, like vim's 15j.
@@ -2307,6 +2312,9 @@ class ChangeView:
                                                     path=self._selected_file()))
         elif 'patch-sets' == action:
             self._choose_patch_sets()
+        elif action in ('unfold-every', 'fold-every'):
+            expand = 'unfold-every' == action
+            self._expanded = {comment.number: expand for comment in self._change.comments}
         elif 'fold-all' == action:
             self._toggle_all_threads()
         elif action in ('comment', 'open') and DIFF == self._focus and self._diff.gap_at(

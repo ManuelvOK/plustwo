@@ -133,6 +133,7 @@ import argparse
 import contextlib
 import difflib
 import fcntl
+import functools
 import hashlib
 import json
 import os
@@ -722,9 +723,12 @@ def line_at(commit, place, repository=None, side=NEW_SIDE):
         if OLD_SIDE == side:
             return ''
         text = commit_message_text(commit, repository)
+    elif OLD_SIDE == side:
+        # A renamed file had its old path in the parent
+        old_path = renames_of(commit, repository).get(path, path)
+        text = git('show', f'{commit}^:{old_path}', check=False, repository=repository)
     else:
-        version = f'{commit}^' if OLD_SIDE == side else commit
-        text = git('show', f'{version}:{path}', check=False, repository=repository)
+        text = git('show', f'{commit}:{path}', check=False, repository=repository)
     lines = text.split('\n')
     number = int(line)
     return lines[number - 1].strip() if 1 <= number <= len(lines) else ''
@@ -1459,6 +1463,7 @@ def toggle_draft_status(change_id, number, repository=None):
     return update_change(change_id, edit, repository)
 
 
+@functools.lru_cache(maxsize=4096)
 def file_diff_hash(commit, path, repository=None):
     """A hash of a file's own diff in a commit, against the commit's parent.
     It stays the same while the file's change does, also after a rebase.
@@ -2135,6 +2140,7 @@ def parse_arguments(argv):
     def init_command(_arguments):
         moved = init_repository()
         print('commit-msg hook installed, notes follow amends and rebases')
+        print("agents: add 'run plustwo guide' to your AGENTS.md or CLAUDE.md")
         for line in moved:
             print(f'moved setting {line}')
 
