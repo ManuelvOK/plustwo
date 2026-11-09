@@ -1323,8 +1323,17 @@ def edits_of(old, new, path, repository=None):
     """
     # Histogram is the algorithm of JGit, so the edits are the ones Gerrit
     # shows. The options make the user's diff settings not count.
-    output = git('diff', '--no-color', '--no-ext-diff', '--no-textconv', '--no-renames',
-                 '--histogram', '-U0', old, new, '--', path, repository=repository)
+    options = ('--no-color', '--no-ext-diff', '--no-textconv', '--no-renames', '--histogram',
+               '-U0')
+    output = git('diff', *options, old, new, '--', path, repository=repository)
+    if output.count('diff --git ') > 1:
+        # A file that became a symbolic link or the other way round is a
+        # deletion and an addition to git. Its lines are diffed as blobs.
+        blobs = [git('rev-parse', '--verify', '--quiet', f'{version}:{path}', check=False,
+                     repository=repository)
+                 or git('hash-object', '-w', '--stdin', input_text='', repository=repository)
+                 for version in (old, new)]
+        output = git('diff', *options, *blobs, repository=repository)
     edits = []
     for match in re.finditer(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@', output, re.MULTILINE):
         old_start, old_count, new_start, new_count = (
