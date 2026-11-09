@@ -2880,7 +2880,7 @@ def parse_arguments(argv):
     repositories = ('repositories', {'nargs': '*'})
     command('init', init_command, 'set up this repository')
     command('list', print_overview, 'the dashboard').add_argument(
-        '--list', help='only the repositories of this list')
+        '--list', help='only the repositories of this list', default=argparse.SUPPRESS)
     command('show', print_comments, 'threads of a change', 'change')
     upload_parser = command('upload', upload_command, 'upload the stack of a branch',
                             ('change', optional))
@@ -2920,7 +2920,7 @@ def parse_arguments(argv):
         sub = command(name, run, help_text, repositories)
         sub.add_argument('--topic', help='only this stack, e.g. for one of several agents')
         sub.add_argument('--all', action='store_true', help='all registered repositories')
-        sub.add_argument('--list', help='the repositories of this list')
+        sub.add_argument('--list', help='the repositories of this list', default=argparse.SUPPRESS)
     register = command('register', register_command, 'show a repository in the dashboard',
                        ('path', {'nargs': '?', 'default': '.'}))
     register.add_argument('--name')
@@ -2938,7 +2938,7 @@ def parse_arguments(argv):
     command('guide', guide_command, 'the guide for agents as authors')
     serve = command('serve', serve_command, 'web interface', repositories)
     serve.add_argument('--port', type=int, default=8022)
-    serve.add_argument('--list', help='the repositories of this list')
+    serve.add_argument('--list', help='the repositories of this list', default=argparse.SUPPRESS)
     config = command('config', config_command, 'show or change a setting', ('key', optional),
                      ('value', optional))
     config.add_argument('--global', dest='user', action='store_true',
