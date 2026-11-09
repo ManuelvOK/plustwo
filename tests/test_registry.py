@@ -79,6 +79,15 @@ class RegistryTest(unittest.TestCase):
         self.assertTrue(dashboard.startswith('Incoming'))
         self.assertIn('Work in progress (0) [folded]', dashboard)
 
+    def test_check_votes_verified(self):
+        alpha, _beta = self.repos
+        self.upload(alpha)
+        alpha.change('config', 'checks.command', 'test -f f.txt')
+        self.assertIn('Verified+1', alpha.change('check'))
+        alpha.change('config', 'checks.command', 'exit 3')
+        self.assertIn('Verified-1', alpha.change('check'))
+        self.assertIn('Verified-1 by ci', alpha.change('show', 'alpha:I'))
+
 
 if __name__ == '__main__':
     unittest.main()

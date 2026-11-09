@@ -92,6 +92,12 @@ repository (it wins).
 | 2   | `keys.preset`     | `vim` (default), `emacs` or `gerrit`                     |
 | 3   | `keys.<action>`   | keys of one action, e.g. `keys.reply = R`, see `?`       |
 | 4   | `diff.whitespace` | `none`, `trailing`, `changed` or `all`, `W` cycles them  |
+| 5   | `checks.command`  | a check run after every upload, votes Verified           |
+| 6   | `checks.setup`    | run before the check, e.g. a submodule update            |
+
+A check runs in its own worktree (`.git/plustwo/check`) at the stack's top
+change, so no checkout is touched. A newer upload stops a running one.
+`plustwo check` runs it by hand.
 
 ## License
 

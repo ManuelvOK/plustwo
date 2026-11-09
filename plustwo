@@ -97,6 +97,9 @@ Usage:
                                         stopped
     plustwo serve [--port N] [REPO...]  web interface for the reviewer, on
                                         127.0.0.1 only (port 8022)
+    plustwo check [TOPIC]               runs the check (checks.command) of a
+                                        stack's top change now. upload starts
+                                        it in the background by itself.
     plustwo guide                       the guide for agents working as the
                                         author (AGENTS.md)
     plustwo config [--global] [--unset] [KEY [VALUE]]
@@ -159,6 +162,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -1658,6 +1662,87 @@ def rebase_stack(topic, repository=None):
         return uploaded
 
 
+# ── built-in checks ───────────────────────────────────────────────────────
+
+CHECK_LOG_LINES = 20
+
+
+def git_path(name, repository=None):
+    """An absolute path inside the repository's .git directory."""
+    repository = current_repository(repository)
+    path = Path(git('rev-parse', '--git-path', name, repository=repository))
+    return path if path.is_absolute() else (Path(repository or '.') / path).absolute()
+
+
+def cancel_check(repository=None):
+    """Stops a running check of the repository, if there is one."""
+    pid_file = git_path('plustwo/check.pid', repository)
+    if not pid_file.exists():
+        return
+    with contextlib.suppress(ValueError, ProcessLookupError, PermissionError):
+        os.killpg(int(pid_file.read_text().split()[0]), signal.SIGTERM)
+    pid_file.unlink(missing_ok=True)
+
+
+def start_check(topic, repository=None):
+    """Starts the check (setting checks.command) of a stack's top change in
+    the background, after stopping one still running: a newer upload makes
+    its result useless. Returns whether a check started.
+    """
+    if not setting('checks.command', repository=repository):
+        return False
+    cancel_check(repository)
+    top = git('rev-parse', stack_ref(topic), repository=repository)
+    root = toplevel(repository)
+    process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), 'check-run',
+                                topic, top], cwd=root, start_new_session=True,
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
+    pid_file = git_path('plustwo/check.pid', repository)
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text(f'{process.pid} {top}\n')
+    return True
+
+
+def run_check(topic, commit=None, repository=None):
+    """Runs the check of a stack's top change (or commit) in the worktree
+    .git/plustwo/check, setting checks.setup first if there is one, and
+    votes Verified by ci with the end of the log. The log stays in
+    .git/plustwo/check.log. Returns the vote, None without checks.command.
+    """
+    command = setting('checks.command', repository=repository)
+    if not command:
+        return None
+    commit = commit or git('rev-parse', stack_ref(topic), repository=repository)
+    worktree = git_path('plustwo/check', repository)
+    if not (worktree / '.git').exists():
+        git('worktree', 'prune', repository=repository)
+        git('worktree', 'add', '--detach', '--force', str(worktree), commit,
+            repository=repository)
+    else:
+        git('checkout', '--quiet', '--detach', '--force', commit, repository=str(worktree))
+    log_path = git_path('plustwo/check.log', repository)
+    with open(log_path, 'w') as log:
+        status = 0
+        for step in filter(None, (setting('checks.setup', repository=repository), command)):
+            log.write(f'$ {step}\n')
+            log.flush()
+            status = subprocess.run(step, shell=True, cwd=worktree, stdout=log,
+                                    stderr=subprocess.STDOUT).returncode
+            if status:
+                break
+    value = 1 if 0 == status else -1
+    tail = '\n'.join(log_path.read_text(errors='replace').rstrip('\n').split('\n')
+                     [-CHECK_LOG_LINES:])
+    change = next((change for change in changes_in_stack(repository)
+                   if change.topic == topic and commit in change.patch_sets.values()), None)
+    if change is not None:
+        number = next(number for number, other in change.patch_sets.items() if other == commit)
+        set_vote(change.change_id, VERIFIED, value, by='ci', patch_set=number, message=tail,
+                 repository=repository)
+    return value
+
+
 def pull(repository=None):
     """Brings what the reviewer did into the checked out branch: a rebase,
     a submit. Like a fetch and rebase from Gerrit. Returns what happened,
@@ -2656,6 +2741,8 @@ def parse_arguments(argv):
         branch = branch_with_change(arguments.change) if arguments.change else None
         wip = True if arguments.wip else False if arguments.ready else None
         uploaded, topic, grown = upload(branch, arguments.topic, wip=wip)
+        if start_check(topic):
+            print(f'{topic}: check started, it votes Verified')
         if grown:
             print(f'added to stack {topic}')
         if wip is not None:
@@ -2678,6 +2765,21 @@ def parse_arguments(argv):
 
     def pull_command(_arguments):
         print(pull())
+
+    def check_command(arguments):
+        topic = arguments.topic or topic_of_branch(current_branch() or '')
+        value = run_check(topic)
+        if value is None:
+            raise ChangeError('no check set up: plustwo config checks.command "make check"')
+        print(f'{topic}: Verified{value:+d}, log in {git_path("plustwo/check.log")}')
+
+    def check_run_command(arguments):
+        try:
+            run_check(arguments.topic, arguments.commit)
+        finally:
+            pid_file = git_path('plustwo/check.pid')
+            if pid_file.exists() and arguments.commit in pid_file.read_text():
+                pid_file.unlink()
 
     def submit_command(arguments):
         submitted = submit(find_change(arguments.change).change_id)
@@ -2825,6 +2927,12 @@ def parse_arguments(argv):
     register.add_argument('--list', help='add it to this list of repositories')
     command('unregister', unregister_command, 'forget a registered repository', 'name')
     command('repos', repos_command, 'the registered repositories')
+    command('check', check_command, 'run the check of a stack now, votes Verified',
+            ('topic', optional))
+    check_run = commands.add_parser('check-run', help=argparse.SUPPRESS)
+    check_run.add_argument('topic')
+    check_run.add_argument('commit')
+    check_run.set_defaults(run=check_run_command)
     command('abandon', stack_command(abandon_stack), 'abandon a stack, [REPO:]TOPIC', 'topic')
     command('restore', stack_command(restore_stack), 'bring an abandoned stack back', 'topic')
     command('guide', guide_command, 'the guide for agents as authors')

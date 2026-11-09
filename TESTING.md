@@ -67,7 +67,7 @@ Repeat the setup in a new throwaway repository, then:
 
 | #   | Do                                                  | Expect                                       |
 |-----|-----------------------------------------------------|----------------------------------------------|
-| 21  | terminal 1: `plustwo serve .`, open the address     | the stack `feature` with both changes        |
+| 21  | terminal 1: `plustwo serve .`, open the address     | the dashboard with both changes              |
 | 22  | click "Spell out thirty"                            | file list left, side by side diff right      |
 | 23  | click the new side's number of line 30, write, Save | a draft thread under the line                |
 | 24  | Reply, pick `+1`, Send                              | the draft is sent, `CR +1` badge             |
@@ -77,3 +77,15 @@ Repeat the setup in a new throwaway repository, then:
 | 28  | `?`                                                 | the keys of your preset                      |
 
 Stop the server with Ctrl-C.
+
+## Several repositories and checks
+
+Make a second throwaway repository like the first one, then:
+
+| #   | Do                                                      | Expect                                       |
+|-----|---------------------------------------------------------|----------------------------------------------|
+| 29  | `plustwo repos`                                         | both repositories are registered (by `init`) |
+| 30  | in the second: `PLUSTWO_USER=agent plustwo upload --wip` | "work in progress"                          |
+| 31  | `cd ~ && plustwo`                                       | changes of both, the WIP one dimmed          |
+| 32  | Enter on a section heading, then `J`                    | it folds, then moves down. Kept on restart   |
+| 33  | `plustwo config checks.command true`, upload again      | a moment later the change shows `V +1`       |

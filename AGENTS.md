@@ -100,7 +100,12 @@ decision you are unsure about:
 
 ## Votes
 
-- Checks (tests, builds) vote Verified on the top change of the stack:
+- If the repository has `checks.command` set (`plustwo config
+  checks.command`), every upload starts the check by itself in the
+  background and it votes Verified on the top change. Don't start checks
+  yourself then, react to a `vote ... Verified-1` line from `watch`: the
+  log's end is in `inbox`, the whole log in `.git/plustwo/check.log`.
+- Without it, checks (tests, builds) vote Verified on the top change:
   `plustwo vote <CHANGE> Verified +1 --by ci -m "<end of the log>"`, or
   `-1` when they fail.
 - A negative vote shows up in `watch` and `inbox`. Treat Code-Review-1 or -2
