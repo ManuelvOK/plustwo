@@ -67,7 +67,7 @@ function voteChip(label, value) {
 
 function turnChip(turn) {
   if (turn === 'submittable') return el('span', {class: 'chip good'}, 'submittable');
-  if (turn === 'reviewer') return el('span', {class: 'chip warn'}, 'your turn');
+  if (turn === 'reviewer') return el('span', {class: 'chip'}, 'reviewer');
   return el('span', {class: 'chip'}, 'author');
 }
 
@@ -96,34 +96,60 @@ async function render() {
   }
 }
 
-// ── the list of stacks ────────────────────────────────────────────────────
+// ── the dashboard ─────────────────────────────────────────────────────────
+
+async function postDashboard(fields) {
+  const response = await fetch('/api/action', {
+    method: 'POST', headers: {'X-Plustwo-Token': TOKEN, 'Content-Type': 'application/json'},
+    body: JSON.stringify(fields)});
+  const data = await response.json();
+  if (!response.ok) say(data.error, true);
+  await render();
+}
 
 async function renderList() {
-  const data = await api('stacks');
+  const data = await api('dashboard');
   const view = document.getElementById('view');
   state.change = null;
   state.listIds = [];
-  const blocks = [];
-  if (!data.stacks.length) blocks.push(el('p', {class: 'dim'}, 'Nothing in review.'));
-  for (const stack of data.stacks) {
-    blocks.push(el('h2', {class: 'stack-title'}, stack.topic, ' ',
-                   stack.needs_rebase ? el('span', {class: 'chip warn'},
-                                           `${data.base} moved on, needs a rebase`) : null));
-    const rows = stack.changes.map((change) => {
+  const order = data.sections.map((section) => section.name);
+  const blocks = data.sections.map((section) => {
+    const title = el('h2', {
+      class: 'section-title', draggable: 'true', title: 'Click folds, drag moves',
+      onclick: () => postDashboard({action: 'fold', section: section.name}),
+      ondragstart: (event) => event.dataTransfer.setData('text/plain', section.name),
+      ondragover: (event) => event.preventDefault(),
+      ondrop: (event) => {
+        event.preventDefault();
+        const moved = event.dataTransfer.getData('text/plain');
+        const names = order.filter((name) => name !== moved);
+        names.splice(names.indexOf(section.name), 0, moved);
+        postDashboard({action: 'order', sections: names});
+      }},
+      section.folded ? '▸ ' : '▾ ', section.title, ' ', el('span', {class: 'dim'}, `(${section.count})`));
+    if (section.folded) return el('section', {}, title);
+    if (!section.changes.length) return el('section', {}, title, el('p', {class: 'dim none'}, '(none)'));
+    const rows = section.changes.map((change) => {
       const index = state.listIds.length;
-      state.listIds.push(change.id);
-      return el('tr', {class: index === state.listIndex ? 'selected' : '',
-                       onclick: () => go(`#/c/${state.repo}/${change.id}`)},
-        el('td', {}, el('a', {href: `#/c/${state.repo}/${change.id}`}, change.subject)),
+      const link = `#/c/${change.repo}/${change.id}`;
+      state.listIds.push(link);
+      return el('tr', {class: (index === state.listIndex ? 'selected ' : '') + (change.wip ? 'wip' : ''),
+                       onclick: () => go(link)},
+        el('td', {class: 'dim'}, change.number),
+        el('td', {}, el('a', {href: link}, change.subject)),
+        el('td', {}, change.repo_name),
+        el('td', {class: 'dim'}, change.topic, ' ',
+           change.needs_rebase ? el('span', {class: 'chip warn'}, 'needs rebase') : null),
         el('td', {class: 'dim'}, change.short_id),
         el('td', {}, `PS${change.patch_set}`),
         el('td', {}, voteChip('CR', change.code_review)),
         el('td', {}, voteChip('V', change.verified)),
-        el('td', {}, turnChip(change.turn)),
+        el('td', {}, change.wip ? el('span', {class: 'chip'}, 'WIP')
+                     : change.your_turn ? el('span', {class: 'chip warn'}, 'your turn') : turnChip(change.turn)),
         el('td', {class: 'dim'}, change.comments));
     });
-    blocks.push(el('table', {class: 'list'}, el('tbody', {}, rows)));
-  }
+    return el('section', {}, title, el('table', {class: 'list'}, el('tbody', {}, rows)));
+  });
   state.listIndex = Math.min(state.listIndex, Math.max(state.listIds.length - 1, 0));
   view.replaceChildren(...blocks);
 }
@@ -513,7 +539,7 @@ function runAction(action, times) {
     case 'page-down': moveCursor(state.cursor + 20); return true;
     case 'page-up': moveCursor(state.cursor - 20); return true;
     case 'open':
-      if (list && state.listIds.length) go(`#/c/${state.repo}/${state.listIds[state.listIndex]}`);
+      if (list && state.listIds.length) go(state.listIds[state.listIndex]);
       return true;
     case 'back': if (state.editor) { state.editor = null; render(); } else go(`#/${state.repo}`); return true;
     case 'quit': go(`#/${state.repo}`); return true;
@@ -580,7 +606,8 @@ async function start() {
   state.repos = repositories;
   const select = document.getElementById('repo');
   select.replaceChildren(...repositories.map((name, index) => el('option', {value: index}, name)));
-  select.hidden = repositories.length < 2;
+  // The dashboard shows every repository, the change page names its own.
+  select.hidden = true;
   select.addEventListener('change', () => go(`#/${select.value}`));
   state.keys = await api('keys');
   document.getElementById('help-button').addEventListener('click', showHelp);

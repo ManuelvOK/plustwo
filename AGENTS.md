@@ -21,12 +21,16 @@ when changes are submitted.
 
 ## Setup
 
-Once per repository: `plustwo init`. Then work on a branch, one per
+Once per repository: `plustwo init`. Once per session:
+`export PLUSTWO_USER=agent`, so the reviewer's dashboard lists your uploads
+as incoming. Run author commands inside the repository: they act on the
+working directory's repository and branch. Then work on a branch, one per
 topic. Its name is the stack's topic (a leading `review/` is dropped):
 
     git switch -c <topic>
     git commit ...                  # gets a Change-Id
     plustwo upload               # PS1 of every change in the stack
+    plustwo upload --wip         # or: not ready for review yet, --ready later
 
 Keep one logical change per commit. The reviewer sees the stack commit by
 commit.

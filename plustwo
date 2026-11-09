@@ -34,13 +34,22 @@ rename and for those who prefer it as a git command.
 Usage:
     plustwo                             terminal user interface
     plustwo init                        installs the commit-msg hook and the
-                                        notes setup in this repository
-    plustwo list                        overview of the stacks in review
+                                        notes setup in this repository and
+                                        registers it
+    plustwo register [PATH] [--name N] [--list L]
+                                        shows a repository in the dashboard,
+                                        L groups repositories into a list
+    plustwo unregister NAME             forgets a registered repository
+    plustwo repos                       the registered repositories
+    plustwo list [--list L]             the dashboard: Your turn, Has drafts,
+                                        Work in progress, Outgoing, Incoming
+    plustwo abandon [REPO:]TOPIC        abandons a stack, restore brings it
+    plustwo restore [REPO:]TOPIC        back
     plustwo show CHANGE                 comment threads of a change
     plustwo diff CHANGE [A [B]]         diff between patch sets, shown by
                                         git's pager. --tool opens vimdiff.
     plustwo rdiff CHANGE [A [B]]        range-diff between patch sets
-    plustwo upload [CHANGE] [--topic TOPIC]
+    plustwo upload [CHANGE] [--topic TOPIC] [--wip | --ready]
                                         uploads the stack of the checked out
                                         branch (or of the branch with CHANGE):
                                         every changed commit becomes the next
@@ -79,7 +88,9 @@ Usage:
     plustwo require-verified CHANGE [on|off]
                                         whether the change needs Verified+1
                                         to be submitted
-    plustwo inbox [REPO...]             what the author has to answer
+    plustwo inbox [REPO...] [--all]     what the author has to answer, in
+                                        this repository (all registered ones
+                                        outside of one or with --all)
     plustwo watch [REPO...]             prints one line per change with new
                                         sent messages, per vote, and per stack
                                         submitted, rebased or to rebase, until
@@ -92,8 +103,14 @@ Usage:
                                         shows or changes a setting, all of
                                         them without KEY
 
-CHANGE is a change's number in the overview (counted over all stacks) or a
-unique prefix of its Change-Id (like I3f2a). A and B are patch set
+CHANGE is a change's number in the dashboard (counted over all registered
+repositories), a unique prefix of its Change-Id (like I3f2a) or one with
+its repository, like prs2d:I3f2a. Reviewer commands work from anywhere,
+author commands (upload, pull, inbox, watch) on the working directory's
+repository. Registered repositories, lists and the dashboard's order and
+folding are state, not settings: files in git config syntax below
+$XDG_STATE_HOME/plustwo (~/.local/state/plustwo). Without any registered
+repository, the working directory's is the only one. A and B are patch set
 numbers or "current" for the commit as it is now. Without them, diff and rdiff compare the latest patch
 set with the current commit, or the last two patch sets if the commit is
 unchanged since. With a single patch set, they show the change itself.
@@ -133,6 +150,7 @@ plustwo config changes them, git config --file works too. Settings:
 
 import argparse
 import contextlib
+import contextvars
 import difflib
 import fcntl
 import functools
@@ -198,6 +216,8 @@ PATCHSET_LEVEL = '/PATCHSET_LEVEL'
 REVIEWER_TURN = 'reviewer'
 AUTHOR_TURN = 'author'
 SUBMITTABLE = 'submittable'
+# A change in work, which gives nobody a turn, like Gerrit's WIP state
+WIP_TURN = 'wip'
 COMMIT_MSG_NAME = 'COMMIT_MSG'
 CHANGE_ID_PATTERN = re.compile(r'^Change-Id: (I[0-9a-f]{40})\s*$', re.MULTILINE)
 WATCH_INTERVAL_SECONDS = 1.0
@@ -329,6 +349,32 @@ class Change:
     uploads: dict[int, int] = field(default_factory=dict)
     # Files the reviewer marked reviewed: path -> hash of the file's diff
     reviewed: dict[str, str] = field(default_factory=dict)
+    # Who uploaded the patch sets: number -> name, see current_user()
+    uploaders: dict[int, str] = field(default_factory=dict)
+    # Work in progress, like Gerrit's WIP: shown, but not to be reviewed
+    wip: bool = False
+    # The repository's working tree and its name, for showing several
+    repository: str | None = None
+    repo: str = ''
+
+    def uploader(self):
+        """Who uploaded the latest patch set, '' if unknown."""
+        return self.uploaders.get(self.latest_patch_set(), '')
+
+    def sections(self, user):
+        """The dashboard sections the change belongs to, for this user."""
+        mine = user == self.uploader()
+        turn = self.turn()
+        sections = []
+        if (REVIEWER_TURN == turn and not mine) or (AUTHOR_TURN == turn and mine) or (
+                SUBMITTABLE == turn and not mine):
+            sections.append('your-turn')
+        if any(comment.has_draft() for comment in self.comments):
+            sections.append('drafts')
+        if self.wip:
+            sections.append('wip')
+        sections.append('outgoing' if mine else 'incoming')
+        return sections
 
     def comment(self, number):
         """The thread with this number, None if there is none."""
@@ -342,6 +388,8 @@ class Change:
         """
         if not self.patch_sets:
             return AUTHOR_TURN
+        if self.wip:
+            return WIP_TURN
         if not self.submit_problems() and not self.unfinished_comments():
             return SUBMITTABLE
         if self.rebase_requested:
@@ -418,6 +466,8 @@ class Change:
         if not self.patch_sets:
             return [f'{name} has no patch set yet, upload it first']
         problems = []
+        if self.wip:
+            problems.append(f'{name} is work in progress, upload it with --ready first')
         if not self.is_uploaded():
             problems.append(f'{name} changed since its last patch set, upload it first')
         labels = [CODE_REVIEW] + ([VERIFIED] if self.verified_required else [])
@@ -432,9 +482,34 @@ class Change:
 
 # ── git helpers ───────────────────────────────────────────────────────────
 
+# The repository commands without one act on: None for the working
+# directory. A frontend showing changes of several repositories sets it to
+# the one of the change it acts on. Per thread, so the web server's
+# requests don't mix.
+_REPOSITORY = contextvars.ContextVar('repository', default=None)
+
+
+def use_repository(repository):
+    """Makes later calls without a repository act on this one."""
+    _REPOSITORY.set(str(repository) if repository else None)
+
+
+def current_repository(repository=None):
+    """The repository a call acts on: the given one, else the one set by
+    use_repository(), else None for the working directory.
+    """
+    return repository or _REPOSITORY.get()
+
+
+def git_command(repository=None):
+    """The start of a git command line running in a repository."""
+    repository = current_repository(repository)
+    return ['git'] + (['-C', str(repository)] if repository else [])
+
+
 def git(*arguments, input_text=None, check=True, repository=None):
     """Runs git and returns its output without the final newline."""
-    command = ['git'] + (['-C', str(repository)] if repository else []) + list(arguments)
+    command = git_command(repository) + list(arguments)
     # Files need not be UTF-8, so bytes that aren't become replacement
     # characters instead of an error.
     result = subprocess.run(command, input=input_text, encoding='utf-8', errors='replace',
@@ -458,6 +533,7 @@ def user_config_path():
 
 def repository_config_path(repository=None):
     """The repository's settings file, in git config syntax, inside .git."""
+    repository = current_repository(repository)
     path = Path(git('rev-parse', '--git-path', 'plustwo/config', repository=repository))
     return Path(repository) / path if repository and not path.is_absolute() else path.absolute()
 
@@ -466,7 +542,7 @@ def config_files(repository=None):
     """The settings files, the one that wins first: the repository's, then
     the user's. The repository's only inside a repository.
     """
-    inside = subprocess.run(['git', *(['-C', str(repository)] if repository else []),
+    inside = subprocess.run([*git_command(repository),
                              'rev-parse', '--git-dir'], capture_output=True).returncode == 0
     return ([repository_config_path(repository)] if inside else []) + [user_config_path()]
 
@@ -547,6 +623,179 @@ def migrate_settings(repository=None):
     return moved
 
 
+# ── state: registered repositories, lists, the dashboard ───────────────
+
+# What the tool remembers, as opposed to what the user configures: files in
+# git config syntax below $XDG_STATE_HOME/plustwo, read and written with
+# git config --file.
+DASHBOARD_SECTIONS = ('your-turn', 'drafts', 'wip', 'outgoing', 'incoming')
+SECTION_TITLES = {'your-turn': 'Your turn', 'drafts': 'Has drafts', 'wip': 'Work in progress',
+                  'outgoing': 'Outgoing', 'incoming': 'Incoming'}
+
+
+def state_path(name):
+    """A state file, like repos or dashboard."""
+    home = os.environ.get('XDG_STATE_HOME') or str(Path.home() / '.local' / 'state')
+    return Path(home) / 'plustwo' / name
+
+
+def state_values(name, key):
+    """All values of a key in a state file."""
+    path = state_path(name)
+    if not path.exists():
+        return []
+    output = git('config', '--file', str(path), '--get-all', key, check=False)
+    return [value for value in output.split('\n') if value]
+
+
+def state_regexp(name, pattern):
+    """(key, value) pairs of a state file whose keys match a pattern."""
+    path = state_path(name)
+    if not path.exists():
+        return []
+    output = git('config', '--file', str(path), '--get-regexp', pattern, check=False)
+    return [tuple(line.partition(' ')[::2]) for line in output.split('\n') if line]
+
+
+def set_state(name, key, value, add=False):
+    """Sets a key of a state file, adds a value with add, removes all of
+    its values with value None.
+    """
+    path = state_path(name)
+    if value is None:
+        if path.exists():
+            git('config', '--file', str(path), '--unset-all', key, check=False)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    git('config', '--file', str(path), *(['--add'] if add else []), key, value)
+
+
+def toplevel(repository=None):
+    """The absolute path of a repository's working tree, None outside one."""
+    result = subprocess.run([*git_command(repository), 'rev-parse', '--show-toplevel'],
+                            capture_output=True, text=True)
+    return result.stdout.strip() or None if 0 == result.returncode else None
+
+
+def registered_repositories():
+    """The registered repositories: name -> path, in the order of the file."""
+    return {key[len('repo.'):-len('.path')]: value
+            for key, value in state_regexp('repos', r'^repo\..*\.path$')}
+
+
+def repository_lists():
+    """The lists of repositories: name -> [repository names]."""
+    lists = {}
+    for key, value in state_regexp('repos', r'^list\..*\.repo$'):
+        lists.setdefault(key[len('list.'):-len('.repo')], []).append(value)
+    return lists
+
+
+def register_repository(path='.', name=None, list_name=None, unique=False):
+    """Registers a repository for the dashboard, under its directory's name
+    unless name is given, and adds it to a list. A name whose repository is
+    gone is taken over. With unique, a taken name gets a number instead of
+    an error, e.g. repo-2. Returns the name.
+    """
+    root = toplevel(path)
+    if root is None:
+        raise ChangeError(f'{path} is not a git repository')
+    known = registered_repositories()
+    existing = next((known_name for known_name, known_path in known.items()
+                     if known_path == root), None)
+    name = existing or name or Path(root).name
+    if existing is None:
+        if name in known and not Path(known[name]).exists():
+            del known[name]
+        if unique:
+            stem, number = name, 2
+            while name in known:
+                name, number = f'{stem}-{number}', number + 1
+        if name in known:
+            raise ChangeError(f'a repository named {name} is registered already, '
+                              'choose another with --name')
+        set_state('repos', f'repo.{name}.path', root)
+    if list_name and name not in repository_lists().get(list_name, []):
+        set_state('repos', f'list.{list_name}.repo', name, add=True)
+    return name
+
+
+def unregister_repository(name):
+    """Forgets a registered repository, also in every list."""
+    if name not in registered_repositories():
+        raise ChangeError(f'no registered repository {name}')
+    path = state_path('repos')
+    git('config', '--file', str(path), '--remove-section', f'repo.{name}', check=False)
+    for list_name, names in repository_lists().items():
+        if name in names:
+            git('config', '--file', str(path), '--unset-all', f'list.{list_name}.repo',
+                f'^{re.escape(name)}$', check=False)
+
+
+def review_repositories(list_name=None):
+    """The repositories reviews are shown for: the registered ones (of a
+    list, if given) that still exist. Without any registered, the one of
+    the working directory, so nothing changes until the first register.
+    The working directory's repository comes along when it isn't
+    registered, as long as no list is asked for.
+    """
+    known = registered_repositories()
+    if list_name:
+        names = repository_lists().get(list_name)
+        if names is None:
+            raise ChangeError(f'no list {list_name}')
+        return [known[name] for name in names if name in known and Path(known[name]).exists()]
+    paths = [path for path in known.values() if Path(path).exists()]
+    here = toplevel()
+    if here and here not in paths:
+        paths.insert(0, here)
+    return paths
+
+
+def current_user():
+    """Who acts: PLUSTWO_USER (agents set it to agent), else git's user.name."""
+    return os.environ.get('PLUSTWO_USER') or git('config', 'user.name', check=False) or 'unknown'
+
+
+def dashboard_order():
+    """The dashboard's sections in the user's order. Unknown names are
+    left out, sections missing from the saved order come at the end.
+    """
+    saved = [name for value in state_values('dashboard', 'dashboard.sections')
+             for name in value.split(',') if name in DASHBOARD_SECTIONS]
+    return saved + [name for name in DASHBOARD_SECTIONS if name not in saved]
+
+
+def move_section(name, steps):
+    """Moves a dashboard section up (steps < 0) or down and saves the order."""
+    order = dashboard_order()
+    index = order.index(name)
+    target = max(0, min(index + steps, len(order) - 1))
+    order.insert(target, order.pop(index))
+    set_state('dashboard', 'dashboard.sections', ','.join(order))
+    return order
+
+
+def set_section_order(order):
+    """Saves a whole order, e.g. from dragging in the web interface."""
+    order = [name for name in order if name in DASHBOARD_SECTIONS]
+    set_state('dashboard', 'dashboard.sections',
+              ','.join(order + [name for name in DASHBOARD_SECTIONS if name not in order]))
+
+
+def folded_sections():
+    """The dashboard sections the user folded."""
+    return {name for value in state_values('dashboard', 'dashboard.folded')
+            for name in value.split(',') if name}
+
+
+def toggle_section(name):
+    """Folds or unfolds a dashboard section. Returns whether it is folded."""
+    folded = folded_sections() ^ {name}
+    set_state('dashboard', 'dashboard.folded', ','.join(sorted(folded)) or None)
+    return name in folded
+
+
 def base_branch(repository=None):
     """The branch reviewed changes go to: the setting review.base, else
     main.
@@ -605,7 +854,7 @@ def current_branch(repository=None):
 
 def is_ancestor(commit, other, repository=None):
     """Whether commit is on other."""
-    return 0 == subprocess.run(['git', *(['-C', str(repository)] if repository else []),
+    return 0 == subprocess.run([*git_command(repository),
                                 'merge-base', '--is-ancestor', commit, other],
                                capture_output=True).returncode
 
@@ -652,7 +901,7 @@ def read_notes(commits, repository=None):
     wanted = [(commit, blobs[commit]) for commit in commits if commit in blobs]
     if not wanted:
         return {}
-    command = ['git', *(['-C', str(repository)] if repository else []), 'cat-file', '--batch']
+    command = [*git_command(repository), 'cat-file', '--batch']
     data = subprocess.run(command, input=''.join(f'{blob}\n' for _, blob in wanted).encode(),
                           capture_output=True, check=True).stdout
     notes = {}
@@ -776,6 +1025,7 @@ def review_lock(repository=None):
     and write notes. Without the lock, one of two writes at the same moment
     would get lost.
     """
+    repository = current_repository(repository)
     path = Path(git('rev-parse', '--git-path', 'git-change.lock', repository=repository))
     if repository and not path.is_absolute():
         path = Path(repository) / path
@@ -917,7 +1167,10 @@ def change_from(commit, topic, note, repository=None, change_id=None, subject=No
                   rebase_requested=note.get('rebase_requested', False),
                   rebased_patch_set=note.get('rebased_patch_set', 0),
                   uploads={int(number): time for number, time in note.get('uploads', {}).items()},
-                  reviewed=note.get('reviewed', {}))
+                  reviewed=note.get('reviewed', {}),
+                  uploaders={int(number): name
+                             for number, name in note.get('uploaders', {}).items()},
+                  wip=note.get('wip', False))
 
 
 def note_of(change):
@@ -934,7 +1187,9 @@ def note_of(change):
             'rebase_requested': change.rebase_requested,
             'rebased_patch_set': change.rebased_patch_set,
             'uploads': {str(number): time for number, time in change.uploads.items()},
-            'reviewed': change.reviewed}
+            'reviewed': change.reviewed,
+            'uploaders': {str(number): name for number, name in change.uploaders.items()},
+            'wip': change.wip}
 
 
 def changes_in_stack(repository=None):
@@ -961,14 +1216,67 @@ def changes_in_stack(repository=None):
             if match:
                 stacks.append((topic, commit, subject, match.group(1)))
     notes = read_notes([commit for _, commit, _, _ in stacks], repository)
-    return [change_from(commit, topic, notes.get(commit, {}), repository, change_id, subject,
-                        all_patch_sets.get(change_id, {}))
-            for topic, commit, subject, change_id in stacks]
+    changes = [change_from(commit, topic, notes.get(commit, {}), repository, change_id, subject,
+                           all_patch_sets.get(change_id, {}))
+               for topic, commit, subject, change_id in stacks]
+    root = toplevel(repository)
+    for change in changes:
+        change.repository = root
+        change.repo = Path(root).name if root else ''
+    return changes
+
+
+def all_changes(list_name=None):
+    """The changes of every repository reviews are shown for, see
+    review_repositories(), repository by repository. Each change knows its
+    repository and its registered name.
+    """
+    names = {path: name for name, path in registered_repositories().items()}
+    changes = []
+    for repository in review_repositories(list_name):
+        for change in changes_in_stack(repository):
+            change.repo = names.get(change.repository, change.repo)
+            changes.append(change)
+    return changes
+
+
+def locate(change_id):
+    """The repository a change is in review in: the working directory's if
+    it has it, else the first registered one that has it. None when none
+    has it, which means the working directory.
+    """
+    for repository in review_repositories():
+        if git('for-each-ref', '--count=1', f'{PATCH_SET_PREFIX}{change_id}/', check=False,
+               repository=repository):
+            return repository
+    return None
 
 
 def find_change(reference, repository=None):
-    """The change an overview number or a Change-Id prefix refers to."""
-    changes = changes_in_stack(repository)
+    """The change an overview number, a Change-Id prefix or repo:prefix
+    refers to. Without a repository, over all repositories reviews are
+    shown for (numbers count over all of them), and later calls without a
+    repository act on the change's one.
+    """
+    if repository is not None:
+        changes = changes_in_stack(repository)
+    else:
+        changes = all_changes()
+        name, colon, rest = reference.rpartition(':')
+        if colon:
+            changes = [change for change in changes if name in (change.repo, Path(
+                change.repository or '').name)]
+            if not changes:
+                raise ChangeError(f'no repository {name} with changes in review')
+            reference = rest
+    change = _find_in(changes, reference)
+    if repository is None:
+        use_repository(change.repository)
+    return change
+
+
+def _find_in(changes, reference):
+    """The change of a list a number or a Change-Id prefix refers to."""
     if reference.isdigit():
         index = int(reference)
         if 1 <= index <= len(changes):
@@ -989,6 +1297,7 @@ def update_change(change_id, edit, repository=None):
     it was shown, and because an amend may have given it a new commit. Then
     calls edit(change), stores the result and returns what edit returned.
     """
+    repository = current_repository(repository) or locate(change_id)
     with review_lock(repository):
         for change in changes_in_stack(repository):
             if change_id == change.change_id:
@@ -1057,10 +1366,11 @@ def add_patch_set(change, repository=None):
                          + change.current_votes(VERIFIED) if is_kept(vote, kind)]
     change.patch_sets[number] = change.commit
     change.uploads[number] = int(time.time())
+    change.uploaders[number] = current_user()
     return number, kind
 
 
-def upload(branch=None, topic=None, repository=None):
+def upload(branch=None, topic=None, repository=None, wip=None):
     """Uploads the stack of a local branch (the checked out one if None):
     its commits that are not on the base branch. Like a push to Gerrit's
     refs/for/, every commit that isn't its change's latest patch set yet
@@ -1069,8 +1379,13 @@ def upload(branch=None, topic=None, repository=None):
     topic defaults to the branch's name without a leading review/. The
     review of a change lives on its latest patch set, so a new patch set
     gets that note, whatever an amend copied to the local commit. A
-    pending rebase request is cleared. Returns [(change, patch set number,
-    kind)] of the new patch sets.
+    pending rebase request is cleared.
+
+    A branch on top of another stack makes that stack bigger, under its
+    topic, like a longer relation chain in Gerrit. wip True or False marks
+    every change of the stack work in progress or ready, like Gerrit's %wip
+    and %ready. Returns ([(change, patch set number, kind)] of the new
+    patch sets, the topic, whether an existing stack grew).
     """
     with review_lock(repository):
         ensure_layout(repository)
@@ -1090,34 +1405,48 @@ def upload(branch=None, topic=None, repository=None):
             if change_id is None:
                 raise ChangeError(f'{commit[:8]} has no Change-Id. Run plustwo init, then '
                                   'amend it to get one.')
-        elsewhere = {change.change_id: change.topic for change in changes_in_stack(repository)
-                     if change.topic != topic}
+        in_review = {change.change_id: change.topic for change in changes_in_stack(repository)}
+        grown = False
+        if not git('rev-parse', '--verify', '--quiet', stack_ref(topic), check=False,
+                   repository=repository):
+            others = {in_review[change_id] for change_id in change_ids if change_id in in_review}
+            if 1 == len(others):
+                topic, grown = others.pop(), True
+        elsewhere = {change_id: other for change_id, other in in_review.items()
+                     if other != topic}
         for change_id in change_ids:
             if change_id in elsewhere:
                 raise ChangeError(f'{change_id[:8]} is in review in the stack '
                                   f'{elsewhere[change_id]} already')
 
         uploaded = []
+        marked = False
         for commit, change_id in zip(commits, change_ids):
             patch_sets = patch_sets_of(change_id, repository)
             latest = max(patch_sets, default=0)
             if latest and patch_sets[latest] == commit:
                 note = read_note(commit, repository)
-                if note.get('rebase_requested'):
+                if note.get('rebase_requested') or (wip is not None and wip != note.get('wip',
+                                                                                        False)):
                     note['rebase_requested'] = False
+                    if wip is not None:
+                        note['wip'] = wip
                     write_note(commit, note, repository)
+                    marked = True
                 continue
             note = read_note(patch_sets[latest] if latest else commit, repository)
             change = change_from(commit, topic, note, repository)
             change.rebase_requested = False
+            if wip is not None:
+                change.wip = wip
             uploaded.append((change, *add_patch_set(change, repository)))
             write_note(commit, note_of(change), repository)
         old_top = git('rev-parse', '--verify', '--quiet', stack_ref(topic), check=False,
                       repository=repository)
-        if not uploaded and old_top == tip:
+        if not uploaded and old_top == tip and not marked:
             raise ChangeError(f'{topic} is uploaded already, nothing changed')
         git('update-ref', stack_ref(topic), tip, repository=repository)
-        return uploaded
+        return uploaded, topic, grown
 
 
 def branch_with_change(reference, repository=None):
@@ -1185,6 +1514,7 @@ def submit(change_id, force=False, repository=None):
     while threads are unresolved, so no point gets lost. The interface uses
     force after listing those threads and asking.
     """
+    repository = current_repository(repository) or locate(change_id)
     with review_lock(repository):
         change = next((change for change in changes_in_stack(repository)
                        if change_id == change.change_id), None)
@@ -1222,6 +1552,50 @@ def submit(change_id, force=False, repository=None):
         return submitted
 
 
+ABANDONED_PREFIX = 'refs/plustwo/abandoned/'
+
+
+def abandon_stack(topic, repository=None):
+    """Abandons a stack, like Gerrit's Abandon: it leaves the dashboard,
+    its patch sets and notes stay, restore_stack() brings it back. Whole
+    stacks only, a change in the middle would leave the ones above it
+    without their parent.
+    """
+    with review_lock(repository):
+        top = git('rev-parse', '--verify', '--quiet', stack_ref(topic), check=False,
+                  repository=repository)
+        if not top:
+            raise ChangeError(f'no stack {topic}')
+        git('update-ref', f'{ABANDONED_PREFIX}{topic}', top, repository=repository)
+        git('update-ref', '-d', stack_ref(topic), repository=repository)
+
+
+def restore_stack(topic, repository=None):
+    """Brings an abandoned stack back into review."""
+    with review_lock(repository):
+        top = git('rev-parse', '--verify', '--quiet', f'{ABANDONED_PREFIX}{topic}', check=False,
+                  repository=repository)
+        if not top:
+            raise ChangeError(f'no abandoned stack {topic}')
+        if git('rev-parse', '--verify', '--quiet', stack_ref(topic), check=False,
+               repository=repository):
+            raise ChangeError(f'a stack {topic} is in review again, upload it instead')
+        git('update-ref', stack_ref(topic), top, repository=repository)
+        git('update-ref', '-d', f'{ABANDONED_PREFIX}{topic}', repository=repository)
+
+
+def dashboard(changes, user=None):
+    """The dashboard like Gerrit's: [(section, [(number, change)])] in the
+    user's order, every section, also empty ones. A change shows in every
+    section it belongs to. number is its place in changes, from 1.
+    """
+    user = user or current_user()
+    numbered = list(enumerate(changes, start=1))
+    return [(section, [(number, change) for number, change in numbered
+                       if section in change.sections(user)])
+            for section in dashboard_order()]
+
+
 def raw_commit(commit, repository=None):
     """A commit's author (name, email, date) and its message, exactly."""
     text = git('cat-file', 'commit', commit, repository=repository) + '\n'
@@ -1254,7 +1628,7 @@ def rebase_stack(topic, repository=None):
         parent = git('rev-parse', base, repository=repository)
         rebased = []
         for commit in commits:
-            merge = subprocess.run(['git', *(['-C', str(repository)] if repository else []),
+            merge = subprocess.run([*git_command(repository),
                                     'merge-tree', '--write-tree', f'--merge-base={commit}^',
                                     parent, commit], capture_output=True, text=True)
             if 0 != merge.returncode:
@@ -1266,7 +1640,7 @@ def rebase_stack(topic, repository=None):
             environment = dict(os.environ, GIT_AUTHOR_NAME=name, GIT_AUTHOR_EMAIL=email,
                                GIT_AUTHOR_DATE=date)
             parent = subprocess.run(
-                ['git', *(['-C', str(repository)] if repository else []), 'commit-tree',
+                [*git_command(repository), 'commit-tree',
                  merge.stdout.split('\n')[0], '-p', parent, '-F', '-'],
                 input=message, capture_output=True, text=True, env=environment,
                 check=True).stdout.strip()
@@ -1327,7 +1701,7 @@ def pull(repository=None):
                 else f'{topic} is submitted, {branch} has nothing beyond {base} now')
     upstream = uploaded[-1] if uploaded else git('merge-base', base, 'HEAD',
                                                  repository=repository)
-    result = subprocess.run(['git', *(['-C', str(repository)] if repository else []), 'rebase',
+    result = subprocess.run([*git_command(repository), 'rebase',
                              '--quiet', '--onto', target, upstream, branch],
                             capture_output=True, text=True)
     if 0 != result.returncode:
@@ -1704,7 +2078,7 @@ def file_lines(version, path, repository=None):
     the file isn't there. None for a binary file. Bytes that aren't UTF-8
     become replacement characters, so every file can be shown.
     """
-    command = ['git', *(['-C', str(repository)] if repository else []), 'cat-file', 'blob',
+    command = [*git_command(repository), 'cat-file', 'blob',
                f'{version}:{path}']
     result = subprocess.run(command, capture_output=True)
     if 0 != result.returncode:
@@ -2115,9 +2489,13 @@ def watch(repositories, output=sys.stdout, topic=None):
             now = stacks_of(repository, topic)
             base = base_branch(repository)
             for topic, before in stacks[repository].items():
-                gone = [commit for change_id, commit in before.items()
-                        if change_id not in now.get(topic, {})
-                        and is_ancestor(commit, base, repository)]
+                left = [commit for change_id, commit in before.items()
+                        if change_id not in now.get(topic, {})]
+                gone = [commit for commit in left if is_ancestor(commit, base, repository)]
+                if left and not gone and git('rev-parse', '--verify', '--quiet',
+                                             f'{ABANDONED_PREFIX}{topic}', check=False,
+                                             repository=repository):
+                    say(f'abandoned {name} {topic}')
                 if gone:
                     say(f'submitted {name} {topic}: {len(gone)} change'
                         + ('s' if len(gone) > 1 else ''))
@@ -2175,21 +2553,24 @@ def version_label(change):
     return f'PS{change.latest_patch_set()}' + ('' if change.is_uploaded() else '+')
 
 
-def print_overview(_arguments):
-    """Prints the changes of every stack."""
-    changes = changes_in_stack()
-    if not changes:
-        print('Nothing in review. plustwo upload uploads the stack of a branch.')
-        return
-    topic = None
-    for index, change in enumerate(changes, start=1):
-        if change.topic != topic:
-            topic = change.topic
-            print(topic + ('  (rebase requested)' if any(
-                other.rebase_requested for other in changes if other.topic == topic) else ''))
-        print(f'{index:>4}  {change.short_id()}  {change.state():<10} {version_label(change):<5} '
-              f'{change.subject:<48.48}  {vote_label(change, CODE_REVIEW):>2} '
-              f'{vote_label(change, VERIFIED):>2}  {change.turn():<11}  {comment_counts(change)}')
+def print_overview(arguments):
+    """Prints the dashboard: the sections with their changes, the repo as a
+    column, like Gerrit's. Empty sections say so.
+    """
+    changes = all_changes(arguments.list)
+    folded = folded_sections()
+    for section, rows in dashboard(changes):
+        print(f'{SECTION_TITLES[section]} ({len(rows)})' + (' [folded]' if section in folded
+                                                             else ''))
+        if section in folded:
+            continue
+        if not rows:
+            print('     (none)')
+        for number, change in rows:
+            print(f'{number:>4}  {change.short_id()}  {change.repo:<12.12} {change.topic:<14.14} '
+                  f'{change.subject:<40.40}  {vote_label(change, CODE_REVIEW):>2} '
+                  f'{vote_label(change, VERIFIED):>2}  {change.turn():<11}  '
+                  f'{comment_counts(change)}')
 
 
 def print_comments(arguments):
@@ -2225,17 +2606,18 @@ def guide_text():
         raise ChangeError(f'cannot read the guide: {error}') from error
 
 
-def run_tui(_arguments):
+def run_tui(arguments):
     """Starts the terminal user interface."""
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import plustwo_tui  # pylint: disable=import-outside-toplevel
-    plustwo_tui.run(sys.modules[__name__])
+    plustwo_tui.run(sys.modules[__name__], arguments.list)
 
 
 def parse_arguments(argv):
     """Parses the command line."""
     parser = argparse.ArgumentParser(prog='plustwo', description=__doc__.split('\n')[0])
-    parser.set_defaults(run=run_tui)
+    parser.set_defaults(run=run_tui, list=None)
+    parser.add_argument('--list', help='the dashboard of this list of repositories')
     commands = parser.add_subparsers()
 
     def command(name, run, help_text, *arguments):
@@ -2252,6 +2634,7 @@ def parse_arguments(argv):
     def init_command(_arguments):
         moved = init_repository()
         print('commit-msg hook installed, notes follow amends and rebases')
+        print(f'registered as {register_repository(unique=True)}')
         print("agents: add 'run plustwo guide' to your AGENTS.md or CLAUDE.md")
         for line in moved:
             print(f'moved setting {line}')
@@ -2271,7 +2654,12 @@ def parse_arguments(argv):
 
     def upload_command(arguments):
         branch = branch_with_change(arguments.change) if arguments.change else None
-        uploaded = upload(branch, arguments.topic)
+        wip = True if arguments.wip else False if arguments.ready else None
+        uploaded, topic, grown = upload(branch, arguments.topic, wip=wip)
+        if grown:
+            print(f'added to stack {topic}')
+        if wip is not None:
+            print(f'{topic}: ' + ('work in progress' if wip else 'ready for review'))
         for other, number, kind in uploaded:
             kept = [f'{vote.label}{vote.value:+d}' for vote in other.current_votes(CODE_REVIEW)
                     + other.current_votes(VERIFIED)]
@@ -2332,13 +2720,44 @@ def parse_arguments(argv):
         change = find_change(arguments.change)
         subprocess.run(range_diff_command(change, arguments.first, arguments.second))
 
+    def author_repositories(arguments):
+        # The working directory's repository, all registered ones outside a
+        # repository or with --all
+        if arguments.repositories:
+            return arguments.repositories
+        if arguments.all or toplevel() is None:
+            return review_repositories(arguments.list)
+        return ['.']
+
     def inbox_command(arguments):
-        print('\n'.join(inbox_lines(arguments.repositories or ['.'], arguments.topic))
+        print('\n'.join(inbox_lines(author_repositories(arguments), arguments.topic))
               or 'Nothing to answer.')
 
     def watch_command(arguments):
         with contextlib.suppress(KeyboardInterrupt):
-            watch(arguments.repositories or ['.'], topic=arguments.topic)
+            watch(author_repositories(arguments), topic=arguments.topic)
+
+    def register_command(arguments):
+        print(f'registered as {register_repository(arguments.path, arguments.name, arguments.list)}')
+
+    def unregister_command(arguments):
+        unregister_repository(arguments.name)
+
+    def repos_command(_arguments):
+        lists = repository_lists()
+        for name, path in registered_repositories().items():
+            member = [list_name for list_name, names in lists.items() if name in names]
+            print(f'{name:<16} {path}' + (f'  ({", ".join(member)})' if member else ''))
+
+    def stack_command(run):
+        def stack_run(arguments):
+            name, colon, topic = arguments.topic.rpartition(':')
+            repository = registered_repositories().get(name) if colon else None
+            if colon and repository is None:
+                raise ChangeError(f'no registered repository {name}')
+            run(topic, repository)
+            print(f'{topic}: ' + ('abandoned' if abandon_stack == run else 'restored'))
+        return stack_run
 
     def guide_command(_arguments):
         print(guide_text(), end='')
@@ -2346,7 +2765,7 @@ def parse_arguments(argv):
     def serve_command(arguments):
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import plustwo_web  # pylint: disable=import-outside-toplevel
-        repositories = arguments.repositories or ['.']
+        repositories = arguments.repositories or review_repositories(arguments.list)
         for repository in repositories:
             ensure_layout(repository)
         plustwo_web.serve(sys.modules[__name__], repositories, arguments.port)
@@ -2358,10 +2777,14 @@ def parse_arguments(argv):
     number = ('number', {'type': int})
     repositories = ('repositories', {'nargs': '*'})
     command('init', init_command, 'set up this repository')
-    command('list', print_overview, 'overview of the stack')
+    command('list', print_overview, 'the dashboard').add_argument(
+        '--list', help='only the repositories of this list')
     command('show', print_comments, 'threads of a change', 'change')
-    command('upload', upload_command, 'upload the stack of a branch',
-            ('change', optional)).add_argument('--topic')
+    upload_parser = command('upload', upload_command, 'upload the stack of a branch',
+                            ('change', optional))
+    upload_parser.add_argument('--topic')
+    upload_parser.add_argument('--wip', action='store_true', help='mark it work in progress')
+    upload_parser.add_argument('--ready', action='store_true', help='mark it ready for review')
     command('pull', pull_command, "bring the reviewer's rebase or submit into the branch")
     command('rebase', rebase_command, 'rebase a stack onto the base branch',
             ('change', optional)).add_argument('--topic')
@@ -2390,13 +2813,24 @@ def parse_arguments(argv):
     vote.add_argument('-m', '--message')
     command('require-verified', require_verified_command, 'whether Verified+1 is needed',
             'change', ('state', {'nargs': '?', 'choices': ('on', 'off'), 'default': 'on'}))
-    command('inbox', inbox_command, 'what to answer', repositories).add_argument(
-        '--topic', help='only this stack, e.g. for one of several agents')
-    command('watch', watch_command, 'print new messages and votes', repositories).add_argument(
-        '--topic', help='only this stack')
+    for name, run, help_text in (('inbox', inbox_command, 'what to answer'),
+                                 ('watch', watch_command, 'print new messages and votes')):
+        sub = command(name, run, help_text, repositories)
+        sub.add_argument('--topic', help='only this stack, e.g. for one of several agents')
+        sub.add_argument('--all', action='store_true', help='all registered repositories')
+        sub.add_argument('--list', help='the repositories of this list')
+    register = command('register', register_command, 'show a repository in the dashboard',
+                       ('path', {'nargs': '?', 'default': '.'}))
+    register.add_argument('--name')
+    register.add_argument('--list', help='add it to this list of repositories')
+    command('unregister', unregister_command, 'forget a registered repository', 'name')
+    command('repos', repos_command, 'the registered repositories')
+    command('abandon', stack_command(abandon_stack), 'abandon a stack, [REPO:]TOPIC', 'topic')
+    command('restore', stack_command(restore_stack), 'bring an abandoned stack back', 'topic')
     command('guide', guide_command, 'the guide for agents as authors')
-    command('serve', serve_command, 'web interface', repositories).add_argument(
-        '--port', type=int, default=8022)
+    serve = command('serve', serve_command, 'web interface', repositories)
+    serve.add_argument('--port', type=int, default=8022)
+    serve.add_argument('--list', help='the repositories of this list')
     config = command('config', config_command, 'show or change a setting', ('key', optional),
                      ('value', optional))
     config.add_argument('--global', dest='user', action='store_true',

@@ -14,7 +14,11 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+# State and settings of their own, so no test registers its scratch
+# repositories with the user's dashboard
+_HOME = tempfile.mkdtemp(prefix='plustwo-test-')
 ENVIRONMENT = dict(os.environ, PATH=f'{ROOT}:{os.environ["PATH"]}',
+                   XDG_STATE_HOME=f'{_HOME}/state', XDG_CONFIG_HOME=f'{_HOME}/config',
                    GIT_CONFIG_GLOBAL='/dev/null', GIT_CONFIG_NOSYSTEM='1',
                    GIT_AUTHOR_NAME='Author', GIT_AUTHOR_EMAIL='author@example.org',
                    GIT_COMMITTER_NAME='Author', GIT_COMMITTER_EMAIL='author@example.org')

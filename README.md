@@ -46,7 +46,10 @@ The author (an agent, for example) prepares a stack:
     git commit ...                    # each commit gets a Change-Id
     plustwo upload                    # patch set 1 of every change
 
-You review it with `plustwo`:
+You review it with `plustwo`, from any directory. `init` registered the
+repository, so its changes show in your dashboard together with those of
+every other registered repository (`plustwo register PATH`,
+`plustwo repos`, `--list L` for a group of them):
 
 1. The list shows every stack. `l` opens a change, `T` jumps to the next
    change where it is your turn.

@@ -58,7 +58,8 @@ def change_summary(core, change, repository):
             'patch_set': change.latest_patch_set(), 'turn': change.turn(),
             'code_review': core.vote_label(change, core.CODE_REVIEW),
             'verified': core.vote_label(change, core.VERIFIED),
-            'comments': core.comment_counts(change)}
+            'comments': core.comment_counts(change), 'wip': change.wip,
+            'repo_name': change.repo}
 
 
 def half_json(half, colours):
@@ -112,6 +113,32 @@ class Server:
         return {'base': core.base_branch(repository),
                 'stacks': [{'topic': topic, 'needs_rebase': core.needs_rebase(topic, repository),
                             'changes': changes} for topic, changes in stacks.items()]}
+
+    def dashboard(self, _query):
+        """The dashboard over all served repositories: every section in the
+        user's order, folded ones with their count only.
+        """
+        core = self.core
+        changes = [change for repository in self.repositories
+                   for change in core.changes_in_stack(repository)]
+        names = {path: name for name, path in core.registered_repositories().items()}
+        index = {repository: number for number, repository in enumerate(self.repositories)}
+        folded = core.folded_sections()
+        behind = {(change.repository, change.topic) for change in changes
+                  if change.rebase_requested or core.needs_rebase(change.topic, change.repository)}
+        sections = []
+        for section, entries in core.dashboard(changes):
+            sections.append({
+                'name': section, 'title': core.SECTION_TITLES[section], 'count': len(entries),
+                'folded': section in folded,
+                'changes': [] if section in folded else [
+                    {**change_summary(core, change, change.repository),
+                     'number': number, 'repo': index.get(change.repository, 0),
+                     'repo_name': names.get(change.repository, change.repo),
+                     'needs_rebase': (change.repository, change.topic) in behind,
+                     'your_turn': 'your-turn' in change.sections(core.current_user())}
+                    for number, change in entries]})
+        return {'sections': sections}
 
     def change_details(self, query):
         core = self.core
@@ -185,6 +212,11 @@ class Server:
     def act(self, body):
         """One write, named by body['action'], on the change body['id']."""
         core = self.core
+        if 'fold' == body.get('action'):
+            return {'folded': core.toggle_section(body['section'])}
+        if 'order' == body.get('action'):
+            core.set_section_order(body['sections'])
+            return {}
         repository = self.repository(body)
         change = core.find_change(body['id'], repository)
         change_id = change.change_id
@@ -229,7 +261,7 @@ class Server:
 
 
 GET_ROUTES = {'/api/version': Server.version, '/api/repos': Server.repos,
-              '/api/stacks': Server.stacks, '/api/change': Server.change_details,
+              '/api/stacks': Server.stacks, '/api/dashboard': Server.dashboard, '/api/change': Server.change_details,
               '/api/diff': Server.diff, '/api/keys': Server.keys}
 
 

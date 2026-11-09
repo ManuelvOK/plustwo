@@ -87,6 +87,9 @@ ACTIONS = (
     ('approve', 'Stacks and changes', '+2', 'vote Code-Review+2 on the latest patch set, like '
      'Gerrit\'s Quick approve. Offers to send your drafts along.'),
     ('next-turn', 'Stacks', 'my turn', 'to the next change where it is your turn'),
+    ('section-down', 'Stacks', 'move section', 'on a section heading: move the section down. '
+     'open on a heading folds or unfolds it.'),
+    ('section-up', 'Stacks', 'move section', 'on a section heading: move the section up'),
     ('rebase', 'Stacks and changes', 'rebase', 'rebase the stack onto the base branch, without '
      'touching any checkout. On a conflict the author is asked to rebase.'),
     ('next-pane', 'Change', 'next pane', 'next pane: files, comments, diff'),
@@ -142,6 +145,7 @@ VIM_KEYS = {
     'fold-every': 'z M',
     'reply': 'r', 'edit-draft': 'e', 'done': 'y', 'ack': 'Y', 'resolve': 'x', 'send': 's',
     'whitespace': 'W', 'approve': 'A', 'next-turn': 'T', 'reviewed': 'm', 'side-old': '<', 'side-new': '>',
+    'section-down': 'J', 'section-up': 'K',
 }
 PRESETS = {
     'vim': VIM_KEYS,
@@ -382,17 +386,20 @@ STACK_FOOTER = ((('open',), 'open'), (('next-turn',), 'my turn'), (('approve',),
                 (('submit',), 'submit'), (('quit',), 'quit'), (('help',), 'all keys'))
 
 
-def run(core):
-    """Starts the interface. core is the plustwo module."""
-    curses.wrapper(lambda screen: Interface(screen, core).loop())
+def run(core, list_name=None):
+    """Starts the interface. core is the plustwo module. list_name limits
+    the dashboard to a list of repositories.
+    """
+    curses.wrapper(lambda screen: Interface(screen, core, list_name).loop())
 
 
 class Interface:
     """The running interface: screen stack, drawing and keys."""
 
-    def __init__(self, screen, core):
+    def __init__(self, screen, core, list_name=None):
         self._screen = screen
         self._core = core
+        self.list_name = list_name
         self._views = [StackView(self)]
         self._message = ''
         self._version = None
@@ -444,7 +451,7 @@ class Interface:
     def loop(self):
         """Draws, waits for a key or the reload interval, repeats."""
         self._views[-1].reload()
-        self._version = self._core.stack_version()
+        self._version = self.version()
         while True:
             self._draw()
             key = self._screen.getch()
@@ -528,14 +535,19 @@ class Interface:
 
     def _reload_if_changed(self):
         """Reloads the current view when commits or notes changed."""
-        version = self._core.stack_version()
+        version = self.version()
         if version != self._version:
             self._version = version
             self._views[-1].reload()
 
+    def version(self):
+        """The refs of every shown repository, see core.stack_version()."""
+        return '\n'.join(self._core.stack_version(repository)
+                         for repository in self._core.review_repositories(self.list_name))
+
     def after_write(self):
         """Reloads after the interface itself wrote, without waiting."""
-        self._version = self._core.stack_version()
+        self._version = self.version()
         self._views[-1].reload()
 
     # ── drawing ───────────────────────────────────────────────────────────
@@ -983,7 +995,10 @@ def move(index, action, length, count=None):
 
 
 class StackView:
-    """The stacks in review, one per topic, like Gerrit's dashboard."""
+    """The dashboard, like Gerrit's: sections like Your turn and Incoming,
+    each a table of changes with the repository as a column. A change can
+    be in several sections. Sections fold and move.
+    """
 
     @staticmethod
     def footer():
@@ -996,61 +1011,99 @@ class StackView:
     def __init__(self, interface):
         self._interface = interface
         self._changes = []
+        self._behind = set()
+        # ('section', name, count), ('change', index) or ('none',)
         self._rows = []
         self._selected = 0
-        self._repository = ''
-        self._base = ''
+        self._scroll = 0
+
+    def _selectable(self):
+        """Indexes of the rows the cursor can be on: headings and changes."""
+        return [index for index, row in enumerate(self._rows) if 'none' != row[0]]
 
     def reload(self):
-        """Reads the stacks again and lays out the rows: a heading per stack,
-        then its changes.
+        """Reads the changes of all shown repositories and lays out the
+        sections.
         """
         core = self._interface.core
-        self._changes = core.changes_in_stack()
-        self._repository = core.repository_name('.')
-        self._base = core.base_branch()
-        self._selected = min(self._selected, max(len(self._changes) - 1, 0))
+        core.use_repository(None)
+        selected = self._rows[self._selected] if self._selected < len(self._rows) else None
+        self._changes = core.all_changes(self._interface.list_name)
+        # Stacks the base branch moved away from, marked in the topic column
+        self._behind = {(change.repository, change.topic) for change in self._changes
+                        if change.rebase_requested or core.needs_rebase(change.topic,
+                                                                         change.repository)}
+        folded = core.folded_sections()
         self._rows = []
-        topic = None
-        for index, change in enumerate(self._changes):
-            if change.topic != topic:
-                topic = change.topic
-                self._rows.append(stack_heading(core, topic, self._changes,
-                                                self._interface.keymap.label('rebase')))
-            self._rows.append(index)
+        for section, entries in core.dashboard(self._changes):
+            self._rows.append(('section', section, len(entries)))
+            if section in folded:
+                continue
+            self._rows += [('change', number - 1) for number, _ in entries] or [('none',)]
+        if selected in self._rows:
+            self._selected = self._rows.index(selected)
+        selectable = self._selectable()
+        if self._selected not in selectable:
+            self._selected = next((index for index in selectable if index >= self._selected),
+                                  selectable[-1] if selectable else 0)
+
+    def _selected_change(self):
+        """The change on the cursor row, None on a heading."""
+        row = self._rows[self._selected] if self._selected < len(self._rows) else None
+        return self._changes[row[1]] if row and 'change' == row[0] else None
 
     def draw(self, area):
-        """Draws the stacks and their changes: a header bar, a heading per
-        stack, a row per change with badges for votes and the turn.
+        """Draws the header bar and the sections, a row per change with the
+        repository, badges for votes and the turn.
         """
         out = self._interface.text
         core = self._interface.core
-        mine = sum(change.turn() in MY_TURNS for change in self._changes)
+        mine = sum('your-turn' in change.sections(core.current_user())
+                   for change in self._changes)
         bar = self._interface.colour_pairs.attribute(15, tone(HEADER_BACKGROUND))
         out(0, 0, ' ' * area.width, bar)
-        out(0, 1, f'plustwo  {self._repository}', bar | curses.A_BOLD)
-        right = f'{len(self._changes)} in review, base {self._base}' + (
+        title = 'plustwo' + (f'  list {self._interface.list_name}'
+                             if self._interface.list_name else '')
+        out(0, 1, title, bar | curses.A_BOLD)
+        repositories = len({change.repository for change in self._changes})
+        right = f'{len(self._changes)} in review in {repositories} repo(s)' + (
             f', your turn on {mine}' if mine else '') + ' '
         out(0, max(area.width - len(right), 1), right, bar)
-        subject_width = max(area.width - 80, 20)
-        out(2, 1, f'{"#":>3}  {"Change":<9} {"Subject":<{subject_width}} {"PS":<5} {"CR":<7} '
-            f'{"V":<7} {"Turn":<10} Comments', curses.A_DIM | curses.A_UNDERLINE)
-        for offset, row_content in enumerate(self._rows):
+        subject_width = max(area.width - 104, 16)
+        out(2, 1, f'{"#":>3}  {"Change":<9} {"Repo":<12} {"Topic":<14} '
+            f'{"Subject":<{subject_width}} {"PS":<5} {"CR":<7} {"V":<7} {"Turn":<10} Comments',
+            curses.A_DIM | curses.A_UNDERLINE)
+        height = area.height - self.TOP
+        self._scroll = min(self._scroll, self._selected)
+        if self._selected >= self._scroll + height:
+            self._scroll = self._selected - height + 1
+        folded = core.folded_sections()
+        for offset, row_content in enumerate(self._rows[self._scroll:self._scroll + height]):
+            index = self._scroll + offset
             row = self.TOP + offset
-            if row >= area.height:
-                break
-            if isinstance(row_content, str):
-                out(row, 1, row_content, curses.A_BOLD)
-                continue
-            index = row_content
-            change = self._changes[index]
             selected = index == self._selected
             attributes = curses.A_REVERSE if selected else 0
+            if 'section' == row_content[0]:
+                _, section, count = row_content
+                mark = '▸' if section in folded else '▾'
+                out(row, 1, ' ' * (area.width - 2), attributes)
+                out(row, 1, f'{mark} {core.SECTION_TITLES[section]} ({count})',
+                    attributes | curses.A_BOLD)
+                continue
+            if 'none' == row_content[0]:
+                out(row, 6, '(none)', curses.A_DIM)
+                continue
+            change = self._changes[row_content[1]]
+            dim = curses.A_DIM if change.wip else 0
             out(row, 1, ' ' * (area.width - 2), attributes)
-            out(row, 1, f'{index + 1:>3}  ', attributes)
+            out(row, 1, f'{row_content[1] + 1:>3}  ', attributes | dim)
             out(row, 6, f'{change.short_id():<9} ', attributes | curses.A_DIM)
-            out(row, 16, f'{change.subject:<{subject_width}.{subject_width}} ', attributes)
-            column = 17 + subject_width
+            out(row, 16, f'{change.repo:<12.12} ', attributes | dim)
+            behind = (change.repository, change.topic) in self._behind
+            out(row, 29, f'{("↻ " if behind else "") + change.topic:<14.14} ',
+                attributes | (curses.color_pair(3) if behind else curses.A_DIM))
+            out(row, 44, f'{change.subject:<{subject_width}.{subject_width}} ', attributes | dim)
+            column = 45 + subject_width
             out(row, column, f'{core.version_label(change):<5} ', attributes | curses.A_DIM)
             column += 6
             for label, short in ((core.CODE_REVIEW, 'CR'), (core.VERIFIED, 'V')):
@@ -1060,47 +1113,65 @@ class StackView:
                     out(row, column, badge[0], badge[1])
                 column += 8
             turn = change.turn()
-            out(row, column, f'{TURN_LABELS[turn]:<10} ', attributes | (
-                curses.A_BOLD | curses.color_pair(3) if turn in MY_TURNS else curses.A_DIM))
+            yours = 'your-turn' in change.sections(core.current_user())
+            out(row, column, f'{TURN_LABELS.get(turn, turn) if not yours else "▶ yours":<10} ',
+                attributes | (curses.A_BOLD | curses.color_pair(3) if yours else curses.A_DIM))
             out(row, column + 11, core.comment_counts(change), attributes | curses.A_DIM)
-        if not self._changes:
-            out(self.TOP, 1, 'Nothing in review. plustwo upload uploads the stack of a '
-                'branch.', curses.A_DIM)
 
     def mouse(self, row, _column, kind):
-        """A click selects a change, a double click opens it."""
+        """A click selects a row, a double click opens it."""
         if wheel_action(kind):
             self.action(wheel_action(kind))
             return
-        offset = row - self.TOP
-        if 0 <= offset < len(self._rows) and not isinstance(self._rows[offset], str):
-            self._selected = self._rows[offset]
-            if DOUBLE_CLICK == kind:
+        index = self._scroll + row - self.TOP
+        if 0 <= index < len(self._rows) and 'none' != self._rows[index][0]:
+            self._selected = index
+            if DOUBLE_CLICK == kind or 'section' == self._rows[index][0]:
                 self.action('open')
 
     def action(self, action, count=None):
-        """Handles an action of the stack view."""
-        self._selected = move(self._selected, action, len(self._changes), count)
-        if not self._changes:
+        """Handles an action of the dashboard."""
+        core = self._interface.core
+        selectable = self._selectable()
+        if action in LIST_ACTIONS and selectable:
+            position = selectable.index(self._selected) if self._selected in selectable else 0
+            self._selected = selectable[move(position, action, len(selectable), count)]
             return
-        change = self._changes[self._selected]
+        row = self._rows[self._selected] if self._selected < len(self._rows) else None
+        if row and 'section' == row[0]:
+            if 'open' == action:
+                core.toggle_section(row[1])
+            elif action in ('section-down', 'section-up'):
+                core.move_section(row[1], 1 if 'section-down' == action else -1)
+            else:
+                return
+            self.reload()
+            self._selected = self._rows.index(next(entry for entry in self._rows
+                                                   if entry[:2] == row[:2]))
+            return
+        if 'next-turn' == action:
+            turns = [index for index in selectable if 'change' == self._rows[index][0]
+                     and 'your-turn' in self._changes[self._rows[index][1]].sections(
+                         core.current_user())]
+            later = [index for index in turns if index > self._selected]
+            if later or turns:
+                self._selected = (later or turns)[0]
+            else:
+                self._interface.say('It is your turn nowhere.')
+            return
+        change = self._selected_change()
+        if change is None:
+            return
+        core.use_repository(change.repository)
         if 'open' == action:
-            self._interface.open(ChangeView(self._interface, change.change_id))
+            self._interface.open(ChangeView(self._interface, change.change_id,
+                                            change.repository))
         elif 'diff' == action:
-            self._interface.run_outside(self._interface.core.diff_command(change))
+            self._interface.run_outside(core.diff_command(change))
         elif 'submit' == action:
             submit_with_confirmation(self._interface, change)
         elif 'rebase' == action:
             rebase_with_confirmation(self._interface, change)
-        elif 'next-turn' == action:
-            later = [index for index in range(self._selected + 1, len(self._changes))
-                     if self._changes[index].turn() in MY_TURNS]
-            earlier = [index for index in range(self._selected + 1)
-                       if self._changes[index].turn() in MY_TURNS]
-            if later or earlier:
-                self._selected = (later or earlier)[0]
-            else:
-                self._interface.say('It is your turn nowhere.')
         elif 'approve' == action:
             approve(self._interface, change)
         else:
@@ -1108,7 +1179,8 @@ class StackView:
 
 
 # The turn as the stack list shows it, and the turns that are the reviewer's
-TURN_LABELS = {'reviewer': '▶ yours', 'author': 'author', 'submittable': '▶ submit'}
+TURN_LABELS = {'reviewer': 'reviewer', 'author': 'author', 'submittable': 'submit',
+               'wip': 'WIP'}
 MY_TURNS = ('reviewer', 'submittable')
 
 
@@ -1846,9 +1918,10 @@ DEFAULT_COMPARE = ('base', 'latest')
 class ChangeView:
     """One change: files and threads on the left, the diff on the right."""
 
-    def __init__(self, interface, change_id):
+    def __init__(self, interface, change_id, repository=None):
         self._interface = interface
         self._change_id = change_id
+        self._repository = repository
         self._change = None
         self._files = []
         self._compare = DEFAULT_COMPARE
@@ -1870,6 +1943,7 @@ class ChangeView:
 
     def reload(self):
         """Reads the change again. Goes back if it is gone."""
+        self._interface.core.use_repository(self._repository)
         core = self._interface.core
         for change in core.changes_in_stack():
             if change.change_id == self._change_id:
@@ -1920,8 +1994,9 @@ class ChangeView:
         self._layout = self._compute_layout(area)
         bar = self._interface.colour_pairs.attribute(15, tone(HEADER_BACKGROUND))
         out(0, 0, ' ' * area.width, bar)
-        out(0, 1, f'{change.topic} ›', bar | curses.A_DIM)
-        out(0, 4 + len(change.topic), change.subject, bar | curses.A_BOLD)
+        place = f'{change.repo} › {change.topic} ›' if change.repo else f'{change.topic} ›'
+        out(0, 1, place, bar | curses.A_DIM)
+        out(0, 2 + len(place), change.subject, bar | curses.A_BOLD)
         state = f' {change.state()} '
         chip = self._interface.colour_pairs.attribute(
             0, {'New': 8, 'In-Review': 3, 'Submitted': 2}.get(change.state(), 8)) | curses.A_BOLD
@@ -2200,6 +2275,7 @@ class ChangeView:
         """Handles an action of the change view. count is a typed count,
         e.g. the 15 of 15j, or None.
         """
+        self._interface.core.use_repository(self._repository)
         interface = self._interface
         core = interface.core
         change = self._change

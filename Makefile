@@ -30,8 +30,11 @@ all: check
 check:
 	python3 -c 'import sys; [compile(open(f).read(), f, "exec") for f in sys.argv[1:]]' $(SOURCES)
 
+# The tests get state and settings directories of their own, so they never
+# register scratch repositories with the user's dashboard.
 test: check
-	python3 -m unittest discover -s tests
+	XDG_STATE_HOME=$(CURDIR)/.test/state XDG_CONFIG_HOME=$(CURDIR)/.test/config \
+	  python3 -m unittest discover -s tests
 
 install: check
 	install -Dm755 plustwo $(DESTDIR)$(LIBDIR)/plustwo

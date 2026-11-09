@@ -93,3 +93,6 @@ pre.commit { white-space: pre-wrap; background: var(--panel); padding: 8px; bord
   .layout { flex-direction: column; }
   .files { position: static; flex-basis: auto; width: 100%; max-height: none; }
 }
+.section-title { cursor: pointer; user-select: none; margin: 1.2em 0 0.3em; }
+p.none { margin: 0.2em 0 0 1.5em; }
+tr.wip td { opacity: 0.55; }
