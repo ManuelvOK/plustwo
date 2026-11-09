@@ -350,11 +350,31 @@ def keymap_from_settings(core):
 
 # Colours of vote values
 VOTE_COLOURS = {2: 2, 1: 2, -1: 1, -2: 1}
+# Background of thread boxes, and the names' colours: (256 colours, 8 colours)
+THREAD_TINT = 235
+REVIEWER_COLOURS = (81, 6)
+AUTHOR_COLOURS = (214, 3)
+HEADER_BACKGROUND = (237, 0)
 
-STACK_FOOTER = ((('down', 'up'), 'move'), (('open',), 'open'), (('diff',), 'diff'),
-                (('vote',), 'vote'), (('verified',), 'needs Verified'), (('rebase',), 'rebase'),
-                (('submit',), 'submit'), (('reload',), 'reload'), (('help',), 'help'),
-                (('quit',), 'quit'))
+
+def tone(colours):
+    """The colour of a (256 colours, 8 colours) pair for this terminal."""
+    return colours[0] if curses.COLORS >= 256 else colours[1]
+
+
+def vote_badge(interface, label, value, required=False):
+    """A vote as a coloured badge, like "CR +2" on green. None without
+    a vote, unless the label is required.
+    """
+    if not value and not required:
+        return None
+    text = f' {label} {value:+d} ' if value else f' {label} ? '
+    background = {2: 2, 1: 2, -1: 1, -2: 1}.get(value, 8)
+    return text, interface.colour_pairs.attribute(0 if value else 15, background) | curses.A_BOLD
+
+# The footers show the most used keys only, the help lists all.
+STACK_FOOTER = ((('open',), 'open'), (('next-turn',), 'my turn'), (('approve',), '+2'),
+                (('submit',), 'submit'), (('quit',), 'quit'), (('help',), 'all keys'))
 
 
 def run(core):
@@ -520,12 +540,16 @@ class Interface:
         self._screen.erase()
         height, width = self._screen.getmaxyx()
         view = self._views[-1]
-        # The keys wrap onto at most two lines above the message line.
-        key_lines = textwrap.wrap(self.keymap.footer(view.footer()), max(width - 1, 20),
-                                  break_on_hyphens=False)[:2]
-        view.draw(Area(self._screen, 0, height - 1 - len(key_lines), width))
-        for offset, line in enumerate(key_lines):
-            self.text(height - 1 - len(key_lines) + offset, 0, line, curses.A_DIM, width)
+        view.draw(Area(self._screen, 0, height - 2, width))
+        # The keys in bold, what they do dimmed
+        column = 1
+        for names, label in view.footer():
+            keys = '/'.join(filter(None, (self.keymap.label(name) for name in names)))
+            if not keys or column + len(keys) + len(label) + 1 >= width:
+                continue
+            self.text(height - 2, column, keys, curses.A_BOLD, width)
+            self.text(height - 2, column + len(keys) + 1, label, curses.A_DIM, width)
+            column += len(keys) + len(label) + 4
         self.text(height - 1, 0, self._message, curses.A_BOLD, width)
         # The typed prefix in the bottom right corner, like vim's showcmd
         prefix = self.keymap.typed()
@@ -991,13 +1015,21 @@ class StackView:
             self._rows.append(index)
 
     def draw(self, area):
-        """Draws the stacks and their changes."""
+        """Draws the stacks and their changes: a header bar, a heading per
+        stack, a row per change with badges for votes and the turn.
+        """
         out = self._interface.text
         core = self._interface.core
-        out(0, 1, f'{self._repository}: {len(self._changes)} changes in review, base {self._base}',
-            curses.A_BOLD)
-        out(2, 1, f'{"#":>4}  {"Change":<9} {"State":<10} {"PS":<5} {"Subject":<44} {"CR":>2} '
-            f'{"V":>2}  {"Turn":<11} Comments', curses.A_UNDERLINE)
+        mine = sum(change.turn() in MY_TURNS for change in self._changes)
+        bar = self._interface.colour_pairs.attribute(15, tone(HEADER_BACKGROUND))
+        out(0, 0, ' ' * area.width, bar)
+        out(0, 1, f'plustwo  {self._repository}', bar | curses.A_BOLD)
+        right = f'{len(self._changes)} in review, base {self._base}' + (
+            f', your turn on {mine}' if mine else '') + ' '
+        out(0, max(area.width - len(right), 1), right, bar)
+        subject_width = max(area.width - 80, 20)
+        out(2, 1, f'{"#":>3}  {"Change":<9} {"Subject":<{subject_width}} {"PS":<5} {"CR":<7} '
+            f'{"V":<7} {"Turn":<10} Comments', curses.A_DIM | curses.A_UNDERLINE)
         for offset, row_content in enumerate(self._rows):
             row = self.TOP + offset
             if row >= area.height:
@@ -1007,22 +1039,28 @@ class StackView:
                 continue
             index = row_content
             change = self._changes[index]
-            attributes = curses.A_REVERSE if index == self._selected else 0
+            selected = index == self._selected
+            attributes = curses.A_REVERSE if selected else 0
             out(row, 1, ' ' * (area.width - 2), attributes)
-            out(row, 1, f'{index + 1:>4}  {change.short_id():<9} ', attributes)
-            out(row, 17, f'{change.state():<10}',
-                attributes | curses.color_pair(STATE_COLOURS[change.state()]))
-            out(row, 28, f'{core.version_label(change):<5} {change.subject:<44.44} ', attributes)
-            for column, label in ((79, core.CODE_REVIEW), (82, core.VERIFIED)):
-                out(row, column, f'{core.vote_label(change, label):>2}',
-                    attributes | vote_attribute(change.label_value(label)))
+            out(row, 1, f'{index + 1:>3}  ', attributes)
+            out(row, 6, f'{change.short_id():<9} ', attributes | curses.A_DIM)
+            out(row, 16, f'{change.subject:<{subject_width}.{subject_width}} ', attributes)
+            column = 17 + subject_width
+            out(row, column, f'{core.version_label(change):<5} ', attributes | curses.A_DIM)
+            column += 6
+            for label, short in ((core.CODE_REVIEW, 'CR'), (core.VERIFIED, 'V')):
+                badge = vote_badge(self._interface, short, change.label_value(label),
+                                   core.VERIFIED == label and change.verified_required)
+                if badge:
+                    out(row, column, badge[0], badge[1])
+                column += 8
             turn = change.turn()
-            out(row, 84, f'  {TURN_LABELS[turn]:<11}', attributes | (
-                curses.A_BOLD if turn in MY_TURNS else curses.A_DIM))
-            out(row, 97, f' {core.comment_counts(change)}', attributes)
+            out(row, column, f'{TURN_LABELS[turn]:<10} ', attributes | (
+                curses.A_BOLD | curses.color_pair(3) if turn in MY_TURNS else curses.A_DIM))
+            out(row, column + 11, core.comment_counts(change), attributes | curses.A_DIM)
         if not self._changes:
             out(self.TOP, 1, 'Nothing in review. plustwo upload uploads the stack of a '
-                'branch.')
+                'branch.', curses.A_DIM)
 
     def mouse(self, row, _column, kind):
         """A click selects a change, a double click opens it."""
@@ -1437,8 +1475,8 @@ def rendered_rows(core, rows, width, colours, marks):
     result = []
     for row in rows:
         if row.skipped:
-            label = f'… {row.skipped} common line{"s" if row.skipped > 1 else ""} …'
-            result.append(([(label.center(width), -1, -1, curses.A_DIM)],
+            label = f' {row.skipped} common line{"s" if row.skipped > 1 else ""} '
+            result.append(([(label.center(width, '┄'), -1, -1, curses.A_DIM)],
                            (None, None), False, False, row.old.number))
             continue
         changed = (core.CONTEXT, core.CONTEXT) != (row.old.kind, row.new.kind)
@@ -1813,32 +1851,36 @@ THREAD_INDENT = 3
 
 def thread_rows(comment, width, expanded, core, note=''):
     """A thread as rows of the diff, each a list of (text, foreground,
-    background, styles). Folded it is one row with the start of the first
+    background, styles): a tinted box, the reviewer's and the author's
+    names in two colours. Folded it is one row with the start of the first
     message. note goes into the title, e.g. that its line isn't shown.
     """
     label = comment_label(comment)
     colour = STATUS_COLOURS['draft' if comment.is_draft() else comment.status]
-    pad = ' ' * THREAD_INDENT
-    title = (f'#{comment.number} {label}' + (f'  {note}' if note else ''), colour, -1,
-             curses.A_BOLD)
+    tint = THREAD_TINT if curses.COLORS >= 256 else -1
+    pad = (' ' * THREAD_INDENT, -1, -1, 0)
+    inner = max(width - THREAD_INDENT - 1, 20)
+    title = f' #{comment.number} {label}'
     if not expanded:
         first = core.message_text(comment.messages[0]).split('\n')[0] if comment.messages else ''
-        return [[(pad + '▸ ', -1, -1, curses.A_DIM), title, (f'  {first}', -1, -1, curses.A_DIM)]]
-    inner = max(width - THREAD_INDENT - 2, 20)
-    rows = [[(pad + '┌ ', -1, -1, curses.A_DIM), title,
-             (' ' + '─' * max(inner - len(title[0]) - 2, 0), -1, -1, curses.A_DIM)]]
+        rest = f'  {first}'[:max(inner - len(title) - 2, 0)]
+        return [[pad, ('▸', -1, tint, curses.A_DIM), (title, colour, tint, curses.A_BOLD),
+                 (rest.ljust(inner - len(title) - 1), -1, tint, curses.A_DIM)]]
+    rows = [[pad, ('▾', -1, tint, curses.A_DIM), (title, colour, tint, curses.A_BOLD),
+             ((f'  {note}' if note else '').ljust(inner - len(title) - 1)[:inner - len(title) - 1],
+              -1, tint, curses.A_DIM)]]
     for message in comment.messages:
-        name = ('Reviewer' if core.REVIEWER == message.author else 'Author') + (
-            ' (draft)' if not message.sent else '')
-        name_colour = STATUS_COLOURS['draft'] if not message.sent else -1
-        prefix = f'{name}: '
+        reviewer = core.REVIEWER == message.author
+        name = ('Reviewer' if reviewer else 'Author') + (' (draft)' if not message.sent else '')
+        name_colour = (STATUS_COLOURS['draft'] if not message.sent
+                       else tone(REVIEWER_COLOURS if reviewer else AUTHOR_COLOURS))
+        prefix = f'  {name}: '
         lines = [line for paragraph in core.message_text(message).split('\n')
                  for line in textwrap.wrap(paragraph, max(inner - len(prefix), 10)) or ['']]
         for number, line in enumerate(lines):
-            start = (prefix, name_colour, -1, curses.A_BOLD) if 0 == number else (
-                ' ' * len(prefix), -1, -1, 0)
-            rows.append([(pad + '│ ', -1, -1, curses.A_DIM), start, (line, -1, -1, 0)])
-    rows.append([(pad + '└' + '─' * inner, -1, -1, curses.A_DIM)])
+            start_part = (prefix, name_colour, tint, curses.A_BOLD) if 0 == number else (
+                ' ' * len(prefix), -1, tint, 0)
+            rows.append([pad, start_part, (line.ljust(inner - len(prefix)), -1, tint, 0)])
     return rows
 
 
@@ -1850,23 +1892,12 @@ DIFF = 'diff'
 PANES = (FILES, COMMENTS, DIFF)
 
 PANE_FOOTERS = {
-    FILES: ((('down', 'up'), 'file'), (('next-pane',), 'next pane'),
-            (('comment',), 'comment on file'), (('back',), 'back')),
-    COMMENTS: ((('down', 'up'), 'thread'), (('open',), 'go to thread'), (('reply',), 'reply'),
-               (('done',), 'Done'), (('ack',), 'Ack'), (('resolve',), 'resolved'),
-               (('back',), 'back')),
-    DIFF: ((('down', 'up'), 'line'), (('top', 'bottom'), 'top/bottom'),
-           (('page-down', 'page-up'), 'half page'), (('next-chunk', 'prev-chunk'), 'chunk'),
-           (('next-thread', 'prev-thread'), 'thread'), (('next-file', 'prev-file'), 'file'),
-           (('comment',), 'comment on line'), (('file-comment',), 'on file'),
-           (('more-context', 'less-context'), 'context'), (('open',), 'fold thread'),
-           (('fold-all',), 'fold all'), (('reply',), 'reply'), (('edit-draft',), 'edit draft'),
-           (('done',), 'Done'), (('ack',), 'Ack'), (('resolve',), 'resolved'),
-           (('back',), 'files')),
+    FILES: ((('open',), 'diff'), (('reviewed',), 'reviewed'), (('comment',), 'comment')),
+    COMMENTS: ((('open',), 'go to'), (('reply',), 'reply'), (('done',), 'Done')),
+    DIFF: ((('next-chunk', 'prev-chunk'), 'chunk'), (('comment',), 'comment'),
+           (('done',), 'Done')),
 }
-CHANGE_FOOTER = ((('send',), 'send'), (('vote',), 'vote'), (('verified',), 'needs Verified'),
-                 (('patch-sets',), 'patch sets'), (('vimdiff',), 'vimdiff'),
-                 (('rebase',), 'rebase'), (('submit',), 'submit'), (('help',), 'help'))
+CHANGE_FOOTER = ((('send',), 'send'), (('approve',), '+2'), (('help',), 'all keys'))
 
 
 # What the change screen compares at first: the whole change as of the
@@ -1893,6 +1924,7 @@ class ChangeView:
         # Threads folded or unfolded by hand: number -> expanded
         self._expanded = {}
         self._renames = {}
+        self._counts = {}
 
     def footer(self):
         """The focused pane's actions, then the ones of the whole change."""
@@ -1907,6 +1939,7 @@ class ChangeView:
                 # The commit message comes first, like in Gerrit.
                 # A renamed file is listed once, under its new name.
                 self._renames = core.renames_of(change.commit)
+                self._counts = core.files_of(change.commit)
                 self._files = [core.COMMIT_MSG] + sorted(
                     set(core.files_of(change.commit)) - set(self._renames.values()))
                 self._file_index = min(self._file_index, max(len(self._files) - 1, 0))
@@ -1947,9 +1980,16 @@ class ChangeView:
         core = self._interface.core
         change = self._change
         self._layout = self._compute_layout(area)
-        out(0, 1, change.subject, curses.A_BOLD)
-        state = f'{change.short_id()}  {change.state()}  {core.version_label(change)}'
-        out(0, max(area.width - len(state) - 2, 1), state)
+        bar = self._interface.colour_pairs.attribute(15, tone(HEADER_BACKGROUND))
+        out(0, 0, ' ' * area.width, bar)
+        out(0, 1, f'{change.topic} ›', bar | curses.A_DIM)
+        out(0, 4 + len(change.topic), change.subject, bar | curses.A_BOLD)
+        state = f' {change.state()} '
+        chip = self._interface.colour_pairs.attribute(
+            0, {'New': 8, 'In-Review': 3, 'Submitted': 2}.get(change.state(), 8)) | curses.A_BOLD
+        version = f'{change.short_id()}  {core.version_label(change)} '
+        out(0, max(area.width - len(version) - len(state) - 1, 1), state, chip)
+        out(0, max(area.width - len(version), 1), version, bar | curses.A_DIM)
         patch_sets = ' '.join(str(number) for number in sorted(change.patch_sets)) or '-'
         try:
             (first, _), (second, _) = core.versions_to_compare(change, *self._compare)
@@ -1971,12 +2011,11 @@ class ChangeView:
         core = self._interface.core
         change = self._change
         for label in (core.CODE_REVIEW, core.VERIFIED):
-            value = change.label_value(label)
-            if not value and not (core.VERIFIED == label and change.verified_required):
-                continue
-            text = f'{label} {core.vote_label(change, label)}'
-            out(1, column, text, vote_attribute(value) | (0 if value else curses.A_DIM))
-            column += len(text) + 2
+            badge = vote_badge(self._interface, label, change.label_value(label),
+                               core.VERIFIED == label and change.verified_required)
+            if badge:
+                out(1, column, badge[0], badge[1])
+                column += len(badge[0]) + 1
         # A failed check says why, in short.
         failed = [vote for vote in change.current_votes(core.VERIFIED) if vote.value < 0]
         if failed and failed[0].message:
@@ -1997,7 +2036,17 @@ class ChangeView:
             name = file_label(core, path, self._renames)
             out(top + index, left, '✓ ' if reviewed[index] else '  ',
                 attributes | curses.color_pair(2), left + width)
-            out(top + index, left + 2, f'{name:<{width - 2}.{width - 2}}', attributes, left + width)
+            # Like Gerrit's size column: a short bar of added and removed lines
+            added, removed = self._counts.get(path, (0, 0))
+            scale = max(added + removed, 1) / 5 if added + removed > 5 else 1
+            plus, minus = round(added / scale), round(removed / scale)
+            bar_width = 6 if added + removed else 0
+            out(top + index, left + 2, f'{name:<{width - 2 - bar_width}.{width - 2 - bar_width}}',
+                attributes, left + width)
+            if bar_width:
+                out(top + index, left + width - 5, '+' * plus, curses.color_pair(2), left + width)
+                out(top + index, left + width - 5 + plus, '-' * minus, curses.color_pair(1),
+                    left + width)
 
     def _draw_comments(self):
         """Draws the thread list."""
