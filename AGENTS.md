@@ -9,7 +9,7 @@ line. This guide is printed by `git change guide`.
 | Term         | Meaning                                                                    |
 |--------------|----------------------------------------------------------------------------|
 | change       | a commit with a `Change-Id:` trailer, which the commit-msg hook adds        |
-| stack        | the commits of a `review/<topic>` branch that are not on the base branch    |
+| stack        | the commits of your branch that are not on the base branch, once uploaded   |
 | patch set    | an uploaded version of a change, `PS1`, `PS2`, …                            |
 | thread       | comments on a line, a file or `/COMMIT_MSG`, unresolved or resolved         |
 | vote         | Code-Review -2..+2 (the reviewer's), Verified -1..+1 (from checks)          |
@@ -20,14 +20,19 @@ when changes are submitted.
 
 ## Setup
 
-Once per repository: `git change init`. Then work on a review branch:
+Once per repository: `git change init`. Then work on a branch, one per
+topic. Its name is the stack's topic (a leading `review/` is dropped):
 
-    git switch -c review/<topic>
+    git switch -c <topic>
     git commit ...                  # gets a Change-Id
-    git change upload <CHANGE>      # PS1 of every change in the stack
+    git change upload               # PS1 of every change in the stack
 
 Keep one logical change per commit. The reviewer sees the stack commit by
 commit.
+
+Uploading copies your stack to the review's own refs, like a push to a
+Gerrit server. What the reviewer does there (a rebase, a submit) never
+touches your branch. `git change pull` brings it in.
 
 ## The loop
 
@@ -35,6 +40,13 @@ commit.
    short line per event and nothing else:
    - `review <repo> <change>: <n> new` when the reviewer sent comments
    - `vote <repo> <change> <label><value> PS<n> by <who>` for a vote
+   - `submitted <repo> <topic>: <n> changes` after a submit
+   - `rebased <repo> <topic>` after the reviewer rebased the stack
+   - `rebase <repo> <topic>` when that rebase had conflicts
+
+   After `submitted` or `rebased`, run `git change pull` in the branch
+   before working on. After `rebase`, rebase the branch onto the base
+   yourself, resolve the conflicts and upload.
 2. On an event, run `git change inbox <REPO>...`. It lists every unresolved
    thread whose last message is the reviewer's, with the quoted source line,
    and negative votes with the end of their message. `git change show
@@ -45,8 +57,8 @@ commit.
        git commit --fixup=<commit> ...
        GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash <base>
 
-5. Upload once: `git change upload <CHANGE>`. Every changed change of the
-   stack gets a new patch set.
+5. Upload once: `git change upload` in the branch. Every changed change of
+   the stack gets a new patch set.
 6. Then answer the threads. Your messages are sent immediately, so
    answering after the upload makes "Done" refer to a patch set the reviewer
    can already see.
@@ -96,5 +108,6 @@ decision you are unsure about:
 - Resolve a thread that asks for something without doing it or saying why.
 - Answer review comments elsewhere (chat, commit messages). Answer in the
   thread.
-- Work on a `review/` branch while it is being submitted. Submitting a whole
-  stack deletes the branch and switches to the base branch.
+- Delete your branch on your own after `submitted`. Run `git change pull`,
+  which moves what is left onto the base branch. Whether an empty branch
+  goes is the user's call.

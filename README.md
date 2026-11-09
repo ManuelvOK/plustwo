@@ -8,18 +8,22 @@ The command is `git change`. It keeps everything in the repository itself:
 - **Changes** are commits, identified by a Gerrit `Change-Id:` trailer. A
   commit reviewed here can later be uploaded to a real Gerrit as the same
   change.
-- **Stacks** are the commits of a `review/<topic>` branch that are not on the
-  base branch yet. Several stacks can be in review at once.
+- **Stacks** are the commits of a local branch that are not on the base
+  branch yet. Uploading copies them to `refs/plustwo/stacks/<topic>`, which
+  plays the part of the Gerrit server: the reviewer's rebase and submit
+  change only that, never a checkout. Several stacks can be in review at
+  once.
 - **Patch sets** are the uploaded versions of a change, kept under
-  `refs/patchsets/<Change-Id>/<n>`, so versions can be compared.
-- **Comment threads and votes** live in git notes (`refs/notes/review`) and
-  follow the commit through amends and rebases.
+  `refs/plustwo/patchsets/<Change-Id>/<n>`, so versions can be compared.
+- **Comment threads and votes** live in git notes (`refs/notes/review`) on
+  the latest patch set.
 
 Two roles take part. The reviewer usually works in the terminal user
 interface (`git change` without arguments), with vim-style keys, side by side
 diffs and inline threads. The author answers and applies on the command line
-(`git change inbox`, `reply`, `upload`). Submitting fast-forwards the base
-branch, so it only ever gets reviewed commits.
+(`git change inbox`, `reply`, `upload`, and `pull` for what the reviewer
+changed). Submitting fast-forwards the base branch, so it only ever gets
+reviewed commits.
 
 Threads work like in Gerrit: unresolved or resolved, and the author answers
 "Done" after fixing. AI agents working as the author find their guide in
@@ -51,9 +55,9 @@ For development, `make link PREFIX=~/.local` links the checkout instead.
 
     cd some/repository
     git change init                   # commit-msg hook and notes setup
-    git switch -c review/my-topic
+    git switch -c my-topic
     git commit ...                    # gets a Change-Id
-    git change upload 1               # first patch set, now In-Review
+    git change upload                 # first patch sets, now In-Review
     git change                        # review it
 
 `git change --help` lists all commands.

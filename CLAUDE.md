@@ -31,9 +31,15 @@ and the docstring at the top of `git-change` for every command.
 
 ## Data
 
-- `refs/patchsets/<Change-Id>/<n>`: the patch sets.
+- `refs/plustwo/stacks/<topic>`: the uploaded stacks, the "server". The
+  reviewer's actions change only these refs and the base branch, never a
+  local branch or checkout. `git change pull` brings them to the author.
+- `refs/plustwo/patchsets/<Change-Id>/<n>`: the patch sets.
+- Older repositories (`refs/patchsets/`, local `review/*` branches) are
+  migrated on first use, `git change init` removes the old patch set refs.
 - `refs/notes/review`: one JSON note per commit with comment threads and
-  votes. A message's `unresolved` (true, false or null) sets its thread's
+  votes. The latest patch set's note is the review, upload copies it to
+  the next one. `rebase_requested` marks a stack the author has to rebase. A message's `unresolved` (true, false or null) sets its thread's
   state, like in Gerrit. Older notes (a `status` per thread, `requests`)
   are converted when read. `git change init` sets `notes.rewriteRef`, so
   notes follow amends and rebases.
