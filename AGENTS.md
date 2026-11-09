@@ -66,29 +66,40 @@ touches your branch. `plustwo pull` brings it in.
 
 5. Upload once: `plustwo upload` in the branch. Every changed change of
    the stack gets a new patch set.
-6. Then answer the threads. Your messages are sent immediately, so
-   answering after the upload makes "Done" refer to a patch set the reviewer
-   can already see.
+6. Then answer all threads in one call with `plustwo answer` (below). Your
+   messages are sent immediately, so answering after the upload makes
+   "Done" refer to a patch set the reviewer can already see.
 
 ## Answering threads
 
 How to answer is your judgment, not a fixed rule. The usual cases:
 
-| Case                                   | Code change | Answer                                   |
-|----------------------------------------|-------------|------------------------------------------|
-| You agree                              | yes         | `plustwo done <CHANGE> <N>`, resolves |
-| You disagree, but it's minor           | maybe       | `plustwo reply <CHANGE> <N> "..."`    |
-| You disagree and it matters            | no          | `plustwo reply <CHANGE> <N> "..."`    |
-| A question                             | rarely      | `plustwo reply <CHANGE> <N> "..."`    |
+| Case                         | Code change | Answer line                     |
+|------------------------------|-------------|---------------------------------|
+| You agree                    | yes         | `I3f2a #1 done`, resolves       |
+| You disagree, but it's minor | maybe       | `I3f2a #2: your opinion`        |
+| You disagree and it matters  | no          | `I3f2a #3: your reasons`        |
+| A question                   | rarely      | `I3f2a #4: the answer`          |
+
+Answer a whole batch in one call, one line per thread, in inbox's format:
+
+    plustwo answer <<'EOF'
+    I3f2a #1 done
+    I3f2a #2: Kept the loop, the generator is slower here.
+    I3f2a #4 resolve: Yes, it is only called from main.
+    EOF
+
+`done: text` resolves with your own text, `resolve: text` too,
+`unresolve: text` makes a thread unresolved again. The single commands
+`plustwo reply`, `plustwo done` and `plustwo status` still work for one
+thread.
 
 - In the second case you may make the change anyway and still say what you
   think. Leave the thread unresolved, so the reviewer decides.
 - When you disagree, give reasons: what breaks, what it costs, what the
   alternative is. The reviewer resolves the thread or answers again.
 - Answer questions without resolving, unless the answer clearly settles the
-  thread. `plustwo reply ... --resolve` resolves with a text.
-- `plustwo done <CHANGE> <N> "text"` resolves with your own text, e.g.
-  "Done, also renamed the caller".
+  thread.
 - Comments on `/COMMIT_MSG:<line>` are about the commit message. Fix them
   with an amend (or `git commit --fixup=amend:<commit>`).
 

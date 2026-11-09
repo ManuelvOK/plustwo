@@ -6,14 +6,22 @@
   --partly-emph: #e0c8ff; --thread: #fff8c5; --draft: #fbefff; --cursor: #fff5b1;
   --good: #1a7f37; --bad: #cf222e; --warn: #9a6700;
 }
+/* Dark follows the system unless the toggle chose, see theme() in app.js */
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0d1117; --fg: #e6edf3; --dim: #8d96a0; --line: #30363d; --panel: #161b22;
-    --accent: #4493f8; --removed: #3f0001; --removed-emph: #901011; --added: #1f4d2a;
+  :root:not([data-theme="light"]) {
+    --bg: #0d1117; --fg: #f0f6fc; --dim: #b1bac4; --line: #555d68; --panel: #1c2128;
+    --accent: #58a6ff; --removed: #4b1113; --removed-emph: #a3262a; --added: #1f4d2a;
     --added-emph: #2f7a40; --below: #0c2d6b; --below-emph: #1f4f9e; --partly: #2e1452;
-    --partly-emph: #4f2a85; --thread: #2b2611; --draft: #2c1a33; --cursor: #3a3520;
-    --good: #3fb950; --bad: #f85149; --warn: #d29922;
+    --partly-emph: #4f2a85; --thread: #3a3214; --draft: #3b2445; --cursor: #4a4320;
+    --good: #56d364; --bad: #ff7b72; --warn: #e3b341;
   }
+}
+:root[data-theme="dark"] {
+    --bg: #0d1117; --fg: #f0f6fc; --dim: #b1bac4; --line: #555d68; --panel: #1c2128;
+    --accent: #58a6ff; --removed: #4b1113; --removed-emph: #a3262a; --added: #1f4d2a;
+    --added-emph: #2f7a40; --below: #0c2d6b; --below-emph: #1f4f9e; --partly: #2e1452;
+    --partly-emph: #4f2a85; --thread: #3a3214; --draft: #3b2445; --cursor: #4a4320;
+    --good: #56d364; --bad: #ff7b72; --warn: #e3b341;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--fg);

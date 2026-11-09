@@ -167,8 +167,7 @@ async function renderChange(id, file) {
        : (change.files[1] || change.files[0]).path);
   state.diff = await api('diff', {id, path: state.file, a: state.a, b: state.b,
                                   context: state.context, whitespace: state.whitespace,
-                                  theme: matchMedia('(prefers-color-scheme: dark)').matches
-                                    ? 'dark' : 'light'});
+                                  theme: theme()});
   const view = document.getElementById('view');
   view.replaceChildren(changeHeader(change), changeLevelThreads(change), toolbar(change),
                        el('div', {class: 'layout'}, fileList(change), diffView(change)));
@@ -191,7 +190,7 @@ function changeHeader(change) {
       voteChip('Verified', change.verified),
       turnChip(change.turn)),
     change.problems.length
-      ? el('p', {class: 'dim'}, 'Not submittable: ', change.problems.join('; ')) : null);
+      ? el('p', {class: 'dim'}, 'Not ready to submit: ', change.problems.join('; ')) : null);
 }
 
 function changeLevelThreads(change) {
@@ -576,6 +575,24 @@ const WEB_ACTIONS = new Set(['help', 'reload', 'down', 'up', 'top', 'bottom', 'p
   'prev-thread', 'side-old', 'side-new', 'comment', 'file-comment', 'send', 'approve', 'reviewed',
   'more-context', 'less-context', 'whitespace']);
 
+// Light or dark: the choice of the toggle, kept in the browser if it lets
+// us, else the system's setting
+let themeChoice = null;
+try { themeChoice = localStorage.getItem('plustwo-theme'); } catch (error) { /* none kept */ }
+function theme() {
+  return themeChoice || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+}
+function applyTheme() {
+  if (themeChoice) document.documentElement.dataset.theme = themeChoice;
+  else delete document.documentElement.dataset.theme;
+}
+function toggleTheme() {
+  themeChoice = 'dark' === theme() ? 'light' : 'dark';
+  try { localStorage.setItem('plustwo-theme', themeChoice); } catch (error) { /* this page only */ }
+  applyTheme();
+  render();
+}
+
 function showHelp() {
   const rows = state.keys.actions.filter((action) => WEB_ACTIONS.has(action.name)).map((action) =>
     el('tr', {}, el('td', {}, state.keys.keys[action.name].split(',').map(
@@ -611,6 +628,8 @@ async function start() {
   select.addEventListener('change', () => go(`#/${select.value}`));
   state.keys = await api('keys');
   document.getElementById('help-button').addEventListener('click', showHelp);
+  document.getElementById('theme-button').addEventListener('click', toggleTheme);
+  applyTheme();
   window.addEventListener('hashchange', render);
   await render();
   setInterval(poll, 1000);

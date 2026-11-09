@@ -81,7 +81,7 @@ ACTIONS = (
     ('diff', 'Stacks', 'diff', 'the diff of the change in git\'s pager'),
     ('vote', 'Stacks and changes', 'vote', 'vote Code-Review (-2..+2) on the latest patch set'),
     ('verified', 'Stacks and changes', 'needs Verified', 'whether the change needs Verified+1 '
-     '(from a check calling plustwo vote CHANGE Verified +1)'),
+     '(it comes from a check)'),
     ('submit', 'Stacks and changes', 'submit', 'submit: moves the base branch to the change, '
      'which submits the changes below it too. Needs Code-Review+2 (and Verified+1 if '
      'required). Asks first and lists the unresolved comments.'),
@@ -1353,8 +1353,8 @@ def submit_with_confirmation(interface, change):
     problems = [problem for other in submitted for problem in other.submit_problems()]
     if problems:
         interface.show_lines(['Cannot submit yet:', ''] + [f'  {problem}' for problem in problems]
-                             + ['', 'v gives Code-Review. Verified comes from a check calling',
-                                '  plustwo vote CHANGE Verified +1'])
+                             + ['', f'{interface.keymap.label("approve")} gives Code-Review+2. '
+                                'Verified comes from a check.'])
         return
     lines = [f'Submit to {core.base_branch()}:']
     lines += [f'  {other.short_id()}  {other.subject}' for other in submitted]

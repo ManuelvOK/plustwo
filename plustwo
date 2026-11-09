@@ -72,6 +72,9 @@ Usage:
                                         leave it out.
     plustwo reply CHANGE NUMBER TEXT [--resolve | --unresolve]
                                         adds an author message to a thread
+    plustwo answer < ANSWERS            answers several threads, one line each:
+                                        "I3f2a #1 done", "I3f2a #2: text",
+                                        "I3f2a #3 resolve: text"
     plustwo done CHANGE NUMBER [TEXT]
                                         answers "Done" (or TEXT) and resolves
                                         the thread
@@ -468,19 +471,19 @@ class Change:
         """What keeps this change from being submitted, as messages."""
         name = self.short_id()
         if not self.patch_sets:
-            return [f'{name} has no patch set yet, upload it first']
+            return [f'{name} has no patch set yet, waiting for the author']
         problems = []
         if self.wip:
-            problems.append(f'{name} is work in progress, upload it with --ready first')
+            problems.append(f'{name} is work in progress, waiting for the author')
         if not self.is_uploaded():
-            problems.append(f'{name} changed since its last patch set, upload it first')
+            problems.append(f'{name} changed since its last patch set, waiting for the author')
         labels = [CODE_REVIEW] + ([VERIFIED] if self.verified_required else [])
         for label in labels:
             if not self.is_approved(label):
                 value = self.label_value(label)
-                problems.append(f'{name} needs {label}{LABEL_RANGES[label][1]:+d} on '
-                                f'PS{self.latest_patch_set()}'
-                                + (f', it has {label}{value:+d}' if value else ''))
+                problems.append(f'{name} needs {label}{LABEL_RANGES[label][1]:+d}'
+                                + (f', it has {label}{value:+d}' if value else '')
+                                + (', from a check' if VERIFIED == label else ''))
         return problems
 
 
@@ -1848,6 +1851,55 @@ def add_message(change_id, number, author, text, sent=True, status=None, reposit
     update_change(change_id, edit, repository)
 
 
+# A line of `plustwo answer`: Change-Id prefix, thread, optional verb, text
+ANSWER_PATTERN = re.compile(
+    r'^\s*(?:\S+\s+)?(I[0-9a-f]+)\s+#(\d+)\s*(resolve|unresolve|done)?\s*:?\s*(.*)$')
+
+
+def parse_answers(text):
+    """The author's answers, one per line: "I3f2a #2 done", "I3f2a #3:
+    text", "I3f2a #4 resolve: text" or "unresolve: text". A repository
+    name before the Change-Id, as inbox prints it, is allowed. Returns
+    [(Change-Id prefix, number, status or None, text)].
+    """
+    answers = []
+    for number, line in enumerate(text.split('\n'), start=1):
+        if not line.strip() or line.lstrip().startswith('#'):
+            continue
+        match = ANSWER_PATTERN.match(line)
+        if match is None:
+            raise ChangeError(f'line {number} is no answer: {line.strip()}')
+        prefix, thread, verb, message = match.groups()
+        status = {'resolve': RESOLVED, 'done': RESOLVED, 'unresolve': UNRESOLVED}.get(verb)
+        message = message.strip() or (DONE if 'done' == verb else '')
+        if not message and status is None:
+            raise ChangeError(f'line {number} has no text')
+        answers.append((prefix, int(thread), status, message))
+    return answers
+
+
+def answer(text, repository=None):
+    """Adds the author's answers of parse_answers() to their threads, with
+    one lock and one note write per change. Checks the format and the
+    changes of all lines before writing. Returns the number of answers.
+    """
+    answers = parse_answers(text)
+    by_change = {}
+    for prefix, number, status, message in answers:
+        change = find_change(prefix, repository)
+        # An unknown thread stops the whole batch before anything is written
+        comment_of(change, number)
+        by_change.setdefault(change.change_id, []).append((number, status, message))
+    for change_id, entries in by_change.items():
+        def edit(change, entries=entries):
+            for number, status, message in entries:
+                comment_of(change, number).messages.append(Message(
+                    author=AUTHOR, text=message, sent=True, time=int(time.time()),
+                    unresolved=None if status is None else UNRESOLVED == status))
+        update_change(change_id, edit, repository)
+    return len(answers)
+
+
 def edit_draft(change_id, number, text, repository=None):
     """Replaces the text of the reviewer's draft at the end of a thread."""
     def edit(change):
@@ -2801,6 +2853,10 @@ def parse_arguments(argv):
         add_message(find_change(arguments.change).change_id, arguments.number, AUTHOR,
                     arguments.text or DONE, status=RESOLVED)
 
+    def answer_command(_arguments):
+        count = answer(sys.stdin.read())
+        print(f'{count} answer(s) added')
+
     def status_command(arguments):
         set_status(find_change(arguments.change).change_id, arguments.number, arguments.status,
                    arguments.text)
@@ -2904,6 +2960,7 @@ def parse_arguments(argv):
     reply = command('reply', reply_command, 'answer a thread', 'change', number, 'text')
     reply.add_argument('--resolve', action='store_true', help='and resolve the thread')
     reply.add_argument('--unresolve', action='store_true', help='and make it unresolved again')
+    command('answer', answer_command, 'answer several threads at once, from stdin')
     command('done', done_command, 'answer "Done" and resolve the thread', 'change', number,
             ('text', optional))
     command('status', status_command, 'resolve a thread or make it unresolved again', 'change',
