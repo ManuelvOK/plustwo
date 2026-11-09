@@ -1,7 +1,7 @@
 """Terminal user interface of git change, for the reviewer.
 
 Started by `git change` without arguments. Two screens: the stacks in
-review (one per review branch), and one change with its files, its comment
+review (one per topic), and one change with its files, its comment
 threads and the diff, which shows the threads under their lines.
 Keys are shown at the bottom of every screen, `?` lists them all.
 
@@ -58,7 +58,8 @@ PARTLY_BASIC = 5
 # Colours of vote values
 VOTE_COLOURS = {2: 2, 1: 2, -1: 1, -2: 1}
 
-STACK_KEYS = ('j/k move  l open  d diff  v vote  V needs Verified  S submit  R reload  ? help  '
+STACK_KEYS = ('j/k move  l open  d diff  v vote  V needs Verified  B rebase  S submit  R reload  '
+              '? help  '
               'q quit')
 
 HELP_TEXT = """git change: keys
@@ -84,6 +85,9 @@ Stacks
               the changes below it too. Needs Code-Review+2 (and Verified+1
               if required) on each. Asks first and lists them and their
               unresolved comments.
+  B           rebase the stack onto the base branch, without touching
+              any checkout. Every change gets a new patch set. On a
+              conflict nothing changes and the author is asked to rebase.
 
 Change: files and comments on the left, the diff on the right. The first
 file is the commit message, with a header.
@@ -123,6 +127,7 @@ file is the commit message, with a header.
               draft, it makes an empty one.
   v / V       vote Code-Review / whether Verified+1 is needed
   S           submit
+  B           rebase the stack onto the base branch
 
 Press any key."""
 
@@ -684,7 +689,7 @@ def move(index, key, length, count=None):
 
 
 class StackView:
-    """The stacks in review, one per review branch, like Gerrit's dashboard."""
+    """The stacks in review, one per topic, like Gerrit's dashboard."""
 
     KEYS = STACK_KEYS
 
@@ -700,7 +705,7 @@ class StackView:
         self._base = ''
 
     def reload(self):
-        """Reads the stacks again and lays out the rows: a heading per branch,
+        """Reads the stacks again and lays out the rows: a heading per stack,
         then its changes.
         """
         core = self._interface.core
@@ -709,15 +714,15 @@ class StackView:
         self._base = core.base_branch()
         self._selected = min(self._selected, max(len(self._changes) - 1, 0))
         self._rows = []
-        branch = None
+        topic = None
         for index, change in enumerate(self._changes):
-            if change.branch != branch:
-                branch = change.branch
-                self._rows.append(branch)
+            if change.topic != topic:
+                topic = change.topic
+                self._rows.append(stack_heading(core, topic, self._changes))
             self._rows.append(index)
 
     def draw(self, area):
-        """Draws the branches and their changes."""
+        """Draws the stacks and their changes."""
         out = self._interface.text
         core = self._interface.core
         out(0, 1, f'{self._repository}: {len(self._changes)} changes in review, base {self._base}',
@@ -744,8 +749,8 @@ class StackView:
                     attributes | vote_attribute(change.label_value(label)))
             out(row, 84, f'  {core.comment_counts(change)}', attributes)
         if not self._changes:
-            out(self.TOP, 1, f'Nothing in review. Changes live on {core.REVIEW_BRANCH_PREFIX}* '
-                'branches.')
+            out(self.TOP, 1, 'Nothing in review. git change upload uploads the stack of a '
+                'branch.')
 
     def mouse(self, row, _column, kind):
         """A click selects a change, a double click opens it."""
@@ -770,8 +775,38 @@ class StackView:
             self._interface.run_outside(self._interface.core.diff_command(change))
         elif ord('S') == key:
             submit_with_confirmation(self._interface, change)
+        elif ord('B') == key:
+            rebase_with_confirmation(self._interface, change)
         else:
             vote_action(self._interface, change, key)
+
+
+def stack_heading(core, topic, changes):
+    """A stack's heading in the list: its topic and whether it needs a
+    rebase.
+    """
+    if any(change.rebase_requested for change in changes if change.topic == topic):
+        return f'{topic}  (conflicts with {core.base_branch()}, the author rebases)'
+    if core.needs_rebase(topic):
+        return f'{topic}  ({core.base_branch()} moved on, B rebases)'
+    return topic
+
+
+def rebase_with_confirmation(interface, change):
+    """B: rebases the change's stack onto the base branch, after asking.
+    On a conflict the author is asked to do it.
+    """
+    core = interface.core
+    if not core.needs_rebase(change.topic):
+        interface.say(f'{change.topic} is on {core.base_branch()} already.')
+        return
+    if not interface.confirm([f'Rebase the stack {change.topic} onto {core.base_branch()}.',
+                              'Every change gets a new patch set.'], 'Rebase?'):
+        return
+    rebased = core.rebase_stack(change.topic)
+    interface.after_write()
+    interface.say(f'Rebased, {len(rebased)} new patch set(s).' if rebased is not None
+                  else 'Conflicts: the author is asked to rebase.')
 
 
 def vote_attribute(value):
@@ -1456,7 +1491,7 @@ PANE_KEYS = {
     DIFF: ('j/k line  gg/G  ^d/^u half page  c comment on line  C on file  +/- context  '
            'l fold thread  i fold all  r reply  e edit draft  y Done  Y Ack  x resolved  h files'),
 }
-COMMON_CHANGE_KEYS = ('s send  v vote  V needs Verified  p patch sets  t vimdiff  '
+COMMON_CHANGE_KEYS = ('s send  v vote  V needs Verified  p patch sets  t vimdiff  B rebase  '
                       'S submit  ? help')
 
 
@@ -1840,6 +1875,8 @@ class ChangeView:
             vote_action(interface, change, key)
         elif ord('S') == key:
             submit_with_confirmation(interface, change)
+        elif ord('B') == key:
+            rebase_with_confirmation(interface, change)
         elif key in (ord('r'), ord('e')) and self._target_thread():
             comment = self._target_thread()
             anchor = self._box_below_thread(comment)
