@@ -1,24 +1,26 @@
-# Installs git change. The default is a system-wide install below
+# Installs plustwo, with git-change as a second name. The default is a system-wide install below
 # /usr/local. Use PREFIX=$(HOME)/.local for a per-user one.
 #
 #   make check          compiles the sources, finds syntax errors
 #   make test           checks the diff rendering against git and delta.
 #                       TEST_REPOS=a:b also checks the history of a and b,
 #                       which are only read.
-#   make install        copies the files to $(LIBDIR), links git-change
-#                       into $(BINDIR)
-#   make link           links git-change in this checkout into $(BINDIR),
-#                       for development
+#   make install        copies the files to $(LIBDIR), links plustwo and
+#                       git-change into $(BINDIR)
+#   make link           links plustwo in this checkout into $(BINDIR), under
+#                       both names, for development
 #   make uninstall      removes what install or link put there
 
 PREFIX = /usr/local
 BINDIR = $(PREFIX)/bin
 LIBDIR = $(PREFIX)/lib/plustwo
 
-# git-change imports the interface and reads the guide (AGENTS.md) from the
+# plustwo imports the interface and reads the guide (AGENTS.md) from the
 # directory it really lives in, following symbolic links. So the files stay
-# together and bin only gets a link.
-SOURCES = git-change git_change_tui.py
+# together and bin only gets links. git-change is the old name, which hooks
+# of older repositories call.
+SOURCES = plustwo plustwo_tui.py
+NAMES = plustwo git-change
 
 .PHONY: all check test install link uninstall
 
@@ -31,16 +33,22 @@ test: check
 	python3 -m unittest discover -s tests
 
 install: check
-	install -Dm755 git-change $(DESTDIR)$(LIBDIR)/git-change
-	install -Dm644 git_change_tui.py $(DESTDIR)$(LIBDIR)/git_change_tui.py
+	install -Dm755 plustwo $(DESTDIR)$(LIBDIR)/plustwo
+	install -Dm644 plustwo_tui.py $(DESTDIR)$(LIBDIR)/plustwo_tui.py
 	install -Dm644 AGENTS.md $(DESTDIR)$(LIBDIR)/AGENTS.md
 	install -d $(DESTDIR)$(BINDIR)
-	ln -sf $(LIBDIR)/git-change $(DESTDIR)$(BINDIR)/git-change
+	for name in $(NAMES); do \
+	  ln -sf $(LIBDIR)/plustwo $(DESTDIR)$(BINDIR)/$$name; \
+	done
 
 link: check
 	install -d $(BINDIR)
-	ln -sf $(CURDIR)/git-change $(BINDIR)/git-change
+	for name in $(NAMES); do \
+	  ln -sf $(CURDIR)/plustwo $(BINDIR)/$$name; \
+	done
 
 uninstall:
-	rm -f $(DESTDIR)$(BINDIR)/git-change
+	for name in $(NAMES); do \
+	  rm -f $(DESTDIR)$(BINDIR)/$$name; \
+	done
 	rm -rf $(DESTDIR)$(LIBDIR)

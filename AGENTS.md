@@ -1,8 +1,9 @@
-# git change for agents: working as the author
+# plustwo for agents: working as the author
 
-`git change` is a Gerrit-like review of local commits. A human reviews your
+`plustwo` is a Gerrit-like review of local commits. A human reviews your
 commits in its terminal interface, and you answer and fix on the command
-line. This guide is printed by `git change guide`.
+line. This guide is printed by `plustwo guide`. `git change` is the same
+program under its older name, use it if `plustwo` is not on PATH.
 
 ## The model in short
 
@@ -14,29 +15,29 @@ line. This guide is printed by `git change guide`.
 | thread       | comments on a line, a file or `/COMMIT_MSG`, unresolved or resolved         |
 | vote         | Code-Review -2..+2 (the reviewer's), Verified -1..+1 (from checks)          |
 
-CHANGE in a command is the change's number in `git change list` or a prefix
+CHANGE in a command is the change's number in `plustwo list` or a prefix
 of its Change-Id like `I3f2a`. Prefer the Change-Id prefix: numbers shift
 when changes are submitted.
 
 ## Setup
 
-Once per repository: `git change init`. Then work on a branch, one per
+Once per repository: `plustwo init`. Then work on a branch, one per
 topic. Its name is the stack's topic (a leading `review/` is dropped):
 
     git switch -c <topic>
     git commit ...                  # gets a Change-Id
-    git change upload               # PS1 of every change in the stack
+    plustwo upload               # PS1 of every change in the stack
 
 Keep one logical change per commit. The reviewer sees the stack commit by
 commit.
 
 Uploading copies your stack to the review's own refs, like a push to a
 Gerrit server. What the reviewer does there (a rebase, a submit) never
-touches your branch. `git change pull` brings it in.
+touches your branch. `plustwo pull` brings it in.
 
 ## The loop
 
-1. Run `git change watch <REPO>...` as a background monitor. It prints one
+1. Run `plustwo watch <REPO>...` as a background monitor. It prints one
    short line per event and nothing else:
    - `review <repo> <change>: <n> new` when the reviewer sent comments
    - `vote <repo> <change> <label><value> PS<n> by <who>` for a vote
@@ -44,12 +45,12 @@ touches your branch. `git change pull` brings it in.
    - `rebased <repo> <topic>` after the reviewer rebased the stack
    - `rebase <repo> <topic>` when that rebase had conflicts
 
-   After `submitted` or `rebased`, run `git change pull` in the branch
+   After `submitted` or `rebased`, run `plustwo pull` in the branch
    before working on. After `rebase`, rebase the branch onto the base
    yourself, resolve the conflicts and upload.
-2. On an event, run `git change inbox <REPO>...`. It lists every unresolved
+2. On an event, run `plustwo inbox <REPO>...`. It lists every unresolved
    thread whose last message is the reviewer's, with the quoted source line,
-   and negative votes with the end of their message. `git change show
+   and negative votes with the end of their message. `plustwo show
    <CHANGE>` gives all threads of a change.
 3. Work through all threads of the batch before answering (see below).
 4. Fold each fix into the commit it belongs to, not into a new commit:
@@ -57,7 +58,7 @@ touches your branch. `git change pull` brings it in.
        git commit --fixup=<commit> ...
        GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash <base>
 
-5. Upload once: `git change upload` in the branch. Every changed change of
+5. Upload once: `plustwo upload` in the branch. Every changed change of
    the stack gets a new patch set.
 6. Then answer the threads. Your messages are sent immediately, so
    answering after the upload makes "Done" refer to a patch set the reviewer
@@ -69,18 +70,18 @@ How to answer is your judgment, not a fixed rule. The usual cases:
 
 | Case                                   | Code change | Answer                                   |
 |----------------------------------------|-------------|------------------------------------------|
-| You agree                              | yes         | `git change done <CHANGE> <N>`, resolves |
-| You disagree, but it's minor           | maybe       | `git change reply <CHANGE> <N> "..."`    |
-| You disagree and it matters            | no          | `git change reply <CHANGE> <N> "..."`    |
-| A question                             | rarely      | `git change reply <CHANGE> <N> "..."`    |
+| You agree                              | yes         | `plustwo done <CHANGE> <N>`, resolves |
+| You disagree, but it's minor           | maybe       | `plustwo reply <CHANGE> <N> "..."`    |
+| You disagree and it matters            | no          | `plustwo reply <CHANGE> <N> "..."`    |
+| A question                             | rarely      | `plustwo reply <CHANGE> <N> "..."`    |
 
 - In the second case you may make the change anyway and still say what you
   think. Leave the thread unresolved, so the reviewer decides.
 - When you disagree, give reasons: what breaks, what it costs, what the
   alternative is. The reviewer resolves the thread or answers again.
 - Answer questions without resolving, unless the answer clearly settles the
-  thread. `git change reply ... --resolve` resolves with a text.
-- `git change done <CHANGE> <N> "text"` resolves with your own text, e.g.
+  thread. `plustwo reply ... --resolve` resolves with a text.
+- `plustwo done <CHANGE> <N> "text"` resolves with your own text, e.g.
   "Done, also renamed the caller".
 - Comments on `/COMMIT_MSG:<line>` are about the commit message. Fix them
   with an amend (or `git commit --fixup=amend:<commit>`).
@@ -88,13 +89,13 @@ How to answer is your judgment, not a fixed rule. The usual cases:
 To leave a note or a question of your own for the reviewer, e.g. on a
 decision you are unsure about:
 
-    git change comment <CHANGE> <path>:<line> "..." --author
-    git change comment <CHANGE> <path> "..." --author --resolved
+    plustwo comment <CHANGE> <path>:<line> "..." --author
+    plustwo comment <CHANGE> <path> "..." --author --resolved
 
 ## Votes
 
 - Checks (tests, builds) vote Verified on the top change of the stack:
-  `git change vote <CHANGE> Verified +1 --by ci -m "<end of the log>"`, or
+  `plustwo vote <CHANGE> Verified +1 --by ci -m "<end of the log>"`, or
   `-1` when they fail.
 - A negative vote shows up in `watch` and `inbox`. Treat Code-Review-1 or -2
   like comments: read its message and the threads.
@@ -103,11 +104,11 @@ decision you are unsure about:
 
 ## Never
 
-- Submit (`git change submit`). Submitting is the reviewer's decision.
+- Submit (`plustwo submit`). Submitting is the reviewer's decision.
 - Vote Code-Review. It is the reviewer's label.
 - Resolve a thread that asks for something without doing it or saying why.
 - Answer review comments elsewhere (chat, commit messages). Answer in the
   thread.
-- Delete your branch on your own after `submitted`. Run `git change pull`,
+- Delete your branch on your own after `submitted`. Run `plustwo pull`,
   which moves what is left onto the base branch. Whether an empty branch
   goes is the user's call.

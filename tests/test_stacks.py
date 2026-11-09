@@ -20,7 +20,7 @@ ENVIRONMENT = dict(os.environ, PATH=f'{ROOT}:{os.environ["PATH"]}',
 
 
 class Repository:
-    """A scratch repository with git change set up."""
+    """A scratch repository with plustwo set up."""
 
     def __init__(self, directory):
         self.path = Path(directory)
@@ -41,7 +41,7 @@ class Repository:
         return self.run('git', *arguments, check=check).stdout.strip()
 
     def change(self, *arguments, check=True):
-        result = self.run(str(ROOT / 'git-change'), *arguments, check=check)
+        result = self.run(str(ROOT / 'plustwo'), *arguments, check=check)
         return (result.stdout + result.stderr).strip()
 
     def write(self, name, text):
@@ -185,7 +185,7 @@ class FlowTest(unittest.TestCase):
         repo.change('upload')
         repo.approve('1')
         repo.approve('2')
-        watch = subprocess.Popen([str(ROOT / 'git-change'), 'watch', '.'], cwd=repo.path,
+        watch = subprocess.Popen([str(ROOT / 'plustwo'), 'watch', '.'], cwd=repo.path,
                                  env=ENVIRONMENT, stdout=subprocess.PIPE, text=True)
         try:
             time.sleep(1.5)

@@ -1,0 +1,1919 @@
+#!/usr/bin/env python3
+"""plustwo: Gerrit-like review of local commits, with patch sets and notes.
+
+A change is a commit under review. Like in Gerrit, it is identified by the
+Change-Id trailer in its commit message, which a commit-msg hook adds and
+which amends and rebases keep. So a commit prepared here can be uploaded to
+a real Gerrit later, and Gerrit sees it as the same change.
+
+Like with a Gerrit server, the review has its own place, refs/plustwo/,
+apart from the author's branches. The author works on any local branch and
+uploads its stack: the commits not on the base branch yet (main, or what
+the git config change.base says), as refs/plustwo/stacks/<topic>. The
+reviewer's actions (a rebase, a submit) change only that place and the
+base branch, never a checkout. plustwo pull brings them into the
+author's branch. Submitting a change moves the base branch forward to it,
+so the base branch only ever gets reviewed commits. Several stacks can be
+in review at the same time.
+
+Every uploaded version of a change is kept as a patch set under
+refs/plustwo/patchsets/<Change-Id>/<number>, so versions can be compared.
+The review lives in a git note (refs/notes/review) on the latest patch set:
+the comment threads and the votes.
+The state of a change follows from git itself:
+New without a patch set, In-Review with one, Submitted once it is on the
+base branch. Nothing of this is pushed unless asked for explicitly.
+
+Two roles take part: the reviewer, who comments and decides, and the author,
+who answers and applies. The reviewer usually works in the terminal user
+interface (`plustwo` without arguments), the author on the command line.
+`git change` is the same program, for repositories set up before the
+rename and for those who prefer it as a git command.
+
+Usage:
+    plustwo                             terminal user interface
+    plustwo init                        installs the commit-msg hook and the
+                                        notes setup in this repository
+    plustwo list                        overview of the stacks in review
+    plustwo show CHANGE                 comment threads of a change
+    plustwo diff CHANGE [A [B]]         diff between patch sets, shown by
+                                        git's pager. --tool opens vimdiff.
+    plustwo rdiff CHANGE [A [B]]        range-diff between patch sets
+    plustwo upload [CHANGE] [--topic TOPIC]
+                                        uploads the stack of the checked out
+                                        branch (or of the branch with CHANGE):
+                                        every changed commit becomes the next
+                                        patch set. TOPIC defaults to the
+                                        branch name without review/.
+    plustwo pull                        brings the reviewer's rebase or submit
+                                        into the checked out branch
+    plustwo rebase CHANGE|--topic TOPIC
+                                        rebases a stack onto the base branch,
+                                        without a checkout. On a conflict the
+                                        author is asked to do it.
+    plustwo submit CHANGE               moves the base branch to the change,
+                                        submitting the changes below it too
+    plustwo comment CHANGE PLACE TEXT [--author] [--resolved]
+                                        adds a sent comment, PLACE like
+                                        src/main.cc:121, unresolved unless
+                                        --resolved. With --author it is the
+                                        author's, e.g. a question or a note,
+                                        and the author's inbox and watch
+                                        leave it out.
+    plustwo reply CHANGE NUMBER TEXT [--resolve | --unresolve]
+                                        adds an author message to a thread
+    plustwo done CHANGE NUMBER [TEXT]
+                                        answers "Done" (or TEXT) and resolves
+                                        the thread
+    plustwo status CHANGE NUMBER STATUS [TEXT]
+                                        resolves a thread (resolved) or makes
+                                        it unresolved again (unresolved),
+                                        TEXT becomes an author message
+    plustwo vote CHANGE LABEL VALUE [--by NAME] [--patch-set N] [-m TEXT]
+                                        votes on the latest patch set (or N):
+                                        Code-Review -2..+2, by the reviewer,
+                                        or Verified -1..+1, by ci. 0 removes
+                                        the vote. TEXT, e.g. a test log's
+                                        end, goes with it.
+    plustwo require-verified CHANGE [on|off]
+                                        whether the change needs Verified+1
+                                        to be submitted
+    plustwo inbox [REPO...]             what the author has to answer
+    plustwo watch [REPO...]             prints one line per change with new
+                                        sent messages, per vote, and per stack
+                                        submitted, rebased or to rebase, until
+                                        stopped
+    plustwo guide                       the guide for agents working as the
+                                        author (AGENTS.md)
+
+CHANGE is a change's number in the overview (counted over all stacks) or a
+unique prefix of its Change-Id (like I3f2a). A and B are patch set
+numbers or "current" for the commit as it is now. Without them, diff and rdiff compare the latest patch
+set with the current commit, or the last two patch sets if the commit is
+unchanged since. With a single patch set, they show the change itself.
+
+Like in Gerrit, submitting needs Code-Review+2 and no -2 on the latest patch
+set. A change can also require Verified+1 and no -1, for which a check (a
+script, a CI job) calls `plustwo vote CHANGE Verified +1 --by ci`. Votes
+belong to a patch set. A new one keeps them like Gerrit does by default:
+Code-Review after a trivial rebase (the same patch on another parent) or an
+edit of only the commit message, Verified only while the code stays the
+same, and a Code-Review-2 always.
+
+Comment threads work like in Gerrit: a thread is unresolved or resolved,
+and each message can change that. A new comment starts unresolved. The
+author fixes what an unresolved thread asks for, uploads and answers
+"Done", which resolves it. Submitting refuses while threads are unresolved.
+Sending the reviewer's drafts is the author's signal to start.
+
+Comments on a whole file have the file as their place. The commit message
+is the file /COMMIT_MSG, shown with a header like in Gerrit, so it gets
+comments the same way, e.g. on /COMMIT_MSG:7.
+"""
+
+import argparse
+import contextlib
+import difflib
+import fcntl
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+NOTES_REF = 'refs/notes/review'
+# The review state, like the repository on a Gerrit server: the uploaded
+# stacks and the patch sets. The author's local branches stay apart.
+PLUSTWO_PREFIX = 'refs/plustwo/'
+STACK_PREFIX = 'refs/plustwo/stacks/'
+PATCH_SET_PREFIX = 'refs/plustwo/patchsets/'
+# Where older versions kept patch sets and stacks (local review/ branches)
+OLD_PATCH_SET_PREFIX = 'refs/patchsets/'
+REVIEW_BRANCH_PREFIX = 'review/'
+DEFAULT_BASE = 'main'
+# A thread is unresolved or resolved, like in Gerrit
+UNRESOLVED = 'unresolved'
+RESOLVED = 'resolved'
+STATUSES = (UNRESOLVED, RESOLVED)
+# Status names of older notes and commands, and what they mean now
+OLD_STATUSES = {'open': UNRESOLVED, 'agreed': UNRESOLVED, 'dropped': RESOLVED, 'done': RESOLVED}
+# The replies Gerrit offers with one click. Both resolve the thread.
+DONE = 'Done'
+ACK = 'Ack'
+REVIEWER = 'reviewer'
+AUTHOR = 'author'
+NEW_SIDE = 'new'
+OLD_SIDE = 'old'
+CURRENT = 'current'
+# The parent of the other compared version, i.e. the change's own diff
+BASE = 'base'
+# The latest patch set, or the current commit before the first upload
+LATEST = 'latest'
+CODE_REVIEW = 'Code-Review'
+VERIFIED = 'Verified'
+# The lowest and highest vote of a label. Submitting needs the highest from
+# someone and the lowest from no one.
+LABEL_RANGES = {CODE_REVIEW: (-2, 2), VERIFIED: (-1, 1)}
+LABEL_ALIASES = {'cr': CODE_REVIEW, 'code-review': CODE_REVIEW, 'v': VERIFIED,
+                 'verified': VERIFIED}
+# Who votes when no one is named
+DEFAULT_VOTERS = {CODE_REVIEW: REVIEWER, VERIFIED: 'ci'}
+# Kinds of new patch sets, named like in Gerrit. They decide which votes a
+# new patch set keeps.
+REWORK = 'rework'
+TRIVIAL_REBASE = 'trivial rebase'
+NO_CODE_CHANGE = 'no code change'
+# The commit message as a file of the change, named like in Gerrit. In the
+# trees built to diff it, it is a plain file called COMMIT_MSG.
+COMMIT_MSG = '/COMMIT_MSG'
+COMMIT_MSG_NAME = 'COMMIT_MSG'
+CHANGE_ID_PATTERN = re.compile(r'^Change-Id: (I[0-9a-f]{40})\s*$', re.MULTILINE)
+WATCH_INTERVAL_SECONDS = 1.0
+
+# The hook only calls this script, so the logic stays in one place. It finds
+# it through PATH, under its new name or the old one.
+HOOK_TEXT = ('#!/bin/sh\n# Installed by plustwo: adds a Gerrit Change-Id.\n'
+             'command -v plustwo >/dev/null 2>&1 && exec plustwo commit-msg-hook "$1"\n'
+             'exec git-change commit-msg-hook "$1"\n')
+# Hooks installed before the rename, also ours
+OLD_HOOK_TEXTS = ('#!/bin/sh\n# Installed by git change: adds a Gerrit Change-Id.\n'
+                  'exec git-change commit-msg-hook "$1"\n',)
+
+
+class ChangeError(Exception):
+    """An error the user can fix, shown without a traceback."""
+
+
+@dataclass
+class Message:
+    """One message in a comment thread.
+
+    A reviewer's message starts as a draft (sent is False), which only the
+    reviewer sees, until the reviewer sends it. Like in Gerrit, a message
+    can resolve its thread or make it unresolved again: unresolved is
+    True or False then, None leaves the thread as it is.
+    """
+    author: str
+    text: str
+    sent: bool = True
+    unresolved: bool | None = None
+
+
+@dataclass
+class Comment:
+    """A comment thread on one place of a change.
+
+    place is a file, or a file and a line like src/main.cc:12. The line
+    counts in the new version of the file, or with side "old" in the old
+    version, for lines the change removed.
+
+    Like in Gerrit, the thread is unresolved or resolved as its last sent
+    message that says so has set it, unresolved if none did.
+    """
+    number: int
+    place: str
+    patch_set: int
+    messages: list[Message] = field(default_factory=list)
+    side: str = NEW_SIDE
+
+    @property
+    def status(self):
+        """unresolved or resolved, from the sent messages."""
+        flags = [message.unresolved for message in self.messages
+                 if message.sent and message.unresolved is not None]
+        return UNRESOLVED if not flags or flags[-1] else RESOLVED
+
+    def is_unresolved(self):
+        """Whether the thread is unresolved, drafts left out."""
+        return UNRESOLVED == self.status
+
+    def draft_status(self):
+        """The status the thread gets when its draft is sent, None if the
+        draft doesn't change it or there is no draft.
+        """
+        if not self.has_draft() or self.messages[-1].unresolved is None:
+            return None
+        return UNRESOLVED if self.messages[-1].unresolved else RESOLVED
+
+    def place_label(self):
+        """The place for display, marked when it is in the old version."""
+        return self.place + (' (old)' if OLD_SIDE == self.side else '')
+
+    def is_draft(self):
+        """Whether the thread exists only as the reviewer's draft so far."""
+        return all(not message.sent for message in self.messages)
+
+    def has_draft(self):
+        """Whether the thread ends with an unsent reviewer message."""
+        return bool(self.messages) and not self.messages[-1].sent
+
+    def is_unanswered(self):
+        """Whether the last sent message is the reviewer's."""
+        sent = [message for message in self.messages if message.sent]
+        return bool(sent) and REVIEWER == sent[-1].author
+
+
+@dataclass
+class Vote:
+    """A vote on one patch set, like Code-Review+2 by the reviewer."""
+    label: str
+    value: int
+    by: str
+    patch_set: int
+    message: str = ''
+    # The patch set the vote was copied from, None if given on this one
+    copied_from: int | None = None
+
+    def copied(self, patch_set):
+        """This vote copied to a newer patch set."""
+        return Vote(label=self.label, value=self.value, by=self.by, patch_set=patch_set,
+                    message=self.message, copied_from=self.copied_from or self.patch_set)
+
+
+@dataclass
+class Change:
+    """A commit with a Change-Id: its review state, threads and patch sets."""
+    change_id: str
+    commit: str
+    subject: str
+    topic: str
+    comments: list[Comment]
+    patch_sets: dict[int, str]
+    votes: list[Vote] = field(default_factory=list)
+    verified_required: bool = False
+    # The reviewer's rebase failed with conflicts, the author has to do it.
+    # Kept on the top change of the stack.
+    rebase_requested: bool = False
+    # The patch set the reviewer's last rebase made, 0 if none
+    rebased_patch_set: int = 0
+
+    def latest_patch_set(self):
+        """Number of the newest patch set, 0 if none is uploaded yet."""
+        return max(self.patch_sets, default=0)
+
+    def is_uploaded(self):
+        """Whether the current commit is the newest patch set."""
+        latest = self.latest_patch_set()
+        return 0 != latest and self.patch_sets[latest] == self.commit
+
+    def short_id(self):
+        """The Change-Id shortened for display, like I3f2a9c1."""
+        return self.change_id[:8]
+
+    def state(self):
+        """Review state for display, named like in Gerrit: New, In-Review or
+        Submitted. Changes in a stack are never submitted, they leave the
+        stack when they are.
+        """
+        return 'In-Review' if self.patch_sets else 'New'
+
+    def unfinished_comments(self):
+        """Sent threads that are still unresolved."""
+        return [comment for comment in self.comments
+                if comment.is_unresolved() and not comment.is_draft()]
+
+    def current_votes(self, label):
+        """The votes of a label on the latest patch set."""
+        latest = self.latest_patch_set()
+        return [vote for vote in self.votes
+                if label == vote.label and latest and latest == vote.patch_set]
+
+    def label_value(self, label):
+        """A label's summary for display, as Gerrit shows it: the lowest
+        value if someone gave it, else the highest if someone gave it, else
+        a negative vote before a positive one. 0 without votes.
+        """
+        values = [vote.value for vote in self.current_votes(label)]
+        low, high = LABEL_RANGES[label]
+        if not values:
+            return 0
+        if low in values or high in values:
+            return low if low in values else high
+        return min(values) if min(values) < 0 else max(values)
+
+    def is_approved(self, label):
+        """Whether the latest patch set has the label's highest vote and
+        not its lowest, which submitting needs.
+        """
+        values = [vote.value for vote in self.current_votes(label)]
+        low, high = LABEL_RANGES[label]
+        return high in values and low not in values
+
+    def submit_problems(self):
+        """What keeps this change from being submitted, as messages."""
+        name = self.short_id()
+        if not self.patch_sets:
+            return [f'{name} has no patch set yet, upload it first']
+        problems = []
+        if not self.is_uploaded():
+            problems.append(f'{name} changed since its last patch set, upload it first')
+        labels = [CODE_REVIEW] + ([VERIFIED] if self.verified_required else [])
+        for label in labels:
+            if not self.is_approved(label):
+                value = self.label_value(label)
+                problems.append(f'{name} needs {label}{LABEL_RANGES[label][1]:+d} on '
+                                f'PS{self.latest_patch_set()}'
+                                + (f', it has {label}{value:+d}' if value else ''))
+        return problems
+
+
+# ── git helpers ───────────────────────────────────────────────────────────
+
+def git(*arguments, input_text=None, check=True, repository=None):
+    """Runs git and returns its output without the final newline."""
+    command = ['git'] + (['-C', str(repository)] if repository else []) + list(arguments)
+    # Files need not be UTF-8, so bytes that aren't become replacement
+    # characters instead of an error.
+    result = subprocess.run(command, input=input_text, encoding='utf-8', errors='replace',
+                            capture_output=True)
+    if check and 0 != result.returncode:
+        raise ChangeError(result.stderr.strip() or f'git {arguments[0]} failed')
+    return result.stdout.rstrip('\n')
+
+
+def base_branch(repository=None):
+    """The branch reviewed changes go to: the git config change.base, else
+    main.
+    """
+    return git('config', 'change.base', check=False, repository=repository) or DEFAULT_BASE
+
+
+def refs_with_prefix(*prefixes, repository=None):
+    """Refs below the prefixes: name -> object."""
+    output = git('for-each-ref', '--format=%(refname) %(objectname)', *prefixes, check=False,
+                 repository=repository)
+    return dict(line.split(' ') for line in output.split('\n') if line)
+
+
+def topics(repository=None):
+    """The topics of the uploaded stacks, sorted."""
+    return sorted(ref[len(STACK_PREFIX):] for ref in refs_with_prefix(STACK_PREFIX,
+                                                                      repository=repository))
+
+
+def stack_ref(topic):
+    """The ref of an uploaded stack."""
+    return STACK_PREFIX + topic
+
+
+def commits_between(start, end, repository=None):
+    """Commits on end that are not on start, oldest first."""
+    output = git('rev-list', '--reverse', f'{start}..{end}', check=False, repository=repository)
+    return output.split('\n') if output else []
+
+
+def needs_rebase(topic, repository=None):
+    """Whether the base branch moved on since the stack's last rebase."""
+    return not is_ancestor(base_branch(repository), stack_ref(topic), repository)
+
+
+def stack_commits(topic, repository=None):
+    """Commits of an uploaded stack that are not on the base branch, oldest
+    first.
+    """
+    return commits_between(base_branch(repository), stack_ref(topic), repository)
+
+
+def topic_of_branch(branch):
+    """The topic a local branch uploads to: its name, without a leading
+    review/ (the branch names of older versions).
+    """
+    return branch[len(REVIEW_BRANCH_PREFIX):] if branch.startswith(REVIEW_BRANCH_PREFIX) else branch
+
+
+def current_branch(repository=None):
+    """The checked out branch, None on a detached HEAD."""
+    return git('symbolic-ref', '--quiet', '--short', 'HEAD', check=False,
+               repository=repository) or None
+
+
+def is_ancestor(commit, other, repository=None):
+    """Whether commit is on other."""
+    return 0 == subprocess.run(['git', *(['-C', str(repository)] if repository else []),
+                                'merge-base', '--is-ancestor', commit, other],
+                               capture_output=True).returncode
+
+
+def change_id_of(commit, repository=None):
+    """The Change-Id in a commit's message, None if it has none."""
+    match = CHANGE_ID_PATTERN.search(git('log', '-1', '--format=%B', commit,
+                                         repository=repository))
+    return match.group(1) if match else None
+
+
+def notes_version(repository=None):
+    """Hash of the notes ref. It changes with every write to any note."""
+    return git('rev-parse', '--verify', '--quiet', NOTES_REF, check=False, repository=repository)
+
+
+def stack_version(repository=None):
+    """All refs a review depends on, with their hashes. They change with
+    every upload, rebase, submit and note write, so a viewer knows when to
+    reload.
+    """
+    return git('for-each-ref', '--format=%(refname) %(objectname)',
+               f'refs/heads/{base_branch(repository)}', NOTES_REF, PLUSTWO_PREFIX, check=False,
+               repository=repository)
+
+
+def read_note(commit, repository=None):
+    """The review note of a commit as a dict, empty if it has none."""
+    text = git('notes', f'--ref={NOTES_REF}', 'show', commit, check=False, repository=repository)
+    return json.loads(text) if text else {}
+
+
+def write_note(commit, note, repository=None):
+    """Stores the review note of a commit."""
+    git('notes', f'--ref={NOTES_REF}', 'add', '-f', '-F', '-', commit,
+        input_text=json.dumps(note, indent=2) + '\n', repository=repository)
+
+
+def patch_sets_of(change_id, repository=None):
+    """Uploaded patch sets of a change: number -> commit."""
+    output = git('for-each-ref', '--format=%(refname) %(objectname)',
+                 f'{PATCH_SET_PREFIX}{change_id}/', repository=repository)
+    patch_sets = {}
+    for line in filter(None, output.split('\n')):
+        ref, commit = line.split(' ')
+        patch_sets[int(ref.rsplit('/', 1)[1])] = commit
+    return patch_sets
+
+
+def files_of(commit, repository=None):
+    """Files a commit changes, with added and removed line counts.
+
+    Returns a dict: path -> (added, removed). Binary files count as 0.
+    """
+    output = git('diff-tree', '--no-commit-id', '--numstat', '-r', '--root', commit,
+                 repository=repository)
+    files = {}
+    for line in filter(None, output.split('\n')):
+        added, removed, path = line.split('\t', 2)
+        files[path] = (int(added) if added.isdigit() else 0,
+                       int(removed) if removed.isdigit() else 0)
+    return files
+
+
+def line_at(commit, place, repository=None, side=NEW_SIDE):
+    """The source line a place like src/main.cc:12 refers to, stripped.
+
+    On the old side, the line is read from the commit's parent. Empty if
+    the place has no line number or the file has no such line.
+    """
+    path, _, line = place.rpartition(':')
+    if not path or not line.isdigit():
+        return ''
+    if COMMIT_MSG == path:
+        if OLD_SIDE == side:
+            return ''
+        text = commit_message_text(commit, repository)
+    else:
+        version = f'{commit}^' if OLD_SIDE == side else commit
+        text = git('show', f'{version}:{path}', check=False, repository=repository)
+    lines = text.split('\n')
+    number = int(line)
+    return lines[number - 1].strip() if 1 <= number <= len(lines) else ''
+
+
+def commit_message_text(commit, repository=None):
+    """The commit message as the file /COMMIT_MSG shows it: a header with
+    parent, author and committer, like in Gerrit, then the message.
+    """
+    parents, author, author_date, committer, commit_date = git(
+        'log', '-1', '--date=format:%Y-%m-%d %H:%M:%S %z',
+        '--format=%P%n%an <%ae>%n%ad%n%cn <%ce>%n%cd', commit,
+        repository=repository).split('\n')
+    lines = [f'Parent:     {parent[:8]} '
+             f'({git("log", "-1", "--format=%s", parent, repository=repository)})'
+             for parent in parents.split()]
+    lines += [f'Author:     {author}', f'AuthorDate: {author_date}',
+              f'Commit:     {committer}', f'CommitDate: {commit_date}', '']
+    message = git('log', '-1', '--format=%B', commit, repository=repository)
+    return '\n'.join(lines) + '\n' + message.rstrip('\n') + '\n'
+
+
+def commit_message_tree(commit, repository=None):
+    """A tree with only the file COMMIT_MSG, holding commit_message_text().
+    Without a commit, the empty tree. Two of these diff like two versions
+    of a file, which git diff, delta and difftool all understand.
+    """
+    if commit is None:
+        return git('hash-object', '-t', 'tree', '-w', '--stdin', input_text='',
+                   repository=repository)
+    blob = git('hash-object', '-w', '--stdin', input_text=commit_message_text(commit, repository),
+               repository=repository)
+    return git('mktree', input_text=f'100644 blob {blob}\t{COMMIT_MSG_NAME}\n',
+               repository=repository)
+
+
+@contextlib.contextmanager
+def review_lock(repository=None):
+    """Lets only one process change review notes at a time.
+
+    The terminal user interface and the author's commands both read, change
+    and write notes. Without the lock, one of two writes at the same moment
+    would get lost.
+    """
+    path = Path(git('rev-parse', '--git-path', 'git-change.lock', repository=repository))
+    if repository and not path.is_absolute():
+        path = Path(repository) / path
+    with open(path, 'w') as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+# ── setup and the commit-msg hook ─────────────────────────────────────────
+
+def init_repository():
+    """Installs the commit-msg hook and makes notes follow amends and rebases."""
+    path = Path(git('rev-parse', '--git-path', 'hooks/commit-msg'))
+    if path.exists() and path.read_text() not in (HOOK_TEXT, *OLD_HOOK_TEXTS):
+        raise ChangeError(f'{path} exists already and is not ours. Merge it by hand.')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(HOOK_TEXT)
+    path.chmod(0o755)
+    if NOTES_REF not in git('config', '--get-all', 'notes.rewriteRef', check=False).split('\n'):
+        git('config', '--add', 'notes.rewriteRef', NOTES_REF)
+
+    # Without an existing notes ref, every amend warns that it is invalid.
+    # An empty notes commit makes it exist before the first comment.
+    if not notes_version():
+        empty_tree = git('hash-object', '-t', 'tree', '-w', '--stdin', input_text='')
+        notes_commit = git('commit-tree', empty_tree, '-m', 'Notes created by plustwo init')
+        git('update-ref', NOTES_REF, notes_commit)
+    migrate_layout(remove_old=True)
+
+
+def migrate_layout(remove_old=False, repository=None):
+    """Moves the review state of older versions into refs/plustwo/.
+
+    The patch sets are copied from refs/patchsets/. Every local review/
+    branch becomes the stack of its topic, as far as its commits are
+    uploaded, i.e. the latest patch sets of their changes. The branches
+    stay. Only creates refs, so running it twice or at the same time does
+    no harm. remove_old deletes the old patch set refs afterwards.
+    """
+    old = refs_with_prefix(OLD_PATCH_SET_PREFIX, repository=repository)
+    new = refs_with_prefix(PATCH_SET_PREFIX, repository=repository)
+    for ref, commit in old.items():
+        target = PATCH_SET_PREFIX + ref[len(OLD_PATCH_SET_PREFIX):]
+        if target not in new:
+            git('update-ref', target, commit, repository=repository)
+    base = base_branch(repository)
+    branches = refs_with_prefix(f'refs/heads/{REVIEW_BRANCH_PREFIX}', repository=repository)
+    stacks = refs_with_prefix(STACK_PREFIX, repository=repository)
+    for ref in branches:
+        topic = topic_of_branch(ref[len('refs/heads/'):])
+        if stack_ref(topic) in stacks:
+            continue
+        top = None
+        for commit in commits_between(base, ref, repository):
+            change_id = change_id_of(commit, repository)
+            patch_sets = patch_sets_of(change_id, repository) if change_id else {}
+            if not patch_sets or patch_sets[max(patch_sets)] != commit:
+                break
+            top = commit
+        if top:
+            git('update-ref', stack_ref(topic), top, repository=repository)
+    if remove_old:
+        for ref, commit in old.items():
+            git('update-ref', '-d', ref, commit, repository=repository)
+
+
+def ensure_layout(repository=None):
+    """Migrates a repository of an older version on first use, so nothing
+    breaks before plustwo init runs again.
+    """
+    refs = refs_with_prefix(OLD_PATCH_SET_PREFIX, PLUSTWO_PREFIX, repository=repository)
+    if refs and not any(ref.startswith(PLUSTWO_PREFIX) for ref in refs):
+        migrate_layout(repository=repository)
+
+
+def new_change_id(message):
+    """A new Change-Id: "I" and 40 hex digits, as Gerrit's hook makes them."""
+    seed = f'{time.time_ns()} {os.getpid()} {os.urandom(16).hex()} {message}'
+    return 'I' + hashlib.sha1(seed.encode()).hexdigest()
+
+
+def add_change_id(message_path):
+    """Adds a Change-Id trailer to a commit message file if it has none.
+
+    Like Gerrit's hook, it leaves out fixup!, squash! and amend! commits,
+    which get folded into a commit that has its own Change-Id, and empty
+    messages, which abort the commit anyway.
+    """
+    message = Path(message_path).read_text()
+    meaningful = [line for line in message.split('\n') if not line.startswith('#')]
+    if not ''.join(meaningful).strip():
+        return
+    if re.match(r'(fixup|squash|amend)! ', meaningful[0]):
+        return
+    if CHANGE_ID_PATTERN.search(message):
+        return
+    git('interpret-trailers', '--in-place', '--trailer',
+        f'Change-Id: {new_change_id(message)}', message_path)
+
+
+# ── changes ───────────────────────────────────────────────────────────────
+
+def change_from(commit, topic, note, repository=None):
+    """Builds a Change from a commit of a stack and its note."""
+    change_id = change_id_of(commit, repository)
+    comments = []
+    for comment in note.get('comments', []):
+        messages = [Message(**message) for message in comment.pop('messages', [])]
+        # Notes of older versions keep a status per thread instead
+        old_status = OLD_STATUSES.get(comment.pop('status', None))
+        sent = [message for message in messages if message.sent]
+        if RESOLVED == old_status and sent and all(message.unresolved is None
+                                                  for message in messages):
+            sent[-1].unresolved = False
+        comments.append(Comment(**comment, messages=messages))
+    return Change(change_id=change_id,
+                  commit=commit,
+                  subject=git('log', '-1', '--format=%s', commit, repository=repository),
+                  topic=topic,
+                  comments=comments,
+                  patch_sets=patch_sets_of(change_id, repository),
+                  votes=[Vote(**vote) for vote in note.get('votes', [])],
+                  verified_required=note.get('verified_required', False),
+                  rebase_requested=note.get('rebase_requested', False),
+                  rebased_patch_set=note.get('rebased_patch_set', 0))
+
+
+def note_of(change):
+    """The note that stores a change's review."""
+    return {'comments': [{'number': comment.number,
+                          'place': comment.place,
+                          'patch_set': comment.patch_set,
+                          'side': comment.side,
+                          'messages': [vars(message) for message in comment.messages]}
+                         for comment in change.comments],
+            'votes': [vars(vote) for vote in change.votes],
+            'verified_required': change.verified_required,
+            'rebase_requested': change.rebase_requested,
+            'rebased_patch_set': change.rebased_patch_set}
+
+
+def changes_in_stack(repository=None):
+    """All changes of the uploaded stacks, stack by stack and oldest first
+    within a stack.
+    """
+    ensure_layout(repository)
+    changes = []
+    for topic in topics(repository):
+        for commit in stack_commits(topic, repository):
+            if change_id_of(commit, repository) is not None:
+                changes.append(change_from(commit, topic, read_note(commit, repository),
+                                           repository))
+    return changes
+
+
+def find_change(reference, repository=None):
+    """The change an overview number or a Change-Id prefix refers to."""
+    changes = changes_in_stack(repository)
+    if reference.isdigit():
+        index = int(reference)
+        if 1 <= index <= len(changes):
+            return changes[index - 1]
+        raise ChangeError(f'no change number {index}, the stacks have {len(changes)}')
+    matches = [change for change in changes if change.change_id.startswith(reference)]
+    if 1 == len(matches):
+        return matches[0]
+    if not matches:
+        raise ChangeError(f'no change with a Change-Id starting with "{reference}"')
+    raise ChangeError(f'"{reference}" fits several changes, give more of the Change-Id')
+
+
+def update_change(change_id, edit, repository=None):
+    """Changes a change's review under the lock and stores it.
+
+    Reads the change fresh, because another process may have written since
+    it was shown, and because an amend may have given it a new commit. Then
+    calls edit(change), stores the result and returns what edit returned.
+    """
+    with review_lock(repository):
+        for change in changes_in_stack(repository):
+            if change_id == change.change_id:
+                result = edit(change)
+                write_note(change.commit, note_of(change), repository)
+                return result
+    raise ChangeError(f'the change {change_id[:8]} is not in review any more')
+
+
+def comment_of(change, number):
+    """The thread with this number, or an error."""
+    if not 1 <= number <= len(change.comments):
+        raise ChangeError(f'{change.short_id()} has no comment {number}')
+    return change.comments[number - 1]
+
+
+def tree_of(commit, repository=None):
+    """The tree of a commit."""
+    return git('rev-parse', f'{commit}^{{tree}}', repository=repository)
+
+
+def patch_id(commit, repository=None):
+    """The patch id of a commit: the same for the same diff, whatever its
+    parent and message.
+    """
+    patch = git('diff-tree', '-p', '--root', commit, repository=repository)
+    output = git('patch-id', '--stable', input_text=patch + '\n', repository=repository)
+    return output.split(' ')[0] if output else ''
+
+
+def patch_set_kind(old, new, repository=None):
+    """How a new patch set differs from the one before, like Gerrit's
+    change kinds: no code change (the same files, e.g. a new message),
+    trivial rebase (the same patch on another parent) or rework.
+    """
+    if tree_of(old, repository) == tree_of(new, repository):
+        return NO_CODE_CHANGE
+    if patch_id(old, repository) == patch_id(new, repository):
+        return TRIVIAL_REBASE
+    return REWORK
+
+
+def is_kept(vote, kind):
+    """Whether a new patch set of this kind keeps a vote, with Gerrit's
+    default rules: Code-Review after a trivial rebase or without code change,
+    Verified only without code change, and Code-Review-2 always.
+    """
+    if VERIFIED == vote.label:
+        return NO_CODE_CHANGE == kind
+    return kind in (NO_CODE_CHANGE, TRIVIAL_REBASE) or LABEL_RANGES[CODE_REVIEW][0] == vote.value
+
+
+def add_patch_set(change, repository=None):
+    """Saves a change's current commit as its next patch set and copies the
+    votes it keeps. Returns (number, kind), kind None for the first one.
+    """
+    latest = change.latest_patch_set()
+    number = latest + 1
+    git('update-ref', f'{PATCH_SET_PREFIX}{change.change_id}/{number}', change.commit,
+        repository=repository)
+    kind = None
+    if latest:
+        kind = patch_set_kind(change.patch_sets[latest], change.commit, repository)
+        change.votes += [vote.copied(number) for vote in change.current_votes(CODE_REVIEW)
+                         + change.current_votes(VERIFIED) if is_kept(vote, kind)]
+    change.patch_sets[number] = change.commit
+    return number, kind
+
+
+def upload(branch=None, topic=None, repository=None):
+    """Uploads the stack of a local branch (the checked out one if None):
+    its commits that are not on the base branch. Like a push to Gerrit's
+    refs/for/, every commit that isn't its change's latest patch set yet
+    becomes the next one, and the stack's ref points to the branch's top.
+
+    topic defaults to the branch's name without a leading review/. The
+    review of a change lives on its latest patch set, so a new patch set
+    gets that note, whatever an amend copied to the local commit. A
+    pending rebase request is cleared. Returns [(change, patch set number,
+    kind)] of the new patch sets.
+    """
+    with review_lock(repository):
+        ensure_layout(repository)
+        base = base_branch(repository)
+        branch = branch or current_branch(repository)
+        if branch is None and topic is None:
+            raise ChangeError('HEAD is detached, check out a branch or give a topic')
+        if base == branch:
+            raise ChangeError(f'{base} is the base branch, upload from another branch')
+        topic = topic or topic_of_branch(branch)
+        tip = git('rev-parse', branch or 'HEAD', repository=repository)
+        commits = commits_between(base, tip, repository)
+        if not commits:
+            raise ChangeError(f'{branch or "HEAD"} has no commits beyond {base}')
+        change_ids = [change_id_of(commit, repository) for commit in commits]
+        for commit, change_id in zip(commits, change_ids):
+            if change_id is None:
+                raise ChangeError(f'{commit[:8]} has no Change-Id. Run plustwo init, then '
+                                  'amend it to get one.')
+        elsewhere = {change.change_id: change.topic for change in changes_in_stack(repository)
+                     if change.topic != topic}
+        for change_id in change_ids:
+            if change_id in elsewhere:
+                raise ChangeError(f'{change_id[:8]} is in review in the stack '
+                                  f'{elsewhere[change_id]} already')
+
+        uploaded = []
+        for commit, change_id in zip(commits, change_ids):
+            patch_sets = patch_sets_of(change_id, repository)
+            latest = max(patch_sets, default=0)
+            if latest and patch_sets[latest] == commit:
+                note = read_note(commit, repository)
+                if note.get('rebase_requested'):
+                    note['rebase_requested'] = False
+                    write_note(commit, note, repository)
+                continue
+            note = read_note(patch_sets[latest] if latest else commit, repository)
+            change = change_from(commit, topic, note, repository)
+            change.rebase_requested = False
+            uploaded.append((change, *add_patch_set(change, repository)))
+            write_note(commit, note_of(change), repository)
+        old_top = git('rev-parse', '--verify', '--quiet', stack_ref(topic), check=False,
+                      repository=repository)
+        if not uploaded and old_top == tip:
+            raise ChangeError(f'{topic} is uploaded already, nothing changed')
+        git('update-ref', stack_ref(topic), tip, repository=repository)
+        return uploaded
+
+
+def branch_with_change(reference, repository=None):
+    """The local branch holding a change, for an upload naming one: the
+    checked out branch if it has it, else the only branch that has it.
+    """
+    base = base_branch(repository)
+    current = current_branch(repository)
+    if reference.isdigit():
+        # Numbers count uploaded changes only. A new change has none yet,
+        # so an old habit like "upload 3" uploads the checked out branch.
+        try:
+            change_id = find_change(reference, repository).change_id
+        except ChangeError:
+            if current and current != base:
+                return current
+            raise
+    else:
+        change_id = reference
+
+    def has_change(branch):
+        return any((change_id_of(commit, repository) or '').startswith(change_id)
+                   for commit in commits_between(base, branch, repository))
+
+    if current and current != base and has_change(current):
+        return current
+    branches = [ref[len('refs/heads/'):] for ref in refs_with_prefix('refs/heads/',
+                                                                      repository=repository)]
+    matches = [branch for branch in branches if branch != base and has_change(branch)]
+    if 1 != len(matches):
+        raise ChangeError(f'{len(matches)} local branches have the change {reference}, '
+                          'check out the one to upload')
+    return matches[0]
+
+
+def changes_submitted_with(change, repository=None):
+    """The changes a submit of this change submits: it and all changes below
+    it in its stack, oldest first.
+    """
+    stack = [other for other in changes_in_stack(repository) if other.topic == change.topic]
+    return stack[:[other.change_id for other in stack].index(change.change_id) + 1]
+
+
+def worktrees_with(branch, repository=None):
+    """Paths of the worktrees that have a branch checked out."""
+    output = git('worktree', 'list', '--porcelain', repository=repository)
+    paths, path = [], None
+    for line in output.split('\n'):
+        if line.startswith('worktree '):
+            path = line[len('worktree '):]
+        elif f'branch refs/heads/{branch}' == line:
+            paths.append(path)
+    return paths
+
+
+def submit(change_id, force=False, repository=None):
+    """Moves the base branch forward to a change, which submits it and every
+    change below it in its stack, like Gerrit does with a chain. A stack
+    with nothing left is removed. Local branches stay as they are, the
+    author's plustwo pull catches up.
+
+    Refuses when one of these changes lacks the votes it needs
+    (Code-Review+2, Verified+1 if required), and when the base branch moved
+    on and the stack needs a rebase first. Without force it also refuses
+    while threads are unresolved, so no point gets lost. The interface uses
+    force after listing those threads and asking.
+    """
+    with review_lock(repository):
+        change = next((change for change in changes_in_stack(repository)
+                       if change_id == change.change_id), None)
+        if change is None:
+            raise ChangeError(f'the change {change_id[:8]} is not in review')
+        submitted = changes_submitted_with(change, repository)
+        problems = [problem for other in submitted for problem in other.submit_problems()]
+        if problems:
+            raise ChangeError('; '.join(problems))
+        unfinished = [f'{other.short_id()} #{comment.number}' for other in submitted
+                      for comment in other.unfinished_comments()]
+        if unfinished and not force:
+            raise ChangeError(f'unresolved threads: {", ".join(unfinished)}')
+
+        base = base_branch(repository)
+        if not is_ancestor(base, change.commit, repository):
+            raise ChangeError(f'{base} moved on, rebase the stack {change.topic} onto it first')
+
+        # The base branch is moved like a fast-forward merge. If it is checked
+        # out here, merge keeps the working copy right, update-ref would not.
+        # Checked out in another worktree, only that one can move it.
+        here = git('rev-parse', '--show-toplevel', repository=repository)
+        elsewhere = [path for path in worktrees_with(base, repository) if path != here]
+        if elsewhere:
+            raise ChangeError(f'{base} is checked out in {elsewhere[0]}, switch away from it '
+                              'there first')
+        if base == current_branch(repository):
+            git('merge', '--ff-only', '--quiet', change.commit, repository=repository)
+        else:
+            git('update-ref', f'refs/heads/{base}', change.commit, repository=repository)
+
+        top = git('rev-parse', stack_ref(change.topic), repository=repository)
+        if top == change.commit:
+            git('update-ref', '-d', stack_ref(change.topic), top, repository=repository)
+        return submitted
+
+
+def raw_commit(commit, repository=None):
+    """A commit's author (name, email, date) and its message, exactly."""
+    text = git('cat-file', 'commit', commit, repository=repository) + '\n'
+    headers, _, message = text.partition('\n\n')
+    author = next(line for line in headers.split('\n') if line.startswith('author '))
+    match = re.match(r'author (.*) <(.*)> (\d+ [+-]\d{4})$', author)
+    return match.groups(), message
+
+
+def rebase_stack(topic, repository=None):
+    """The reviewer's rebase of a stack onto the base branch, like Gerrit's
+    Rebase button. It needs no worktree: each commit is merged onto the new
+    parent with git merge-tree. Every change gets a new patch set with its
+    review, and the stack moves. The local branches stay, the author's
+    plustwo pull brings the new commits.
+
+    On a conflict nothing changes. The top change gets a rebase request
+    instead, for the author to rebase locally and upload. Returns the new
+    patch sets [(change, number, kind)], or None after a conflict.
+    """
+    with review_lock(repository):
+        base = base_branch(repository)
+        top = git('rev-parse', '--verify', '--quiet', stack_ref(topic), check=False,
+                  repository=repository)
+        if not top:
+            raise ChangeError(f'no stack called {topic}')
+        if is_ancestor(base, top, repository):
+            raise ChangeError(f'{topic} is on {base} already')
+        commits = stack_commits(topic, repository)
+        parent = git('rev-parse', base, repository=repository)
+        rebased = []
+        for commit in commits:
+            merge = subprocess.run(['git', *(['-C', str(repository)] if repository else []),
+                                    'merge-tree', '--write-tree', f'--merge-base={commit}^',
+                                    parent, commit], capture_output=True, text=True)
+            if 0 != merge.returncode:
+                note = read_note(top, repository)
+                note['rebase_requested'] = True
+                write_note(top, note, repository)
+                return None
+            (name, email, date), message = raw_commit(commit, repository)
+            environment = dict(os.environ, GIT_AUTHOR_NAME=name, GIT_AUTHOR_EMAIL=email,
+                               GIT_AUTHOR_DATE=date)
+            parent = subprocess.run(
+                ['git', *(['-C', str(repository)] if repository else []), 'commit-tree',
+                 merge.stdout.split('\n')[0], '-p', parent, '-F', '-'],
+                input=message, capture_output=True, text=True, env=environment,
+                check=True).stdout.strip()
+            rebased.append((commit, parent))
+
+        uploaded = []
+        for old, new in rebased:
+            change = change_from(new, topic, read_note(old, repository), repository)
+            change.rebase_requested = False
+            number, kind = add_patch_set(change, repository)
+            change.rebased_patch_set = number
+            write_note(new, note_of(change), repository)
+            uploaded.append((change, number, kind))
+        git('update-ref', stack_ref(topic), parent, top, repository=repository)
+        return uploaded
+
+
+def pull(repository=None):
+    """Brings what the reviewer did into the checked out branch: a rebase,
+    a submit. Like a fetch and rebase from Gerrit. Returns what happened,
+    as a short line.
+
+    The branch's commits that are patch sets are the uploaded ones. Without
+    newer local commits, the branch moves to the uploaded stack, or to the
+    base branch when all was submitted. Newer local commits are rebased
+    onto it, which stops like any rebase on a conflict. Needs a clean
+    worktree. The branch is never deleted.
+    """
+    branch = current_branch(repository)
+    base = base_branch(repository)
+    if branch is None:
+        raise ChangeError('HEAD is detached, check out the branch to pull into')
+    if base == branch:
+        raise ChangeError(f'{base} is the base branch, check out the branch to pull into')
+    if git('status', '--porcelain', '--untracked-files=no', repository=repository):
+        raise ChangeError('the worktree has changes, commit or stash them first')
+    ensure_layout(repository)
+    topic = topic_of_branch(branch)
+    server = git('rev-parse', '--verify', '--quiet', stack_ref(topic), check=False,
+                 repository=repository)
+    target = server or git('rev-parse', base, repository=repository)
+    local = commits_between(base, 'HEAD', repository)
+    uploaded = []
+    for commit in local:
+        change_id = change_id_of(commit, repository)
+        if not change_id or commit not in patch_sets_of(change_id, repository).values():
+            break
+        uploaded.append(commit)
+    newer = local[len(uploaded):]
+    head = git('rev-parse', 'HEAD', repository=repository)
+    if not local and head == target:
+        return f'{branch} has nothing beyond {base}' + ('' if server else ', all is submitted')
+    if head == target or (uploaded and uploaded[-1] == target):
+        return f'{branch} is up to date'
+    if not newer:
+        git('reset', '--quiet', '--keep', target, repository=repository)
+        return (f'{branch} moved to the reviewed stack {topic}' if server
+                else f'{topic} is submitted, {branch} has nothing beyond {base} now')
+    upstream = uploaded[-1] if uploaded else git('merge-base', base, 'HEAD',
+                                                 repository=repository)
+    result = subprocess.run(['git', *(['-C', str(repository)] if repository else []), 'rebase',
+                             '--quiet', '--onto', target, upstream, branch],
+                            capture_output=True, text=True)
+    if 0 != result.returncode:
+        return (f'conflict while moving {len(newer)} local commit(s) onto {topic}: resolve, '
+                'then git rebase --continue')
+    return f'{len(newer)} local commit(s) moved onto ' + (topic if server else base)
+
+
+def status_name(name):
+    """The status a name stands for: unresolved or resolved, or one of the
+    older names open, agreed (unresolved), dropped, done (resolved).
+    """
+    status = name if name in STATUSES else OLD_STATUSES.get(name)
+    if status is None:
+        raise ChangeError(f'unknown status "{name}", use {UNRESOLVED} or {RESOLVED}')
+    return status
+
+
+def add_comment(change_id, place, text, sent=True, side=NEW_SIDE, author=REVIEWER,
+                status=UNRESOLVED, repository=None):
+    """Starts a thread on the newest patch set, unresolved like in Gerrit
+    unless status says otherwise. Returns its number. The author's threads
+    are always sent.
+    """
+    status = status_name(status)
+
+    def edit(change):
+        comment = Comment(number=len(change.comments) + 1,
+                          place=place,
+                          patch_set=change.latest_patch_set(),
+                          messages=[Message(author=author, text=text,
+                                            sent=sent or AUTHOR == author,
+                                            unresolved=UNRESOLVED == status)],
+                          side=side)
+        change.comments.append(comment)
+        return comment.number
+
+    return update_change(change_id, edit, repository)
+
+
+def add_message(change_id, number, author, text, sent=True, status=None, repository=None):
+    """Adds a message to a thread. An author's message is always sent.
+    status resolves the thread or makes it unresolved again, None leaves
+    it as it is. Like Gerrit's Reply, a reviewer has one draft per thread.
+    """
+    unresolved = None if status is None else UNRESOLVED == status_name(status)
+
+    def edit(change):
+        comment = comment_of(change, number)
+        if AUTHOR != author and not sent and comment.has_draft():
+            raise ChangeError(f'comment {number} has a draft already, edit that one')
+        comment.messages.append(Message(author=author, text=text, sent=sent or AUTHOR == author,
+                                        unresolved=unresolved))
+
+    update_change(change_id, edit, repository)
+
+
+def edit_draft(change_id, number, text, repository=None):
+    """Replaces the text of the reviewer's draft at the end of a thread."""
+    def edit(change):
+        comment = comment_of(change, number)
+        if not comment.has_draft():
+            raise ChangeError(f'comment {number} has no draft')
+        comment.messages[-1].text = text
+
+    update_change(change_id, edit, repository)
+
+
+def delete_draft(change_id, number, repository=None):
+    """Deletes the reviewer's draft at the end of a thread.
+
+    A thread that was only a draft disappears completely, and the later
+    threads move up a number.
+    """
+    def edit(change):
+        comment = comment_of(change, number)
+        if not comment.has_draft():
+            raise ChangeError(f'comment {number} has no draft')
+        comment.messages.pop()
+        if not comment.messages:
+            change.comments.remove(comment)
+            for later_number, later in enumerate(change.comments, start=1):
+                later.number = later_number
+
+    update_change(change_id, edit, repository)
+
+
+def send_drafts(change_id, repository=None):
+    """Sends all of the reviewer's drafts of a change. Returns their count."""
+    def edit(change):
+        drafts = [message for comment in change.comments for message in comment.messages
+                  if not message.sent]
+        for message in drafts:
+            message.sent = True
+        return len(drafts)
+
+    return update_change(change_id, edit, repository)
+
+
+def set_status(change_id, number, status, text='', repository=None):
+    """The author resolves a thread or makes it unresolved again, with a
+    message (text may be empty).
+    """
+    add_message(change_id, number, AUTHOR, text or '', status=status, repository=repository)
+
+
+def toggle_draft_status(change_id, number, repository=None):
+    """The reviewer's Resolved checkbox: flips whether sending the thread's
+    draft resolves it. Without a draft, an empty one is made that flips
+    the thread's status. Returns the status the draft will give.
+    """
+    def edit(change):
+        comment = comment_of(change, number)
+        if not comment.has_draft():
+            comment.messages.append(Message(author=REVIEWER, text='', sent=False,
+                                            unresolved=not comment.is_unresolved()))
+        else:
+            draft = comment.messages[-1]
+            now = comment.is_unresolved() if draft.unresolved is None else draft.unresolved
+            draft.unresolved = not now
+        return comment.draft_status()
+
+    return update_change(change_id, edit, repository)
+
+
+def label_name(label):
+    """The label a name like cr, Code-Review or v stands for."""
+    name = LABEL_ALIASES.get(label.lower())
+    if name is None:
+        raise ChangeError(f'unknown label "{label}", use {CODE_REVIEW} or {VERIFIED}')
+    return name
+
+
+def set_vote(change_id, label, value, by=None, patch_set=None, message='', repository=None):
+    """Votes on the latest patch set, or on patch set patch_set. It replaces
+    the voter's earlier votes of that label, 0 only removes them. Returns
+    the patch set's number.
+    """
+    label = label_name(label)
+    by = by or DEFAULT_VOTERS[label]
+    low, high = LABEL_RANGES[label]
+    if not low <= value <= high:
+        raise ChangeError(f'{label} goes from {low:+d} to {high:+d}')
+
+    def edit(change):
+        number = patch_set or change.latest_patch_set()
+        if not number:
+            raise ChangeError(f'{change.short_id()} has no patch set yet, upload it first')
+        if number not in change.patch_sets:
+            raise ChangeError(f'{change.short_id()} has no patch set {number}')
+        # A vote on an older patch set, e.g. from a slow check, leaves the
+        # vote on a newer one alone.
+        change.votes = [vote for vote in change.votes
+                        if not (label == vote.label and by == vote.by
+                                and vote.patch_set <= number)]
+        if value:
+            change.votes.append(Vote(label=label, value=value, by=by, patch_set=number,
+                                     message=message))
+        return number
+
+    return update_change(change_id, edit, repository)
+
+
+def require_verified(change_id, required, repository=None):
+    """Sets whether the change needs Verified+1 to be submitted."""
+    def edit(change):
+        change.verified_required = required
+
+    update_change(change_id, edit, repository)
+
+
+def versions_to_compare(change, first=None, second=None):
+    """The two versions a diff compares, as (label, commit) pairs.
+
+    Without patch sets given: the latest patch set against the current
+    commit if it changed since, else the last two patch sets, else the only
+    patch set against its parent ("base").
+    first can be "base" too: the parent of the second version, which shows
+    the whole change as of that version. Either can be "latest".
+    """
+    latest = change.latest_patch_set()
+    first, second = (
+        (str(latest) if latest else CURRENT) if LATEST == version else version
+        for version in (first, second))
+
+    def commit_of(version):
+        if CURRENT == version:
+            return change.commit
+        if int(version) not in change.patch_sets:
+            raise ChangeError(f'{change.short_id()} has no patch set {version}')
+        return change.patch_sets[int(version)]
+
+    if first is None:
+        if 0 == latest:
+            return (BASE, f'{change.commit}^'), (CURRENT, change.commit)
+        if change.is_uploaded():
+            if latest < 2:
+                return (BASE, f'{change.commit}^'), (str(latest), change.commit)
+            first, second = str(latest - 1), str(latest)
+        else:
+            first, second = str(latest), CURRENT
+    elif second is None:
+        second = CURRENT
+    if BASE == second:
+        raise ChangeError('base can only be the first of the two versions')
+    if BASE == first:
+        # The second version's own parent, so a rebase between patch sets
+        # doesn't bring other commits into the diff
+        new = commit_of(second)
+        return (BASE, f'{new}^'), (second, new)
+    return (first, commit_of(first)), (second, commit_of(second))
+
+
+def diff_endpoints(change, first=None, second=None, path=None, repository=None):
+    """What git diff compares for two versions of a change: (old, new,
+    paths).
+
+    path limits the diff to one file. Without it, the diff covers the files
+    the change touches in either version. For /COMMIT_MSG, old and new are
+    trees holding the two commit messages. Base has no commit message.
+    """
+    (first, old), (_second, new) = versions_to_compare(change, first, second)
+    if COMMIT_MSG == path:
+        return (commit_message_tree(None if BASE == first else old, repository),
+                commit_message_tree(new, repository), [COMMIT_MSG_NAME])
+    if path:
+        return old, new, [path]
+    files = set(files_of(new, repository))
+    if BASE != first:
+        files |= set(files_of(old, repository))
+    return old, new, sorted(files)
+
+
+def diff_command(change, first=None, second=None, tool=False, path=None):
+    """The git command showing the diff between two versions of a change."""
+    old, new, files = diff_endpoints(change, first, second, path)
+    command = ['difftool', '-y'] if tool else ['diff']
+    return ['git', *command, old, new, '--', *files]
+
+
+def edits_of(old, new, path, repository=None):
+    """The edits of a file's diff: [(old begin, old end, new begin, new
+    end)], line ranges counted from 1, the end not included. An insertion
+    has an empty old range, a deletion an empty new range.
+    """
+    # Histogram is the algorithm of JGit, so the edits are the ones Gerrit
+    # shows. The options make the user's diff settings not count.
+    output = git('diff', '--no-color', '--no-ext-diff', '--no-textconv', '--no-renames',
+                 '--histogram', '-U0', old, new, '--', path, repository=repository)
+    edits = []
+    for match in re.finditer(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@', output, re.MULTILINE):
+        old_start, old_count, new_start, new_count = (
+            int(value) if value is not None else 1 for value in match.groups())
+        # An empty range is given by the line before it.
+        old_begin = old_start if old_count else old_start + 1
+        new_begin = new_start if new_count else new_start + 1
+        edits.append((old_begin, old_begin + old_count, new_begin, new_begin + new_count))
+    return edits
+
+
+# Kinds of the halves of a side by side row
+CONTEXT = 'context'
+REMOVED = 'removed'
+ADDED = 'added'
+EMPTY = 'empty'
+# Intraline edits are only shown for line pairs at least this similar,
+# else the whole line counts as changed, like in Gerrit
+INTRALINE_MIN_RATIO = 0.5
+
+
+@dataclass
+class Half:
+    """One side of a side by side row: a line of one version of the file,
+    or nothing (EMPTY, number None) where the other side has more lines.
+    edits are the (begin, end) character ranges an intraline diff found.
+    """
+    kind: str
+    number: int | None = None
+    text: str = ''
+    edits: list[tuple[int, int]] = field(default_factory=list)
+
+
+@dataclass
+class Row:
+    """A row of a side by side diff: two halves, or a gap of common lines
+    left out (skipped > 0, the halves give the first line of the gap).
+    """
+    old: Half
+    new: Half
+    skipped: int = 0
+
+
+def file_lines(version, path, repository=None):
+    """The lines of a file in a commit or tree, without line ends. Empty if
+    the file isn't there. None for a binary file. Bytes that aren't UTF-8
+    become replacement characters, so every file can be shown.
+    """
+    command = ['git', *(['-C', str(repository)] if repository else []), 'cat-file', 'blob',
+               f'{version}:{path}']
+    result = subprocess.run(command, capture_output=True)
+    if 0 != result.returncode:
+        # A submodule is a commit, which git diffs as one line like this
+        entry = git('ls-tree', version, '--', path, check=False, repository=repository).split()
+        if entry and '160000' == entry[0]:
+            return [f'Subproject commit {entry[2]}']
+        return []
+    if b'\0' in result.stdout[:8000]:
+        return None
+    text = result.stdout.decode('utf-8', errors='replace')
+    return text.split('\n')[:-1] if text.endswith('\n') else text.split('\n') if text else []
+
+
+def intraline_edits(old, new):
+    """The character ranges that differ between two lines, for each line,
+    or two empty lists when the lines are too different to compare.
+    """
+    matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
+    if matcher.ratio() < INTRALINE_MIN_RATIO:
+        return [], []
+    old_edits, new_edits = [], []
+    for tag, old_begin, old_end, new_begin, new_end in matcher.get_opcodes():
+        if 'equal' == tag:
+            continue
+        if old_end > old_begin:
+            old_edits.append((old_begin, old_end))
+        if new_end > new_begin:
+            new_edits.append((new_begin, new_end))
+    return old_edits, new_edits
+
+
+def side_by_side_rows(old_lines, new_lines, edits, context=None):
+    """Lays out two versions of a file side by side, like Gerrit's diff
+    view. edits are git's, as edits_of() gives them. Each edit's removed
+    and added lines are paired in order, the shorter side filled with empty
+    halves. context is the number of common lines kept around each edit,
+    None for the whole file. Longer runs of common lines become one gap row.
+    """
+    rows = []
+
+    def common(old_begin, new_begin, count, keep_before, keep_after):
+        # Common lines from old_begin and new_begin, counted from 0. Lines
+        # beyond keep_before at the start and keep_after at the end form a gap.
+        if context is None or count <= keep_before + keep_after:
+            keep_before, keep_after = count, 0
+        for offset in range(count):
+            if keep_before <= offset < count - keep_after:
+                if keep_before == offset:
+                    rows.append(Row(Half(CONTEXT, old_begin + offset + 1),
+                                    Half(CONTEXT, new_begin + offset + 1),
+                                    skipped=count - keep_before - keep_after))
+                continue
+            rows.append(Row(Half(CONTEXT, old_begin + offset + 1, old_lines[old_begin + offset]),
+                            Half(CONTEXT, new_begin + offset + 1, new_lines[new_begin + offset])))
+
+    old_at = new_at = 0
+    for old_begin, old_end, new_begin, new_end in edits:
+        keep = 0 if context is None else context
+        common(old_at, new_at, old_begin - 1 - old_at, keep if rows else 0, keep)
+        removed = range(old_begin - 1, old_end - 1)
+        added = range(new_begin - 1, new_end - 1)
+        for pair in range(max(len(removed), len(added))):
+            old = (Half(REMOVED, removed[pair] + 1, old_lines[removed[pair]])
+                   if pair < len(removed) else Half(EMPTY))
+            new = (Half(ADDED, added[pair] + 1, new_lines[added[pair]])
+                   if pair < len(added) else Half(EMPTY))
+            if old.number and new.number:
+                old.edits, new.edits = intraline_edits(old.text, new.text)
+            rows.append(Row(old, new))
+        old_at, new_at = old_end - 1, new_end - 1
+    common(old_at, new_at, len(old_lines) - old_at, 0 if context is None else context, 0)
+    return rows
+
+
+def file_diff_rows(change, first=None, second=None, path=None, context=None, repository=None):
+    """The side by side rows of one file's diff between two versions of a
+    change, None if the file is binary.
+    """
+    old, new, paths = diff_endpoints(change, first, second, path, repository)
+    old_lines, new_lines = (file_lines(version, paths[0], repository) for version in (old, new))
+    if old_lines is None or new_lines is None:
+        return None
+    return side_by_side_rows(old_lines, new_lines, edits_of(old, new, paths[0], repository),
+                             context)
+
+
+def ranges_overlap(first_begin, first_end, second_begin, second_end):
+    """Whether two line ranges overlap. An empty range is a point between
+    lines and overlaps a range it touches.
+    """
+    if first_begin == first_end:
+        return second_begin <= first_begin <= second_end
+    if second_begin == second_end:
+        return first_begin <= second_begin <= first_end
+    return first_begin < second_end and second_begin < first_end
+
+
+def moved_range(begin, end, edits):
+    """Moves a line range of a parent into its child, through the child's
+    own edits. Returns (begin, end, exact). exact is False when the range
+    overlaps one of the edits: then the result covers the range and those
+    edits, since the lines can't be placed more exactly.
+    """
+    overlapping = [edit for edit in edits if ranges_overlap(begin, end, edit[0], edit[1])]
+    low = min([begin] + [edit[0] for edit in overlapping])
+    high = max([end] + [edit[1] for edit in overlapping])
+    shift = sum(edit[3] - edit[2] - (edit[1] - edit[0]) for edit in edits
+                if edit[1] <= low and edit not in overlapping)
+    growth = sum(edit[3] - edit[2] - (edit[1] - edit[0]) for edit in overlapping)
+    return low + shift, high + shift + growth, not overlapping
+
+
+def rebase_lines(change, first=None, second=None, path=None, repository=None):
+    """Lines of a diff between two patch sets that differ because the
+    changes below changed, i.e. the base moved, not only the change itself.
+    Returns ((old lines, new lines) from below, (old lines, new lines)
+    partly from below).
+
+    It works like Gerrit: the edits between the two parents are moved
+    into the patch sets' line numbers, through each patch set's own edits
+    against its parent. An edit of the diff that equals one of them comes
+    from below. One that only overlaps one, e.g. where a change below and
+    the change itself edited the same lines, is partly from below. Unlike
+    Gerrit, which leaves those unmarked, they get marked, so no line from
+    below goes unnoticed.
+
+    Empty for the whole change against base, the commit message, and when
+    the parent stayed the same.
+    """
+    nothing = ((set(), set()), (set(), set()))
+    (first, old), (_second, new) = versions_to_compare(change, first, second)
+    if BASE == first or COMMIT_MSG == path or not path:
+        return nothing
+    if tree_of(f'{old}^', repository) == tree_of(f'{new}^', repository):
+        return nothing
+    old_own = edits_of(f'{old}^', old, path, repository)
+    new_own = edits_of(f'{new}^', new, path, repository)
+    moved = []
+    for old_begin, old_end, new_begin, new_end in edits_of(f'{old}^', f'{new}^', path, repository):
+        begin, end, old_exact = moved_range(old_begin, old_end, old_own)
+        other_begin, other_end, new_exact = moved_range(new_begin, new_end, new_own)
+        moved.append((begin, end, other_begin, other_end, old_exact and new_exact))
+
+    from_below, partly = (set(), set()), (set(), set())
+    for edit in edits_of(old, new, path, repository):
+        if any(edit == other[:4] and other[4] for other in moved):
+            lines = from_below
+        elif any(ranges_overlap(edit[0], edit[1], other[0], other[1])
+                 or ranges_overlap(edit[2], edit[3], other[2], other[3]) for other in moved):
+            lines = partly
+        else:
+            continue
+        lines[0].update(range(edit[0], edit[1]))
+        lines[1].update(range(edit[2], edit[3]))
+    return from_below, partly
+
+
+def range_diff_command(change, first=None, second=None):
+    """The git command showing the range-diff between two versions."""
+    if BASE in (first, second):
+        raise ChangeError('a range-diff needs two patch sets, not base')
+    (_first, old), (_second, new) = versions_to_compare(change, first, second)
+    # Both sides hold one commit each, which are versions of the same change.
+    # The creation factor makes range-diff pair them even after big edits.
+    return ['git', 'range-diff', '--creation-factor=100', f'{old}^!', f'{new}^!']
+
+
+# ── the author's side: inbox and watch ────────────────────────────────────
+
+def repository_name(repository):
+    """Name of a repository for short messages: its directory's name."""
+    return Path(git('rev-parse', '--show-toplevel', repository=repository)).name
+
+
+def inbox_lines(repositories):
+    """What the author has to answer, as short lines.
+
+    Only rebase requests, negative votes and unanswered unresolved threads,
+    each thread with the quoted source line, so the author needs nothing
+    else to start.
+    """
+    lines = []
+    for repository in repositories:
+        name = repository_name(repository)
+        for change in changes_in_stack(repository):
+            if change.rebase_requested:
+                lines.append(f'rebase {name} {change.topic}: conflicts with '
+                             f'{base_branch(repository)}, rebase locally and upload')
+            for label in LABEL_RANGES:
+                for vote in change.current_votes(label):
+                    if vote.value < 0:
+                        lines.append(f'vote {name} {change.short_id()} {label}{vote.value:+d} '
+                                     f'PS{vote.patch_set} by {vote.by}')
+                        lines += [f'    {line}' for line in vote.message.split('\n')[-10:]
+                                  if vote.message]
+            for comment in change.comments:
+                if not comment.is_unanswered() or not comment.is_unresolved():
+                    continue
+                commit = change.patch_sets.get(comment.patch_set, change.commit)
+                quoted = line_at(commit, comment.place, repository, comment.side)
+                lines.append(f'{name} {change.short_id()} #{comment.number} {comment.place_label()}'
+                             + (f'  | {quoted}' if quoted else ''))
+                sent = [message for message in comment.messages if message.sent]
+                lines.append(f'    {message_text(sent[-1])}')
+    return lines
+
+
+def events_of(repository):
+    """Everything sent, voted or rebased in a repository, as event keys."""
+    events = set()
+    changes = changes_in_stack(repository)
+    for change in changes:
+        for comment in change.comments:
+            for index, message in enumerate(comment.messages):
+                if message.sent and REVIEWER == message.author:
+                    events.add(('message', change.change_id, comment.number, index))
+        for vote in change.votes:
+            # Votes a new patch set kept were reported when they were given.
+            if AUTHOR != vote.by and not vote.copied_from:
+                events.add(('vote', change.change_id, vote.label, vote.value, vote.patch_set,
+                            vote.by))
+    # Rebases are told per stack, by its top change
+    tops = {change.topic: change for change in changes}
+    for topic, top in tops.items():
+        if top.rebase_requested:
+            events.add(('rebase', topic, top.change_id))
+        if top.rebased_patch_set:
+            events.add(('rebased', topic, top.change_id, top.rebased_patch_set))
+    return events
+
+
+def stacks_of(repository):
+    """The changes of each stack: topic -> {Change-Id: commit}."""
+    stacks = {}
+    for change in changes_in_stack(repository):
+        stacks.setdefault(change.topic, {})[change.change_id] = change.commit
+    return stacks
+
+
+def watch(repositories, output=sys.stdout):
+    """Prints one line per change with new sent messages, one per vote, and
+    one per stack that was submitted, rebased or needs a rebase.
+
+    Runs until stopped. It only looks closer when a ref of the review
+    changed, and it prints nothing else, so watching costs nothing while
+    nothing happens.
+    """
+    versions = {repository: stack_version(repository) for repository in repositories}
+    known = {repository: events_of(repository) for repository in repositories}
+    stacks = {repository: stacks_of(repository) for repository in repositories}
+    while True:
+        time.sleep(WATCH_INTERVAL_SECONDS)
+        for repository in repositories:
+            version = stack_version(repository)
+            if version == versions[repository]:
+                continue
+            versions[repository] = version
+            events = events_of(repository)
+            new = events - known[repository]
+            known[repository] = events
+            name = repository_name(repository)
+
+            def say(line):
+                print(line, file=output, flush=True)
+
+            # Changes that left a stack and are on the base branch now
+            now = stacks_of(repository)
+            base = base_branch(repository)
+            for topic, before in stacks[repository].items():
+                gone = [commit for change_id, commit in before.items()
+                        if change_id not in now.get(topic, {})
+                        and is_ancestor(commit, base, repository)]
+                if gone:
+                    say(f'submitted {name} {topic}: {len(gone)} change'
+                        + ('s' if len(gone) > 1 else ''))
+            stacks[repository] = now
+
+            new_messages = {}
+            for event in sorted(new, key=str):
+                if 'message' == event[0]:
+                    new_messages[event[1]] = new_messages.get(event[1], 0) + 1
+                elif 'vote' == event[0]:
+                    _, change_id, label, value, patch_set, by = event
+                    say(f'vote {name} {change_id[:8]} {label}{value:+d} PS{patch_set} by {by}')
+                else:
+                    say(f'{event[0]} {name} {event[1]}')
+            for change_id, count in new_messages.items():
+                say(f'review {name} {change_id[:8]}: {count} new')
+
+
+# ── command line ──────────────────────────────────────────────────────────
+
+def message_text(message):
+    """A message's text for display. An empty one only changed the status."""
+    if message.text:
+        return message.text
+    return f'({"unresolved" if message.unresolved else "resolved"})'
+
+
+def comment_counts(change):
+    """Thread counts per status for display, like "2 unresolved, 1
+    resolved".
+    """
+    sent = [comment for comment in change.comments if not comment.is_draft()]
+    counts = [f'{sum(status == comment.status for comment in sent)} {status}'
+              for status in STATUSES if any(status == comment.status for comment in sent)]
+    drafts = sum(comment.has_draft() for comment in change.comments)
+    if drafts:
+        counts.append(f'{drafts} draft' + ('s' if drafts > 1 else ''))
+    return ', '.join(counts) or '-'
+
+
+def vote_label(change, label):
+    """A label's summary for display: +2, -1, or empty without votes. A
+    required Verified without votes shows as "?".
+    """
+    value = change.label_value(label)
+    if value:
+        return f'{value:+d}'
+    return '?' if VERIFIED == label and change.verified_required else ''
+
+
+def version_label(change):
+    """Patch set label for display: PS2, PS2+ if changed since, - if none."""
+    if not change.latest_patch_set():
+        return '-'
+    return f'PS{change.latest_patch_set()}' + ('' if change.is_uploaded() else '+')
+
+
+def print_overview(_arguments):
+    """Prints the changes of every stack."""
+    changes = changes_in_stack()
+    if not changes:
+        print('Nothing in review. plustwo upload uploads the stack of a branch.')
+        return
+    topic = None
+    for index, change in enumerate(changes, start=1):
+        if change.topic != topic:
+            topic = change.topic
+            print(topic + ('  (rebase requested)' if any(
+                other.rebase_requested for other in changes if other.topic == topic) else ''))
+        print(f'{index:>4}  {change.short_id()}  {change.state():<10} {version_label(change):<5} '
+              f'{change.subject:<48.48}  {vote_label(change, CODE_REVIEW):>2} '
+              f'{vote_label(change, VERIFIED):>2}  {comment_counts(change)}')
+
+
+def print_comments(arguments):
+    """Prints the threads of a change."""
+    change = find_change(arguments.change)
+    print(f'{change.short_id()} ({change.state()}): {change.subject}')
+    if change.verified_required:
+        print('Needs Verified+1.')
+    for vote in change.votes:
+        stale = '' if vote.patch_set == change.latest_patch_set() else ' (older patch set)'
+        copied = f', copied from PS{vote.copied_from}' if vote.copied_from else ''
+        print(f'{vote.label}{vote.value:+d} by {vote.by} on PS{vote.patch_set}{copied}{stale}')
+        for line in filter(None, vote.message.split('\n')):
+            print(f'  {line}')
+    if not change.comments:
+        print('No comments.')
+    for comment in change.comments:
+        print(f'\n#{comment.number} [{comment.status}] {comment.place_label()} '
+              f'(PS{comment.patch_set})')
+        for message in comment.messages:
+            draft = ' (draft)' if not message.sent else ''
+            print(f'  {message.author}{draft}: {message_text(message)}')
+
+
+def guide_text():
+    """The guide for agents working as the author, AGENTS.md next to the
+    script (links resolved, like the interface's module).
+    """
+    path = Path(__file__).resolve().parent / 'AGENTS.md'
+    try:
+        return path.read_text()
+    except OSError as error:
+        raise ChangeError(f'cannot read the guide: {error}') from error
+
+
+def run_tui(_arguments):
+    """Starts the terminal user interface."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import plustwo_tui  # pylint: disable=import-outside-toplevel
+    plustwo_tui.run(sys.modules[__name__])
+
+
+def parse_arguments(argv):
+    """Parses the command line."""
+    parser = argparse.ArgumentParser(prog='plustwo', description=__doc__.split('\n')[0])
+    parser.set_defaults(run=run_tui)
+    commands = parser.add_subparsers()
+
+    def command(name, run, help_text, *arguments):
+        """Adds a sub-command. Arguments are names or (name, options)."""
+        sub = commands.add_parser(name, help=help_text)
+        for argument in arguments:
+            if isinstance(argument, tuple):
+                sub.add_argument(argument[0], **argument[1])
+            else:
+                sub.add_argument(argument)
+        sub.set_defaults(run=run)
+        return sub
+
+    def init_command(_arguments):
+        init_repository()
+        print('commit-msg hook installed, notes follow amends and rebases')
+
+    def upload_command(arguments):
+        branch = branch_with_change(arguments.change) if arguments.change else None
+        uploaded = upload(branch, arguments.topic)
+        for other, number, kind in uploaded:
+            kept = [f'{vote.label}{vote.value:+d}' for vote in other.current_votes(CODE_REVIEW)
+                    + other.current_votes(VERIFIED)]
+            print(f'{other.short_id()}: patch set {number}' + (f', {kind}' if kind else '')
+                  + (f', keeps {" ".join(kept)}' if kept else ''))
+
+    def rebase_command(arguments):
+        topic = arguments.topic
+        if topic is None:
+            topic = find_change(arguments.change).topic if arguments.change else None
+        if topic is None:
+            raise ChangeError('name the stack: --topic TOPIC or a CHANGE of it')
+        rebased = rebase_stack(topic)
+        print(f'{topic}: rebased, {len(rebased)} new patch set(s)' if rebased is not None
+              else f'{topic}: conflicts, the author is asked to rebase')
+
+    def pull_command(_arguments):
+        print(pull())
+
+    def submit_command(arguments):
+        submitted = submit(find_change(arguments.change).change_id)
+        print('Submitted: ' + ', '.join(change.short_id() for change in submitted))
+
+    def comment_command(arguments):
+        change = find_change(arguments.change)
+        number = add_comment(change.change_id, arguments.place, arguments.text,
+                             author=AUTHOR if arguments.author else REVIEWER,
+                             status=arguments.status)
+        print(f'{change.short_id()}: comment #{number} added')
+
+    def reply_command(arguments):
+        status = RESOLVED if arguments.resolve else UNRESOLVED if arguments.unresolve else None
+        add_message(find_change(arguments.change).change_id, arguments.number, AUTHOR,
+                    arguments.text, status=status)
+
+    def done_command(arguments):
+        add_message(find_change(arguments.change).change_id, arguments.number, AUTHOR,
+                    arguments.text or DONE, status=RESOLVED)
+
+    def status_command(arguments):
+        set_status(find_change(arguments.change).change_id, arguments.number, arguments.status,
+                   arguments.text)
+
+    def vote_command(arguments):
+        change = find_change(arguments.change)
+        number = set_vote(change.change_id, arguments.label, arguments.value, arguments.by,
+                          arguments.patch_set, arguments.message or '')
+        print(f'{change.short_id()}: {label_name(arguments.label)}{arguments.value:+d} on PS{number}')
+
+    def require_verified_command(arguments):
+        require_verified(find_change(arguments.change).change_id, 'off' != arguments.state)
+
+    def diff_run(arguments):
+        change = find_change(arguments.change)
+        subprocess.run(diff_command(change, arguments.first, arguments.second, arguments.tool))
+
+    def range_diff_run(arguments):
+        change = find_change(arguments.change)
+        subprocess.run(range_diff_command(change, arguments.first, arguments.second))
+
+    def inbox_command(arguments):
+        print('\n'.join(inbox_lines(arguments.repositories or ['.'])) or 'Nothing to answer.')
+
+    def watch_command(arguments):
+        with contextlib.suppress(KeyboardInterrupt):
+            watch(arguments.repositories or ['.'])
+
+    def guide_command(_arguments):
+        print(guide_text(), end='')
+
+    def hook_command(arguments):
+        add_change_id(arguments.message_file)
+
+    optional = {'nargs': '?'}
+    number = ('number', {'type': int})
+    repositories = ('repositories', {'nargs': '*'})
+    command('init', init_command, 'set up this repository')
+    command('list', print_overview, 'overview of the stack')
+    command('show', print_comments, 'threads of a change', 'change')
+    command('upload', upload_command, 'upload the stack of a branch',
+            ('change', optional)).add_argument('--topic')
+    command('pull', pull_command, "bring the reviewer's rebase or submit into the branch")
+    command('rebase', rebase_command, 'rebase a stack onto the base branch',
+            ('change', optional)).add_argument('--topic')
+    command('submit', submit_command, 'end the review', 'change')
+    command('diff', diff_run, 'diff between patch sets', 'change', ('first', optional),
+            ('second', optional)).add_argument('--tool', action='store_true')
+    command('rdiff', range_diff_run, 'range-diff between patch sets', 'change',
+            ('first', optional), ('second', optional))
+    comment = command('comment', comment_command, 'add a comment', 'change', 'place', 'text')
+    comment.add_argument('--author', action='store_true', help="the author's comment")
+    status_choices = {'choices': STATUSES + tuple(OLD_STATUSES)}
+    comment.add_argument('--status', default=UNRESOLVED, **status_choices)
+    comment.add_argument('--resolved', action='store_const', const=RESOLVED, dest='status',
+                         help='start the thread resolved, e.g. a note')
+    reply = command('reply', reply_command, 'answer a thread', 'change', number, 'text')
+    reply.add_argument('--resolve', action='store_true', help='and resolve the thread')
+    reply.add_argument('--unresolve', action='store_true', help='and make it unresolved again')
+    command('done', done_command, 'answer "Done" and resolve the thread', 'change', number,
+            ('text', optional))
+    command('status', status_command, 'resolve a thread or make it unresolved again', 'change',
+            number, ('status', status_choices), ('text', optional))
+    vote = command('vote', vote_command, 'vote on a patch set', 'change', 'label',
+                   ('value', {'type': int}))
+    vote.add_argument('--by')
+    vote.add_argument('--patch-set', type=int)
+    vote.add_argument('-m', '--message')
+    command('require-verified', require_verified_command, 'whether Verified+1 is needed',
+            'change', ('state', {'nargs': '?', 'choices': ('on', 'off'), 'default': 'on'}))
+    command('inbox', inbox_command, 'what to answer', repositories)
+    command('watch', watch_command, 'print new messages and votes', repositories)
+    command('guide', guide_command, 'the guide for agents as authors')
+    hook = commands.add_parser('commit-msg-hook', help=argparse.SUPPRESS)
+    hook.add_argument('message_file')
+    hook.set_defaults(run=hook_command)
+
+    return parser.parse_args(argv)
+
+
+def main(argv):
+    """Runs one command. Returns the exit code."""
+    arguments = parse_arguments(argv)
+    try:
+        arguments.run(arguments)
+    except ChangeError as error:
+        print(f'plustwo: {error}', file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

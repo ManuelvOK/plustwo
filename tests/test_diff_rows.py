@@ -1,4 +1,4 @@
-"""Checks of the side by side diff rows that git change renders itself.
+"""Checks of the side by side diff rows that plustwo renders itself.
 
 The diff itself comes from git. These tests make sure the layout loses or
 misplaces nothing:
@@ -23,8 +23,8 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-_loader = importlib.machinery.SourceFileLoader('git_change', str(ROOT / 'git-change'))
-_spec = importlib.util.spec_from_loader('git_change', _loader)
+_loader = importlib.machinery.SourceFileLoader('plustwo', str(ROOT / 'plustwo'))
+_spec = importlib.util.spec_from_loader('plustwo', _loader)
 core = importlib.util.module_from_spec(_spec)
 _loader.exec_module(core)
 

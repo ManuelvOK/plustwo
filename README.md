@@ -3,7 +3,8 @@
 Gerrit-like code review of local commits, without a server. The name is
 Gerrit's top Code-Review vote, +2, the one that lets a change be submitted.
 
-The command is `git change`. It keeps everything in the repository itself:
+The command is `plustwo`, also available as `git change`. It keeps
+everything in the repository itself:
 
 - **Changes** are commits, identified by a Gerrit `Change-Id:` trailer. A
   commit reviewed here can later be uploaded to a real Gerrit as the same
@@ -19,15 +20,15 @@ The command is `git change`. It keeps everything in the repository itself:
   the latest patch set.
 
 Two roles take part. The reviewer usually works in the terminal user
-interface (`git change` without arguments), with vim-style keys, side by side
+interface (`plustwo` without arguments), with vim-style keys, side by side
 diffs and inline threads. The author answers and applies on the command line
-(`git change inbox`, `reply`, `upload`, and `pull` for what the reviewer
+(`plustwo inbox`, `reply`, `upload`, and `pull` for what the reviewer
 changed). Submitting fast-forwards the base branch, so it only ever gets
 reviewed commits.
 
 Threads work like in Gerrit: unresolved or resolved, and the author answers
 "Done" after fixing. AI agents working as the author find their guide in
-[AGENTS.md](AGENTS.md), also printed by `git change guide`, so a project's
+[AGENTS.md](AGENTS.md), also printed by `plustwo guide`, so a project's
 agent instructions only need to point to that command.
 
 ## Requirements
@@ -54,10 +55,10 @@ For development, `make link PREFIX=~/.local` links the checkout instead.
 ## Getting started
 
     cd some/repository
-    git change init                   # commit-msg hook and notes setup
+    plustwo init                      # commit-msg hook and notes setup
     git switch -c my-topic
     git commit ...                    # gets a Change-Id
-    git change upload                 # first patch sets, now In-Review
-    git change                        # review it
+    plustwo upload                    # first patch sets, now In-Review
+    plustwo                           # review it
 
-`git change --help` lists all commands.
+`plustwo --help` lists all commands.

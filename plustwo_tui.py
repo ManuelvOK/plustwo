@@ -1,6 +1,6 @@
-"""Terminal user interface of git change, for the reviewer.
+"""Terminal user interface of plustwo, for the reviewer.
 
-Started by `git change` without arguments. Two screens: the stacks in
+Started by `plustwo` without arguments. Two screens: the stacks in
 review (one per topic), and one change with its files, its comment
 threads and the diff, which shows the threads under their lines.
 Keys are shown at the bottom of every screen, `?` lists them all.
@@ -62,7 +62,7 @@ STACK_KEYS = ('j/k move  l open  d diff  v vote  V needs Verified  B rebase  S s
               '? help  '
               'q quit')
 
-HELP_TEXT = """git change: keys
+HELP_TEXT = """plustwo: keys
 
 Everywhere
   j / k       move down / up. A count before moves that far: 15j
@@ -80,7 +80,7 @@ Stacks
   d           diff of the change
   v           vote Code-Review (-2..+2) on the latest patch set
   V           whether the change needs Verified+1 (from a check calling
-              git change vote CHANGE Verified +1)
+              plustwo vote CHANGE Verified +1)
   S           submit: moves the base branch to the change, which submits
               the changes below it too. Needs Code-Review+2 (and Verified+1
               if required) on each. Asks first and lists them and their
@@ -133,7 +133,7 @@ Press any key."""
 
 
 def run(core):
-    """Starts the interface. core is the git-change module."""
+    """Starts the interface. core is the plustwo module."""
     curses.wrapper(lambda screen: Interface(screen, core).loop())
 
 
@@ -166,7 +166,7 @@ class Interface:
 
     @property
     def core(self):
-        """The git-change module with the review logic."""
+        """The plustwo module with the review logic."""
         return self._core
 
     def say(self, message):
@@ -242,7 +242,7 @@ class Interface:
         """Handles keys that work everywhere. Returns whether it did."""
         if ord('q') == key:
             # q is easy to hit by mistake, e.g. instead of a tab
-            if ord('y') == self.ask_key('Quit git change? (y/N)'):
+            if ord('y') == self.ask_key('Quit plustwo? (y/N)'):
                 self._views.clear()
             return True
         if ord('?') == key:
@@ -749,7 +749,7 @@ class StackView:
                     attributes | vote_attribute(change.label_value(label)))
             out(row, 84, f'  {core.comment_counts(change)}', attributes)
         if not self._changes:
-            out(self.TOP, 1, 'Nothing in review. git change upload uploads the stack of a '
+            out(self.TOP, 1, 'Nothing in review. plustwo upload uploads the stack of a '
                 'branch.')
 
     def mouse(self, row, _column, kind):
@@ -849,7 +849,7 @@ def submit_with_confirmation(interface, change):
     if problems:
         interface.show_lines(['Cannot submit yet:', ''] + [f'  {problem}' for problem in problems]
                              + ['', 'v gives Code-Review. Verified comes from a check calling',
-                                '  git change vote CHANGE Verified +1'])
+                                '  plustwo vote CHANGE Verified +1'])
         return
     lines = [f'Submit to {core.base_branch()}:']
     lines += [f'  {other.short_id()}  {other.subject}' for other in submitted]
