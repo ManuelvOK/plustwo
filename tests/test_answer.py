@@ -42,6 +42,32 @@ class AnswerFormatTest(unittest.TestCase):
             with self.subTest(text), self.assertRaises(core.ChangeError):
                 core.parse_answers(text)
 
+    def test_several_lines(self):
+        # A line that doesn't start an answer goes on with the one before.
+        answers = core.parse_answers('I3f2a #1: Changed three things:\n'
+                                     '- the loop\n'
+                                     '- the name\n'
+                                     '\n'
+                                     '1. first step\n'
+                                     '2. second step\n'
+                                     'I3f2a #2 done\n'
+                                     '\n')
+        self.assertEqual(answers, [
+            ('I3f2a', 1, None, 'Changed three things:\n- the loop\n- the name\n\n'
+             '1. first step\n2. second step'),
+            ('I3f2a', 2, core.RESOLVED, core.DONE)])
+        # An answer can start on the line after its head
+        self.assertEqual(core.parse_answers('I3f2a #3 resolve:\n  Yes, see below.'),
+                         [('I3f2a', 3, core.RESOLVED, 'Yes, see below.')])
+
+    def test_all_errors_at_once(self):
+        with self.assertRaises(core.ChangeError) as caught:
+            core.parse_answers('stray text\nmore stray\nI3f2a #1:\nI3f2a #2: fine\nI3f2a #3')
+        message = str(caught.exception)
+        for part in ('line 1 is no answer', 'line 2 is no answer', 'line 3 has no text',
+                     'line 5 has no text'):
+            self.assertIn(part, message)
+
 
 if __name__ == '__main__':
     unittest.main()

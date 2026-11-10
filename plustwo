@@ -72,9 +72,11 @@ Usage:
                                         leave it out.
     plustwo reply CHANGE NUMBER TEXT [--resolve | --unresolve]
                                         adds an author message to a thread
-    plustwo answer < ANSWERS            answers several threads, one line each:
-                                        "I3f2a #1 done", "I3f2a #2: text",
-                                        "I3f2a #3 resolve: text"
+    plustwo answer < ANSWERS            answers several threads, each answer
+                                        starting like "I3f2a #1 done",
+                                        "I3f2a #2: text" or "I3f2a #3
+                                        resolve: text". Lines up to the
+                                        next such line go on with its text.
     plustwo done CHANGE NUMBER [TEXT]
                                         answers "Done" (or TEXT) and resolves
                                         the thread
@@ -1919,26 +1921,40 @@ ANSWER_PATTERN = re.compile(
 
 
 def parse_answers(text):
-    """The author's answers, one per line: "I3f2a #2 done", "I3f2a #3:
-    text", "I3f2a #4 resolve: text" or "unresolve: text". A repository
-    name before the Change-Id and a patch set note after the number, as
-    inbox prints them, are allowed. Returns
-    [(Change-Id prefix, number, status or None, text)].
+    """The author's answers, each starting on a line like "I3f2a #2 done",
+    "I3f2a #3: text", "I3f2a #4 resolve: text" or "unresolve: text". A
+    repository name before the Change-Id and a patch set note after the
+    number, as inbox prints them, are allowed. The lines up to the next
+    such line continue the answer's text, so it can have lists and
+    paragraphs. Returns [(Change-Id prefix, number, status or None, text)].
+    Raises one error naming every bad line.
     """
-    answers = []
+    return [answer[1:] for answer in _parsed_answers(text)]
+
+
+def _parsed_answers(text):
+    """parse_answers() with the line number of each answer first."""
+    answers, errors = [], []
     for number, line in enumerate(text.split('\n'), start=1):
-        if not line.strip() or line.lstrip().startswith('#'):
-            continue
         match = ANSWER_PATTERN.match(line)
-        if match is None:
-            raise ChangeError(f'line {number} is no answer: {line.strip()}')
-        prefix, thread, verb, message = match.groups()
+        if match is not None:
+            prefix, thread, verb, message = match.groups()
+            answers.append([number, prefix, int(thread), verb, [message.strip()]])
+        elif answers:
+            # The answer goes on, as written
+            answers[-1][4].append(line.rstrip())
+        elif line.strip() and not line.lstrip().startswith('#'):
+            errors.append(f'line {number} is no answer: {line.strip()}')
+    result = []
+    for number, prefix, thread, verb, lines in answers:
         status = {'resolve': RESOLVED, 'done': RESOLVED, 'unresolve': UNRESOLVED}.get(verb)
-        message = message.strip() or (DONE if 'done' == verb else '')
+        message = '\n'.join(lines).strip() or (DONE if 'done' == verb else '')
         if not message and status is None:
-            raise ChangeError(f'line {number} has no text')
-        answers.append((prefix, int(thread), status, message))
-    return answers
+            errors.append(f'line {number} has no text')
+        result.append((number, prefix, thread, status, message))
+    if errors:
+        raise ChangeError('; '.join(errors))
+    return result
 
 
 def answer(text, repository=None):
@@ -1946,13 +1962,20 @@ def answer(text, repository=None):
     one lock and one note write per change. Checks the format and the
     changes of all lines before writing. Returns the number of answers.
     """
-    answers = parse_answers(text)
-    by_change = {}
-    for prefix, number, status, message in answers:
-        change = find_change(prefix, repository)
-        # An unknown thread stops the whole batch before anything is written
-        comment_of(change, number)
+    answers = _parsed_answers(text)
+    by_change, errors = {}, []
+    for line, prefix, number, status, message in answers:
+        # An unknown change or thread stops the whole batch before anything
+        # is written. All of them are named, so one retry is enough.
+        try:
+            change = find_change(prefix, repository)
+            comment_of(change, number)
+        except ChangeError as error:
+            errors.append(f'line {line}: {error}')
+            continue
         by_change.setdefault(change.change_id, []).append((number, status, message))
+    if errors:
+        raise ChangeError('; '.join(errors))
     for change_id, entries in by_change.items():
         def edit(change, entries=entries):
             for number, status, message in entries:

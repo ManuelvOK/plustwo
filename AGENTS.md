@@ -89,12 +89,25 @@ How to answer is your judgment, not a fixed rule. The usual cases:
 | You disagree and it matters  | no          | `I3f2a #3: your reasons`        |
 | A question                   | rarely      | `I3f2a #4: the answer`          |
 
-Answer a whole batch in one call, one line per thread, in inbox's format:
+Answer a whole batch in one call, one answer per thread, in inbox's format:
 
     plustwo answer <<'EOF'
     I3f2a #1 done
     I3f2a #2: Kept the loop, the generator is slower here.
     I3f2a #4 resolve: Yes, it is only called from main.
+    EOF
+
+An answer can go over several lines: every line up to the next one that
+starts like an answer (Change-Id and `#n`) belongs to it, lists and
+blank lines included. Don't start a continuation line with a Change-Id
+and `#n` of its own. If a line is wrong, nothing is posted and the error
+names every bad line, so fix them all and send the batch again:
+
+    plustwo answer <<'EOF'
+    I3f2a #5: Changed it in three places:
+    - the parser
+    - the tests
+    I3f2a #6 done
     EOF
 
 `done: text` resolves with your own text, `resolve: text` too,
