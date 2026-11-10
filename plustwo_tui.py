@@ -2342,7 +2342,9 @@ class ChangeView:
         self._focus = FILES
         # The pane h returns to from the diff
         self._left_pane = FILES
-        self._file_index = 0
+        # None until the change is read: then the first file after the
+        # commit message, see reload()
+        self._file_index = None
         self._comment_index = 0
         self._diff = DiffPane(interface.colour_pairs)
         self._layout = None
@@ -2409,6 +2411,9 @@ class ChangeView:
                 self._counts = core.files_of(change.commit)
                 self._files = [core.COMMIT_MSG] + sorted(
                     set(core.files_of(change.commit)) - set(self._renames.values()))
+                if self._file_index is None:
+                    # The commit message stays first, the first real file is shown.
+                    self._file_index = 1 if len(self._files) > 1 else 0
                 self._file_index = min(self._file_index, max(len(self._files) - 1, 0))
                 self._comment_index = min(self._comment_index, max(len(change.comments) - 1, 0))
                 self._stack = [other for other in core.changes_in_stack()
@@ -2548,7 +2553,8 @@ class ChangeView:
     def _switch_to(self, change_id):
         """Shows another change of the stack."""
         self._change_id = change_id
-        self._file_index = self._comment_index = 0
+        self._file_index = None
+        self._comment_index = 0
         self._expanded = {}
         # From the stack pane, the focus stays there to go on.
         if STACK != self._focus:

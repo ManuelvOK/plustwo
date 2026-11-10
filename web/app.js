@@ -184,6 +184,8 @@ async function renderChange(id, file) {
   const change = await api('change', {id, b: state.b});
   if (!state.change || state.change.id !== change.id) {
     state.a = 'base'; state.b = 'latest'; state.cursor = 0; state.editor = null;
+    // Another change starts on its first file after the commit message
+    if (state.change) state.file = null;
   }
   state.change = change;
   state.file = file && change.files.some((entry) => entry.path === file) ? file
