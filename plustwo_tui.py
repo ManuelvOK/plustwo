@@ -1561,6 +1561,9 @@ def half_cells(core, half, colours, marks):
             backgrounds = REMOVED_BACKGROUNDS if core.REMOVED == half.kind else ADDED_BACKGROUNDS
     else:
         backgrounds = (-1, -1)
+    if half.whole:
+        # New text all over gets the strong shade, see core.Half.
+        backgrounds = (backgrounds[1],) * 2
     changed = set()
     for begin, end in half.edits:
         changed.update(range(begin, end))

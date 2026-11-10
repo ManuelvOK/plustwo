@@ -2265,6 +2265,10 @@ class Half:
     # A removed line that comes back elsewhere, or an added one that was
     # elsewhere, see moved_lines()
     moved: bool = False
+    # A removed or added line that is new text all over: without a
+    # partner, or too different from it for intraline edits. The
+    # interfaces give it the strong shade, a paired line only on its edits.
+    whole: bool = False
 
 
 @dataclass
@@ -2467,6 +2471,15 @@ def whitespace_spans(text, whitespace):
 def intraline_edits(old, new, whitespace='none'):
     """The character ranges that differ between two lines, for each line,
     or two empty lists when the lines are too different to compare.
+    See intraline_pair().
+    """
+    pair = intraline_pair(old, new, whitespace)
+    return pair if pair is not None else ([], [])
+
+
+def intraline_pair(old, new, whitespace='none'):
+    """The character ranges that differ between two lines, for each line,
+    or None when the lines are too different to compare.
     whitespace is one of WHITESPACE_MODES: whitespace that mode ignores
     isn't marked either. Gerrit's intraline diff doesn't look at the mode,
     here it follows it, so ignoring whitespace hides it everywhere.
@@ -2481,7 +2494,7 @@ def intraline_edits(old, new, whitespace='none'):
         whitespace_spans(old, whitespace), whitespace_spans(new, whitespace))
     matcher = difflib.SequenceMatcher(None, old_compared, new_compared, autojunk=False)
     if matcher.ratio() < INTRALINE_MIN_RATIO:
-        return [], []
+        return None
 
     def in_line(begin, end, spans):
         # A range of compared characters as one of the line
@@ -2642,8 +2655,12 @@ def side_by_side_rows(old_lines, new_lines, edits, context=None, whitespace='non
             new = (Half(ADDED, added[new_index] + 1, new_lines[added[new_index]])
                    if new_index is not None else Half(EMPTY))
             old.moved, new.moved = old.number in old_moved, new.number in new_moved
-            if old.number and new.number:
-                old.edits, new.edits = intraline_edits(old.text, new.text, whitespace)
+            pair = (intraline_pair(old.text, new.text, whitespace)
+                    if old.number and new.number else None)
+            if pair is not None:
+                old.edits, new.edits = pair
+            old.whole, new.whole = old.number is not None and pair is None, \
+                new.number is not None and pair is None
             rows.append(Row(old, new))
         old_at, new_at = old_end - 1, new_end - 1
     common(old_at, new_at, len(old_lines) - old_at, 0 if context is None else context, 0)

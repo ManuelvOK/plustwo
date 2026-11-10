@@ -229,6 +229,14 @@ class FixtureTest(Checks, unittest.TestCase):
         self.assertEqual(core.intraline_edits('f(a,b) + 1', 'f(a, b) + 2', 'all'),
                          ([(9, 10)], [(10, 11)]))
 
+    def test_whole_lines(self):
+        # Lines without a partner, or too different from it, are new text all over.
+        rows = core.side_by_side_rows(['x = 1', 'zzzz'], ['x = 2', 'completely other', 'new'],
+                                      [(1, 3, 1, 4)])
+        whole = [(half.number, half.whole) for row in rows for half in (row.old, row.new)
+                 if half.number]
+        self.assertEqual(whole, [(1, False), (1, False), (2, True), (2, True), (3, True)])
+
     def test_intraline(self):
         self.assertEqual(core.intraline_edits('return 1', 'return 2'), ([(7, 8)], [(7, 8)]))
         self.assertEqual(core.intraline_edits('abc', 'xyz'), ([], []))

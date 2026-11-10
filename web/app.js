@@ -338,6 +338,8 @@ function diffView(change) {
         else if (half.moved) kind = 'moved';
       }
       const isCursorSide = index === state.cursor && side === state.side;
+      // New text all over gets the strong shade, see Half in the core.
+      if (half.whole && kind !== 'context' && kind !== 'empty') kind += ' whole';
       tr.append(el('td', {class: `num ${kind}`, title: 'comment',
                           onclick: () => half.number && openEditor(side, half.number, index)},
                    half.number || ''),
@@ -678,7 +680,8 @@ function showHelp() {
   document.getElementById('help-keys').replaceChildren(
     el('p', {class: 'dim'}, `Preset ${state.keys.preset}. Click a line number to comment.`),
     el('p', {class: 'dim'}, 'Colours: red removed, green added, blue from changes below, '
-       + 'purple partly from below, teal moved (like git diff --color-moved).'),
+       + 'purple partly from below, teal moved (like git diff --color-moved). The strong '
+       + 'shade is new text: a whole line without a partner, or the changed part of a line.'),
     el('table', {}, el('tbody', {}, rows)));
   document.getElementById('help-dialog').showModal();
 }
