@@ -195,7 +195,17 @@ class FixtureTest(Checks, unittest.TestCase):
         rows = core.side_by_side_rows(['1', '2', '3', '4'], ['1', 'x', '4', '5', '6'],
                                       [(2, 4, 2, 3), (5, 5, 4, 6)])
         self.assertEqual([(row.old.number, row.new.number) for row in rows],
-                         [(1, 1), (2, 2), (3, None), (4, 3), (None, 4), (None, 5)])
+                         [(1, 1), (2, None), (3, None), (None, 2), (4, 3), (None, 4),
+                          (None, 5)])
+
+    def test_pairs_by_similarity(self):
+        # A rewritten block: the similar lines pair, the others stand alone
+        pairs = core.paired_lines(['first = 1', 'second = 2', 'third = 3'],
+                                  ['completely new', 'second = 22', 'third = 33'])
+        self.assertEqual(pairs, [(0, None), (None, 0), (1, 1), (2, 2)])
+        self.assertEqual(core.paired_lines(['a = 1'], ['b = 2', 'a = 10']),
+                         [(None, 0), (0, 1)])
+        self.assertEqual(core.paired_lines(['x'], []), [(0, None)])
 
     def test_intraline(self):
         self.assertEqual(core.intraline_edits('return 1', 'return 2'), ([(7, 8)], [(7, 8)]))
@@ -243,9 +253,9 @@ class DeltaTest(unittest.TestCase):
         return numbers
 
     def test_same_numbers_as_delta(self):
-        # delta pairs removed and added lines by similarity, Gerrit (and we)
-        # by their order in the edit. So the rows themselves may differ, but
-        # each side must show the same lines in the same order.
+        # delta and we pair removed and added lines by similarity, maybe
+        # not the same ones. So the rows themselves may differ, but each
+        # side must show the same lines in the same order.
         count = 0
         for repository in test_repositories():
             for old, new, path in file_pairs(repository, limit=min(COMMITS_PER_REPOSITORY, 60)):

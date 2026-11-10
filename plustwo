@@ -2449,12 +2449,76 @@ def intraline_edits(old, new):
     return old_edits, new_edits
 
 
+# Edits with more removed times added lines than this pair them by their
+# order, the search for similar lines would take too long.
+PAIRING_MAX_CELLS = 2500
+
+
+def line_similarity(old, new):
+    """How alike two lines are, 0 to 1, see difflib's ratio()."""
+    matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
+    if matcher.real_quick_ratio() < INTRALINE_MIN_RATIO \
+            or matcher.quick_ratio() < INTRALINE_MIN_RATIO:
+        return 0
+    return matcher.ratio()
+
+
+def paired_lines(removed, added):
+    """See _paired_lines(), kept for the same lines."""
+    return _paired_lines(tuple(removed), tuple(added))
+
+
+@functools.lru_cache(maxsize=CACHE_SIZE)
+def _paired_lines(removed, added):
+    """Pairs the removed and added lines of one edit by similarity, in
+    order: [(index into removed or None, index into added or None)].
+
+    The pairs are the ones with the most similarity in all, only lines at
+    least INTRALINE_MIN_RATIO alike pair. The others stand alone, the
+    removed ones of a run before the added ones. Like delta, unlike
+    Gerrit, which pairs by position: then a rewritten block shows
+    unrelated lines side by side. Big edits still pair by position.
+    """
+    if len(removed) * len(added) > PAIRING_MAX_CELLS or not removed or not added:
+        return [(index if index < len(removed) else None, index if index < len(added) else None)
+                for index in range(max(len(removed), len(added)))]
+    similarity = [[line_similarity(old, new) for new in added] for old in removed]
+    # best[i][j]: the most similarity of the first i removed and j added lines
+    best = [[0.0] * (len(added) + 1) for _ in range(len(removed) + 1)]
+    for i in range(1, len(removed) + 1):
+        for j in range(1, len(added) + 1):
+            best[i][j] = max(best[i - 1][j], best[i][j - 1],
+                             best[i - 1][j - 1] + similarity[i - 1][j - 1]
+                             if similarity[i - 1][j - 1] else 0)
+    pairs = []
+    i, j = len(removed), len(added)
+    while i and j:
+        if similarity[i - 1][j - 1] and best[i][j] == best[i - 1][j - 1] + similarity[i - 1][j - 1]:
+            pairs.append((i - 1, j - 1))
+            i, j = i - 1, j - 1
+        elif best[i][j] == best[i - 1][j]:
+            i -= 1
+        else:
+            j -= 1
+    pairs.reverse()
+    result = []
+    old_at = new_at = 0
+    for old, new in pairs + [(len(removed), len(added))]:
+        result += [(index, None) for index in range(old_at, old)]
+        result += [(None, index) for index in range(new_at, new)]
+        if old < len(removed):
+            result.append((old, new))
+        old_at, new_at = old + 1, new + 1
+    return result
+
+
 def side_by_side_rows(old_lines, new_lines, edits, context=None):
     """Lays out two versions of a file side by side, like Gerrit's diff
     view. edits are git's, as edits_of() gives them. Each edit's removed
-    and added lines are paired in order, the shorter side filled with empty
-    halves. context is the number of common lines kept around each edit,
-    None for the whole file. Longer runs of common lines become one gap row.
+    and added lines are paired by similarity (see paired_lines()), a line
+    without a partner gets an empty half. context is the number of common
+    lines kept around each edit, None for the whole file. Longer runs of
+    common lines become one gap row.
     """
     rows = []
 
@@ -2479,11 +2543,12 @@ def side_by_side_rows(old_lines, new_lines, edits, context=None):
         common(old_at, new_at, old_begin - 1 - old_at, keep if rows else 0, keep)
         removed = range(old_begin - 1, old_end - 1)
         added = range(new_begin - 1, new_end - 1)
-        for pair in range(max(len(removed), len(added))):
-            old = (Half(REMOVED, removed[pair] + 1, old_lines[removed[pair]])
-                   if pair < len(removed) else Half(EMPTY))
-            new = (Half(ADDED, added[pair] + 1, new_lines[added[pair]])
-                   if pair < len(added) else Half(EMPTY))
+        for old_index, new_index in paired_lines([old_lines[line] for line in removed],
+                                                 [new_lines[line] for line in added]):
+            old = (Half(REMOVED, removed[old_index] + 1, old_lines[removed[old_index]])
+                   if old_index is not None else Half(EMPTY))
+            new = (Half(ADDED, added[new_index] + 1, new_lines[added[new_index]])
+                   if new_index is not None else Half(EMPTY))
             if old.number and new.number:
                 old.edits, new.edits = intraline_edits(old.text, new.text)
             rows.append(Row(old, new))
