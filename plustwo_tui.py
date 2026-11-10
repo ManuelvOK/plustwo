@@ -2365,21 +2365,29 @@ def thread_rows(comment, width, expanded, core, note='', origin='', patch_sets=(
     into the title, e.g. that its line isn't shown. origin is the older
     patch set the thread was made on, like PS2, also in the folded title.
     """
-    label = comment_label(comment) + (f' {origin}' if origin else '')
+    status = comment_label(comment)
+    origin = f' {origin}' if origin else ''
     colour = STATUS_COLOURS['draft' if comment.is_draft() else comment.status]
     tint = THREAD_TINT if curses.COLORS >= 256 else -1
     # The first column and the last are the cursor's frame, see LEFT_MARK.
     pad = [(' ', LEFT_MARK, -1, 0), (' ' * (THREAD_INDENT - 1), -1, -1, 0)]
     # Indent, the two borders and one space: the rows are as wide as the pane
     inner = max(width - THREAD_INDENT - 4, 20)
-    title = f' #{comment.number} {label} '
+    title = f' #{comment.number} {status}{origin} '
+
+    def title_parts(background):
+        # Only the status is bold: if everything is bold, nothing is.
+        return [(f' #{comment.number} ', colour, background, 0),
+                (status, colour, background, curses.A_BOLD),
+                (origin, SECONDARY, background, 0), (' ', colour, background, 0)]
+
     if not expanded:
         first = core.message_text(comment.messages[0]).split('\n')[0] if comment.messages else ''
         rest = f' {first}'[:max(inner - len(title), 0)]
-        return [[*pad, ('▸', colour, tint, curses.A_BOLD), (title, colour, tint, curses.A_BOLD),
+        return [[*pad, ('▸', colour, tint, 0), *title_parts(tint),
                  (rest.ljust(inner + 1 - len(title)), SECONDARY, tint, 0),
                  (' ', RIGHT_MARK, -1, 0)]]
-    border = (colour, -1, curses.A_BOLD)
+    border = (colour, -1, 0)
     # A long note, like the line the thread was on, goes on below the
     # title, so it can always be read whole.
     room = max(inner - len(title) - 3, 0)
@@ -2391,7 +2399,7 @@ def thread_rows(comment, width, expanded, core, note='', origin='', patch_sets=(
         note = first
     extra = f' {note} ' if note else ''
     top = '─' * max(inner - len(title) - len(extra), 0)
-    rows = [[*pad, ('┌─', *border), (title, colour, -1, curses.A_BOLD),
+    rows = [[*pad, ('┌─', *border), *title_parts(-1),
              (extra, SECONDARY, -1, 0), (top + '┐', *border)]]
     for line in note_rows:
         rows.append([*pad, ('│', *border), (' ' + line.ljust(inner), SECONDARY, -1, 0),
@@ -2408,7 +2416,7 @@ def thread_rows(comment, width, expanded, core, note='', origin='', patch_sets=(
         lines = [line for paragraph in core.message_text(message).split('\n')
                  for line in textwrap.wrap(paragraph, max(inner - len(prefix), 10)) or ['']]
         for number, line in enumerate(lines):
-            start_parts = [(f' {name}', name_colour, tint, curses.A_BOLD),
+            start_parts = [(f' {name}', name_colour, tint, 0),
                            (patch_set, SECONDARY, tint, 0), (': ', name_colour, tint, 0)] \
                 if 0 == number else [(' ' * len(prefix), -1, tint, 0)]
             rows.append([*pad, ('│', *border), *start_parts,

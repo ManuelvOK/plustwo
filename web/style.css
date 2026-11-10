@@ -113,7 +113,9 @@ tr.gap td { text-align: center; color: var(--dim); background: var(--panel); cur
 /* Like the line the thread was on: whole, wrapped in the thread's width */
 .thread .thread-place { overflow-wrap: anywhere; }
 .thread .msg.draft { background: var(--draft); border-radius: 4px; padding: 2px 4px; }
-.thread .who { font-weight: 600; }
+.thread .who { font-weight: normal; }
+/* Only the status is bold in a thread: if everything is bold, nothing is */
+.thread .chip { font-weight: 600; }
 .thread .actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
 .thread.resolved { opacity: 0.75; }
 .editor { margin: 4px 8px 8px; }
