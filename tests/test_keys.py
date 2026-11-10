@@ -4,12 +4,20 @@ reviewer's own keys.
 """
 
 import curses
+import importlib.machinery
+import importlib.util
 import sys
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import plustwo_tui as tui  # pylint: disable=wrong-import-position
+
+_loader = importlib.machinery.SourceFileLoader(
+    'plustwo', str(Path(__file__).resolve().parent.parent / 'plustwo'))
+_spec = importlib.util.spec_from_loader('plustwo', _loader)
+core = importlib.util.module_from_spec(_spec)
+_loader.exec_module(core)
 
 
 def feed(keymap, *keys):
@@ -220,6 +228,34 @@ class CursorTest(unittest.TestCase):
             diff.scroll_by(5, 10)
         self.assertTrue(set(range(2, 32)) <= seen)
         self.assertEqual(32, diff.cursor)
+
+
+class SearchTest(unittest.TestCase):
+    """Search in the diff: matches like vim's smartcase, n and N go from
+    match to match over both sides and go on from the other end.
+    """
+
+    def test_matches(self):
+        self.assertEqual([(0, 3), (8, 11)], core.search_matches('Foo bar foo', 'foo'))
+        self.assertEqual([(0, 3)], core.search_matches('Foo bar foo', 'Foo'))
+        self.assertEqual([(0, 2), (2, 4)], core.search_matches('aaaa', 'aa'))
+        self.assertEqual([], core.search_matches('abc', ''))
+
+    def test_goes_from_match_to_match(self):
+        diff = tui.DiffPane(None)
+        # Line 0 has the text on the new side, line 2 on both, a thread between
+        diff._texts = [('a', 'x one'), None, ('two x', 'x three'), ('b', 'b')]
+        diff._continues = [False, True, False, False]
+        diff.rows = [('diff', 0), ('diff', 1), ('thread', 4, 0), ('diff', 2), ('diff', 3)]
+        found = []
+        for _ in range(4):
+            wrapped = diff.go_to_match(core, 'x', True, 10)
+            found.append((diff.cursor, diff.side, wrapped))
+        self.assertEqual([(3, 'old', False), (3, 'new', False), (0, 'new', True),
+                          (3, 'old', False)], found)
+        self.assertFalse(diff.go_to_match(core, 'x', False, 10))
+        self.assertEqual((0, 'new'), (diff.cursor, diff.side))
+        self.assertIsNone(diff.go_to_match(core, 'nowhere', True, 10))
 
 
 class BackgroundReplyTest(unittest.TestCase):

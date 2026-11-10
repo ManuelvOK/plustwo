@@ -139,6 +139,11 @@ ACTIONS = (
      '> too'),
     ('compare-prompt', 'Patch sets', 'type', 'in the patch sets: type the versions to compare: '
      '"1 3", "2 current" or "base 2". Empty: the whole change, latest patch set.'),
+    ('search', 'Change', 'search', 'in the diff: search the lines shown of the file for a '
+     'text, from the cursor on, on both sides. Lower case finds any case. Empty searches the '
+     'last text again, Esc ends the search and its marks.'),
+    ('search-next', 'Change', 'match', 'in the diff: to the next match of the search'),
+    ('search-prev', 'Change', 'match', 'in the diff: to the previous match of the search'),
     ('fold-all', 'Change', 'fold all', 'fold all threads, or unfold all if all are folded'),
     ('unfold-every', 'Change', 'unfold all', 'unfold all threads'),
     ('fold-every', 'Change', 'fold all', 'fold all threads'),
@@ -180,6 +185,7 @@ VIM_KEYS = {
     # Like vim's C-w o, which keeps only the current window
     'sidebar': 'C-w o,z s',
     'set-a': 'a', 'set-b': 'b', 'compare-prompt': ':', 'thread-patch-set': 'g p',
+    'search': '/', 'search-next': 'n', 'search-prev': 'N',
 }
 PRESETS = {
     'vim': VIM_KEYS,
@@ -194,7 +200,9 @@ PRESETS = {
               'next-chunk': 'n', 'prev-chunk': 'p', 'next-file': 'N', 'prev-file': 'P',
               'next-thread': ']', 'prev-thread': '[', 'patch-sets': 'b',
               # Like delete-other-windows
-              'sidebar': 'C-x 1', 'set-b': 'M-b', 'thread-patch-set': 'C-c p'},
+              'sidebar': 'C-x 1', 'set-b': 'M-b', 'thread-patch-set': 'C-c p',
+              # Emacs' M-s holds its search commands
+              'search': 'C-s', 'search-next': 'M-s n', 'search-prev': 'M-s p'},
     # Gerrit's web interface: j and k move, n and p go to the next and
     # previous changes, N and P to the next and previous thread, ] and [ to
     # the next and previous file, u goes up, o opens, c comments, and a
@@ -209,7 +217,9 @@ PRESETS = {
                # e and E unfold and fold all threads, so drafts are edited with w
                'unfold-every': 'e', 'fold-every': 'E', 'edit-draft': 'w',
                # a sends and b chooses patch sets here
-               'set-a': '{', 'set-b': '}'},
+               'set-a': '{', 'set-b': '}',
+               # / is Gerrit's search, C-g goes on like a browser's find
+               'search-next': 'C-g', 'search-prev': 'M-g'},
 }
 # Presets whose counts start with a key, like Emacs' C-u 15 C-n. The
 # others take digits right away, like vim's 15j.
@@ -456,9 +466,25 @@ def run(core, list_name=None):
         # Enter then arrives as \r and Ctrl+J as \n, so the comment box
         # tells them apart.
         curses.nonl()
+        without_flow_control()
         Interface(screen, core, list_name).loop()
 
     curses.wrapper(start)
+
+
+def without_flow_control():
+    """Turns off the terminal's flow control (XON/XOFF), so C-s and C-q
+    arrive as keys instead of stopping the output. curses keeps this mode
+    after programs run outside and restores the old one at the end.
+    """
+    import termios  # pylint: disable=import-outside-toplevel
+    try:
+        attributes = termios.tcgetattr(sys.stdin.fileno())
+        attributes[0] &= ~(termios.IXON | termios.IXOFF)
+        termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, attributes)
+    except termios.error:
+        return
+    curses.def_prog_mode()
 
 
 # The reply to OSC 11, the question for the terminal's background
@@ -587,6 +613,8 @@ class Interface:
         self.whitespace = core.setting('diff.whitespace', 'none')
         if self.whitespace not in core.WHITESPACE_MODES:
             self.whitespace = 'none'
+        # The text searched last in the diff, its matches are marked
+        self.search = ''
         # The left column of the change screen: auto, shown or hidden. The
         # sidebar key sets it for the rest of the session.
         self.sidebar = core.setting('tui.sidebar', 'auto')
@@ -1778,11 +1806,12 @@ def highlighted(core, lines, path):
     return colours
 
 
-def half_cells(core, half, colours, marks):
+def half_cells(core, half, colours, marks, search=''):
     """The characters of one half of a row as (character, foreground,
     background, styles), tabs expanded and control characters made visible.
     colours are the line's syntax colours or None. marks are the sets of
-    line numbers (from below, partly from below) on this side.
+    line numbers (from below, partly from below) on this side. The matches
+    of a search are shown reversed.
     """
     if half.kind in (core.REMOVED, core.ADDED):
         if half.number in marks[0] or half.number in marks[1]:
@@ -1811,8 +1840,13 @@ def half_cells(core, half, colours, marks):
         changed.update(range(begin, end))
     cells = []
     text = half.text[:-1] if half.text.endswith('\r') else half.text
+    found = set()
+    for begin, end in core.search_matches(text, search):
+        found.update(range(begin, end))
     for index, character in enumerate(text):
         foreground, styles = colours[index] if colours and index < len(colours) else (-1, 0)
+        if index in found:
+            styles |= curses.A_REVERSE
         background = backgrounds[index in changed]
         if '\t' == character:
             cells += [(' ', foreground, background, styles)] * (TAB_WIDTH - len(cells) % TAB_WIDTH)
@@ -1836,13 +1870,15 @@ def grouped(cells):
     return segments
 
 
-def rendered_rows(core, rows, width, colours, marks):
+def rendered_rows(core, rows, width, colours, marks, search=''):
     """Draws side by side rows into screen rows like Gerrit's diff: old
     number, old text, new number, new text. A long line wraps onto more
     rows. Returns [(segments, (old number, new number), continues,
-    changed, gap)], where continues says that the row goes on with the line
-    of the row above, changed that it has removed or added lines, and gap is
-    the first old line of a gap row, else None.
+    changed, gap, texts)], where continues says that the row goes on with
+    the line of the row above, changed that it has removed or added lines,
+    gap is the first old line of a gap row, else None, and texts the (old,
+    new) text of the line on its first row, else None. Matches of a search
+    are marked.
     """
     digits = max([4] + [len(str(half.number)) for row in rows for half in (row.old, row.new)
                         if half.number])
@@ -1854,14 +1890,14 @@ def rendered_rows(core, rows, width, colours, marks):
         if row.skipped:
             label = f' {row.skipped} common line{"s" if row.skipped > 1 else ""} '
             result.append(([(label.center(width, '┄'), SECONDARY, -1, 0)],
-                           (None, None), False, False, row.old.number))
+                           (None, None), False, False, row.old.number, None))
             continue
         changed = (core.CONTEXT, core.CONTEXT) != (row.old.kind, row.new.kind)
         halves = []
         for half, side in ((row.old, 0), (row.new, 1)):
             line_colours = (colours[side][half.number - 1]
                             if half.number and colours[side] else None)
-            cells, background = half_cells(core, half, line_colours, marks[side])
+            cells, background = half_cells(core, half, line_colours, marks[side], search)
             pieces = [cells[start:start + text_width]
                       for start in range(0, len(cells), text_width)] or [[]]
             halves.append((half, pieces, background))
@@ -1881,7 +1917,8 @@ def rendered_rows(core, rows, width, colours, marks):
                 if 0 == side:
                     segments.append((HALF_SEPARATOR, SECONDARY, -1, 0))
             numbers = (row.old.number, row.new.number) if 0 == piece else (None, None)
-            result.append((segments, numbers, 0 != piece, changed, None))
+            texts = (row.old.text, row.new.text) if 0 == piece else None
+            result.append((segments, numbers, 0 != piece, changed, None, texts))
     return result
 
 
@@ -1912,6 +1949,8 @@ class DiffPane:
         # Gaps of common lines the reviewer opened, by their first old line
         self.expanded_gaps = set()
         self._gaps = []
+        # The (old, new) text of each diff line on its first row, for search
+        self._texts = []
         # The side of the diff the cursor is on, comments go there
         self.side = 'new'
         # The row to keep the cursor on when the rows are laid out again,
@@ -1932,17 +1971,18 @@ class DiffPane:
         # Whether the diff has moved lines, see core.moved_lines()
         self.has_moved = False
 
-    def show(self, core, change, compare, path, width, context, whitespace='none'):
+    def show(self, core, change, compare, path, width, context, whitespace='none', search=''):
         """Renders the diff of a file with context lines around the changes
         (None: the whole file), unless it is rendered already. The threads
-        come with arrange(), call it after this.
+        come with arrange(), call it after this. The matches of a search are
+        marked.
         """
         if self._path != path:
             self.expanded_gaps = set()
         # The lines with threads stay visible, see core.file_diff_rows().
         threads = core.thread_lines(change, *compare, path)
         key = (path, core.versions_to_compare(change, *compare), width, context,
-               frozenset(self.expanded_gaps), whitespace, threads)
+               frozenset(self.expanded_gaps), whitespace, threads, search)
         if key == self._key:
             return
         is_other_file = self._path != path
@@ -1956,22 +1996,23 @@ class DiffPane:
         marks = ((from_below[0], partly[0]), (from_below[1], partly[1]))
         if rows is None:
             rendered = [([('Binary file, not shown.', SECONDARY, -1, 0)], (None, None), False,
-                          False, None)]
+                          False, None, None)]
         elif not rows:
             rendered = [([('No differences in this file.', SECONDARY, -1, 0)], (None, None),
-                          False, False, None)]
+                          False, False, None, None)]
         else:
             if self.expanded_gaps and any(row.skipped for row in rows):
                 rows = core.expand_gaps(rows, self.expanded_gaps, core.file_lines(old, old_path),
                                         core.file_lines(new, paths[0]))
             colours = [self._colours(core, old, old_path), self._colours(core, new, paths[0])]
-            rendered = rendered_rows(core, rows, width, colours, marks)
-        self._gaps = [gap for *_, gap in rendered]
+            rendered = rendered_rows(core, rows, width, colours, marks, search)
+        self._gaps = [entry[4] for entry in rendered]
+        self._texts = [entry[5] for entry in rendered]
         self._diff_lines = [segments for segments, *_ in rendered]
         previous_numbers = self._diff_numbers
         self._diff_numbers = [numbers for _, numbers, *_ in rendered]
         self._continues = [continues for _, _, continues, *_ in rendered]
-        self._changed = [changed for _, _, _, changed, _ in rendered]
+        self._changed = [entry[3] for entry in rendered]
         marked = [any(numbers[side] in marks[side][kind]
                       for numbers in self._diff_numbers for side in (0, 1)) for kind in (0, 1)]
         self.marks_from_below = tuple(marked)
@@ -2276,6 +2317,28 @@ class DiffPane:
                   if 'diff' == row[0] and self._changed[row[1]]
                   and not (row[1] and self._changed[row[1] - 1])]
         return self._jump_to_one_of(starts, forward, height)
+
+    def go_to_match(self, core, search, forward, height):
+        """Puts the cursor on the next (or previous) line with a match of
+        a search, on the side of the match, after the cursor's side of its
+        line. Goes on from the other end. Returns None if nothing matches,
+        else whether it went on from the other end.
+        """
+        line = self.cursor
+        while 0 < line and 'diff' == self.rows[line][0] and self._continues[self.rows[line][1]]:
+            line -= 1
+        here = (line, 'old' != self.side)
+        places = [(index, side) for index, row in enumerate(self.rows)
+                  if 'diff' == row[0] and self._texts[row[1]]
+                  for side in (0, 1) if core.search_matches(self._texts[row[1]][side], search)]
+        if not places:
+            return None
+        after = ([place for place in places if place > here] if forward
+                 else [place for place in places if place < here][::-1])
+        index, side = after[0] if after else places[0 if forward else -1]
+        self._jump(index, height)
+        self.side = ('old', 'new')[side]
+        return not after
 
     def go_to_next_thread(self, forward, height):
         """Puts the cursor on the first row of the next (or previous)
@@ -2705,6 +2768,8 @@ class ChangeView:
         else:
             entries = [(('comment',), 'comment'), (('side-old', 'side-new'), 'side'),
                        (('next-chunk', 'prev-chunk'), 'chunk')]
+            if self._interface.search:
+                entries.append((('search-next', 'search-prev'), 'match'))
             if self._threads_at_cursor():
                 entries.append((('open',), 'unfold'))
         if any(not message.sent for comment in change.comments for message in comment.messages):
@@ -3107,7 +3172,8 @@ class ChangeView:
         width = self._layout[DIFF][3] - 2
         core = self._interface.core
         self._diff.show(core, self._change, self._compare, path, width,
-                        CONTEXT_STEPS[self._interface.context_step], self._interface.whitespace)
+                        CONTEXT_STEPS[self._interface.context_step], self._interface.whitespace,
+                        self._interface.search)
         blocks = {}
         signature = [path, width]
         for comment in self._change.comments:
@@ -3339,6 +3405,8 @@ class ChangeView:
             if not moved:
                 interface.say('No more changes in this direction.' if action.endswith('chunk')
                               else 'No more threads in this direction.')
+        elif action in ('search', 'search-next', 'search-prev'):
+            self._search(action)
         elif 'open' == action:
             self._open()
         elif 'vimdiff' == action and self._selected_file():
@@ -3398,6 +3466,30 @@ class ChangeView:
             self._thread_patch_set()
         else:
             thread_action(interface, change, self._target_thread(), action)
+
+    def _search(self, action):
+        """Searches the diff for a text typed in the bottom line, or for the
+        last one again, and goes to the next (or previous) match.
+        """
+        interface = self._interface
+        if 'search' == action:
+            text = interface.ask('Search:')
+            if text is None:
+                interface.search = ''
+                return
+            interface.search = text or interface.search
+        if not interface.search:
+            interface.say('Nothing searched yet.')
+            return
+        self._focus_pane(DIFF)
+        self._prepare_diff()
+        wrapped = self._diff.go_to_match(interface.core, interface.search,
+                                         'search-prev' != action, self._diff_height())
+        if wrapped is None:
+            interface.say(f'"{interface.search}" is not in the lines shown.', ERROR)
+        elif wrapped:
+            interface.say('Went on from the ' + ('bottom.' if 'search-prev' == action
+                                                 else 'top.'))
 
     def _focus_pane(self, pane):
         """Moves the focus. Remembers the pane left for the diff, h goes

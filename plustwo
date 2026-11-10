@@ -2570,6 +2570,23 @@ def whitespace_spans(text, whitespace):
     return ''.join(compared), spans
 
 
+def search_matches(text, query):
+    """The (begin, end) character ranges where a searched text appears in a
+    line, without overlaps. Like vim's smartcase: a text in lower case
+    matches any case, one with capitals only itself.
+    """
+    if not query:
+        return []
+    if query == query.lower():
+        text = text.lower()
+    matches = []
+    begin = text.find(query)
+    while begin >= 0:
+        matches.append((begin, begin + len(query)))
+        begin = text.find(query, begin + len(query))
+    return matches
+
+
 def intraline_edits(old, new, whitespace='none'):
     """The character ranges that differ between two lines, for each line,
     or two empty lists when the lines are too different to compare.
