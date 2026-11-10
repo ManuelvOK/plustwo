@@ -194,7 +194,7 @@ function changeHeader(change) {
 }
 
 function changeLevelThreads(change) {
-  const threads = change.comments.filter((comment) => comment.path === PATCHSET_LEVEL);
+  const threads = change.comments.filter((comment) => shownPlace(comment).path === PATCHSET_LEVEL);
   if (!threads.length) return el('div');
   return el('div', {}, el('h2', {}, 'On the whole change'), threads.map(threadView));
 }

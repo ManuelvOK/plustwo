@@ -2259,8 +2259,13 @@ class ChangeView:
             out(top + index, left + 4, f'[{label}]',
                 attributes | status_attribute('draft' if comment.is_draft() else comment.status),
                 left + width)
-            place = ('Change' if self._interface.core.PATCHSET_LEVEL == comment.place
+            core = self._interface.core
+            shown_path, _line, origin, note = self._place_of(comment)
+            place = ('Change' if core.PATCHSET_LEVEL == comment.place
                      else comment.place_label().rsplit('/', 1)[-1])
+            if core.PATCHSET_LEVEL == shown_path != comment.place:
+                # Like in Gerrit, a thread on a gone file is on the whole change.
+                place = f'Change ({origin}, {note})'
             out(top + index, left + 6 + len(label), f' {place}', attributes, left + width)
 
     def _markers(self):
@@ -2587,7 +2592,11 @@ class ChangeView:
             if self._diff.thread_at(self._diff.cursor) == comment.number:
                 self._focus_pane(DIFF)
             else:
-                self._interface.say(f'#{comment.number} is on a file this version doesn\'t have.')
+                shown_path, _line, origin, note = self._place_of(comment)
+                self._interface.say(
+                    f'#{comment.number} is on the whole change ({origin}, {note}).'
+                    if self._interface.core.PATCHSET_LEVEL == shown_path != comment.place
+                    else f'#{comment.number} is on a file this version doesn\'t have.')
         elif DIFF == self._focus and self._diff.gap_at(self._diff.cursor) is not None:
             self._diff.expanded_gaps.add(self._diff.gap_at(self._diff.cursor))
         elif DIFF == self._focus:

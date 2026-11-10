@@ -2639,9 +2639,10 @@ def port_thread(change, comment, target=None, repository=None):
     to the target, rebases included, and an old side thread through the
     diff of the two parents. Renamed files are followed. Unlike Gerrit,
     which then keeps only the file, a thread on edited lines keeps the line
-    at the same offset of the new lines (state EDITED), and a thread on a
-    removed line or a gone file keeps its file (Gerrit moves the latter to
-    the whole change). The interfaces show those at the top of the file.
+    at the same offset of the new lines (state EDITED). A thread on a
+    removed line keeps its file, the interfaces show it at the top of the
+    file. One on a gone file keeps its place here, thread_place() moves it
+    to the whole change, like Gerrit.
     """
     target = target or change.latest_patch_set()
     origin = change.patch_sets.get(comment.patch_set)
@@ -2665,6 +2666,10 @@ def thread_place(change, comment, first=None, second=None, repository=None):
     of the file: one on the whole file, or whose line is gone. origin is
     like "PS2" for a ported thread, else empty. note says what became of
     the line, like "line removed", else empty.
+
+    Like in Gerrit, a thread on a file the version doesn't have becomes
+    one on the whole change (path PATCHSET_LEVEL), its note keeps the old
+    place: "file gone: a.txt:30".
     """
     (_first, _old), (label, _new) = versions_to_compare(change, first, second)
     target = CURRENT if CURRENT == label else int(label)
@@ -2675,6 +2680,8 @@ def thread_place(change, comment, first=None, second=None, repository=None):
         path, line = place, ''
     if ported is None:
         return path, int(line) if line else None, '', ''
+    if FILE_GONE == ported.state:
+        return PATCHSET_LEVEL, None, f'PS{comment.patch_set}', f'file gone: {comment.place}'
     note = {REMOVED: 'line removed', FILE_GONE: 'file gone', EDITED: 'line edited'}.get(
         ported.state, '')
     return path, ported.line, f'PS{comment.patch_set}', note

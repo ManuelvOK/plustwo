@@ -133,18 +133,22 @@ class InboxTest(unittest.TestCase):
         try:
             repo = test_stacks.Repository(directory)
             repo.git('switch', '--quiet', '-c', 'feature')
+            repo.write('b.txt', LINES)
+            repo.git('add', 'b.txt')
             repo.commit('a.txt', LINES, 'Add a')
             repo.change('upload')
-            for place in ('a.txt:3', 'a.txt:5', 'a.txt:7'):
+            for place in ('a.txt:3', 'a.txt:5', 'a.txt:7', 'b.txt:2'):
                 repo.change('comment', '1', place, f'On {place}')
             repo.write('a.txt', 'top\n' + LINES.replace('line 7\n', ''))
+            repo.git('rm', '--quiet', 'b.txt')
             repo.git('commit', '--quiet', '--amend', '--no-edit', '-a')
             repo.change('upload')
             repo.change('comment', '1', 'a.txt:1', 'New one')
             inbox = repo.change('inbox')
             self.assertIn('#1 (PS1, now :4) a.txt:3  | line 3', inbox)
             self.assertIn('#3 (PS1, line removed) a.txt:7  | line 7', inbox)
-            self.assertIn('#4 a.txt:1  | top', inbox)
+            self.assertIn('#4 (PS1, file gone) b.txt:2  | line 2', inbox)
+            self.assertIn('#5 a.txt:1  | top', inbox)
             # Where the interfaces draw them: ported on the latest patch set,
             # as made on the first
             change = core.find_change(inbox.split()[1], directory)
@@ -155,6 +159,10 @@ class InboxTest(unittest.TestCase):
                              ('a.txt', None, 'PS1', 'line removed'))
             self.assertEqual(core.thread_place(change, removed, 'base', '1', directory),
                              ('a.txt', 7, '', ''))
+            # Like in Gerrit, on the whole change when the file is gone
+            self.assertEqual(core.thread_place(change, core.comment_of(change, 4),
+                                               repository=directory),
+                             (core.PATCHSET_LEVEL, None, 'PS1', 'file gone: b.txt:2'))
             # Answered by the heads of inbox lines
             heads = [line.split(') ')[0] + ') done' for line in inbox.split('\n')
                      if '(PS1' in line]
