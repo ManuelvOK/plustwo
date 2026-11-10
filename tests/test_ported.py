@@ -255,6 +255,11 @@ class PortTest(unittest.TestCase):
                           ('reply', 4, True)])
         self.assertEqual([entry.vote_label('Code-Review') for entry in history], ['+1', '(+1)', ''])
         self.assertEqual(history[2].vote_label('Verified'), '+1')
+        # Each message's patch set, like Gerrit's "Patchset 3"
+        self.assertEqual(core.message_patch_sets(change, comments[0]), [1, 2])
+        self.assertEqual(core.message_patch_sets(change, comments[1]), [1, 3])
+        self.assertEqual(core.message_patch_sets(change, comments[3], shown=2), [2, 2])
+        self.assertEqual(core.message_patch_sets(change, comments[3]), [2, 3])
         # Draft replies follow the patch set shown, a draft thread stays on its own.
         shown = core.patch_set_history(change, shown=2, repository=self.directory)
         self.assertEqual([4], [event.number for event in shown[1].events if event.draft])

@@ -2357,7 +2357,7 @@ def in_half(parts, side, left_width):
     return [(' ' * left_width + HALF_SEPARATOR, SECONDARY, -1, 0)] + parts
 
 
-def thread_rows(comment, width, expanded, core, note='', origin=''):
+def thread_rows(comment, width, expanded, core, note='', origin='', patch_sets=()):
     """A thread as rows of the diff, each a list of (text, foreground,
     background, styles): a box with a border in the status' colour and a
     tinted inside, the reviewer's and the author's names in two colours.
@@ -2396,18 +2396,22 @@ def thread_rows(comment, width, expanded, core, note='', origin=''):
     for line in note_rows:
         rows.append([*pad, ('│', *border), (' ' + line.ljust(inner), SECONDARY, -1, 0),
                      ('│', *border)])
-    for message in comment.messages:
+    for message_index, message in enumerate(comment.messages):
         reviewer = core.REVIEWER == message.author
         name = ('Reviewer' if reviewer else 'Author') + (' (draft)' if not message.sent else '')
         name_colour = (STATUS_COLOURS['draft'] if not message.sent
                        else tone(REVIEWER_COLOURS if reviewer else AUTHOR_COLOURS))
-        prefix = f' {name}: '
+        # The patch set the message belongs to, like Gerrit's "Patchset 3"
+        patch_set = (f' · PS{patch_sets[message_index]}'
+                     if message_index < len(patch_sets) and patch_sets[message_index] else '')
+        prefix = f' {name}{patch_set}: '
         lines = [line for paragraph in core.message_text(message).split('\n')
                  for line in textwrap.wrap(paragraph, max(inner - len(prefix), 10)) or ['']]
         for number, line in enumerate(lines):
-            start_part = (prefix, name_colour, tint, curses.A_BOLD) if 0 == number else (
-                ' ' * len(prefix), -1, tint, 0)
-            rows.append([*pad, ('│', *border), start_part,
+            start_parts = [(f' {name}', name_colour, tint, curses.A_BOLD),
+                           (patch_set, SECONDARY, tint, 0), (': ', name_colour, tint, 0)] \
+                if 0 == number else [(' ' * len(prefix), -1, tint, 0)]
+            rows.append([*pad, ('│', *border), *start_parts,
                          (line.ljust(inner + 1 - len(prefix)), -1, tint, 0), ('│', *border)])
     rows.append([*pad, ('└' + '─' * (inner + 1) + '┘', *border)])
     return [row + [(' ', RIGHT_MARK, -1, 0)] for row in rows]
@@ -2998,6 +3002,14 @@ class ChangeView:
                 markers.setdefault((shown.side, shown.line), []).append(comment.number)
         return markers
 
+    def _shown_patch_set(self):
+        """The patch set on the right side of the diff, None for the
+        current commit.
+        """
+        (_first, _), (second, _) = self._interface.core.versions_to_compare(self._change,
+                                                                           *self._compare)
+        return int(second) if second.isdigit() else None
+
     def _place_of(self, comment):
         """Where the shown diff has a thread, see core.thread_place()."""
         return self._interface.core.thread_place(self._change, comment, *self._compare)
@@ -3105,11 +3117,13 @@ class ChangeView:
             # Like in Gerrit, a thread on a line goes into its side's half.
             # Threads on lines not shown go on top, as wide as the diff.
             side = self._thread_half(comment)
-            rows = thread_rows(comment, self._half(side)[1], expanded, core, note, origin)
+            patch_sets = core.message_patch_sets(self._change, comment, self._shown_patch_set())
+            rows = thread_rows(comment, self._half(side)[1], expanded, core, note, origin,
+                               patch_sets)
             if side:
                 rows = [in_half(parts, side, self._half('old')[1]) for parts in rows]
             blocks.setdefault(place, []).append((comment.number, rows))
-            signature.append((comment.number, comment.status, place, expanded,
+            signature.append((comment.number, comment.status, place, expanded, tuple(patch_sets),
                               tuple((message.author, message.text, message.sent, message.unresolved)
                                     for message in comment.messages)))
         self._diff.arrange(blocks, tuple(signature))

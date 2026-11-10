@@ -29,12 +29,15 @@ THEMES = {'light': 'GitHub', 'dark': 'Monokai Extended'}
 
 # ── what the API sends: the core's objects as JSON ────────────────────────
 
-def message_json(message):
+def message_json(message, patch_set=None):
     return {'author': message.author, 'text': message.text, 'sent': message.sent,
-            'unresolved': message.unresolved}
+            'unresolved': message.unresolved, 'patch_set': patch_set}
 
 
-def comment_json(comment):
+def comment_json(comment, patch_sets=()):
+    """A thread for the page. patch_sets are its messages' patch sets, see
+    core.message_patch_sets().
+    """
     path, _, line = comment.place.rpartition(':')
     if not path or not line.isdigit():
         path, line = comment.place, ''
@@ -43,7 +46,9 @@ def comment_json(comment):
             'patch_set': comment.patch_set, 'status': comment.status,
             'draft_status': comment.draft_status(), 'is_draft': comment.is_draft(),
             'has_draft': comment.has_draft(),
-            'messages': [message_json(message) for message in comment.messages]}
+            'messages': [message_json(message, patch_sets[index] if index < len(patch_sets)
+                                      else None)
+                         for index, message in enumerate(comment.messages)]}
 
 
 def history_json(core, entry):
@@ -172,7 +177,9 @@ class Server:
                 'verified_required': change.verified_required,
                 'problems': change.submit_problems(),
                 'files': files,
-                'comments': [comment_json(comment) for comment in change.comments],
+                'comments': [comment_json(comment, core.message_patch_sets(
+                    change, comment, int(query['b']) if query.get('b', '').isdigit() else None))
+                    for comment in change.comments],
                 # Drafts go with the patch set shown on the right
                 'history': [history_json(core, entry) for entry in core.patch_set_history(
                     change, int(query['b']) if query.get('b', '').isdigit() else None,

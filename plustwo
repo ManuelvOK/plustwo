@@ -3262,6 +3262,35 @@ class PatchSetEntry:
         return f'({text})' if all(vote.copied_from for vote in votes) else text
 
 
+def newest_patch_set_at(change, when):
+    """The patch set that was the newest at a time, by the upload times,
+    the first if none was uploaded then. 0 for a change without one.
+    """
+    numbers = sorted(change.patch_sets)
+    uploaded = [number for number in numbers if change.uploads.get(number, 0) <= when]
+    return uploaded[-1] if uploaded else (numbers[0] if numbers else 0)
+
+
+def message_patch_sets(change, comment, shown=None):
+    """The patch set each message of a thread belongs to, like Gerrit's
+    "Patchset 3" on each comment: the first message's is the thread's, a
+    reply's the newest when it was sent, as in patch_set_history(). Drafts
+    belong to shown, the patch set looked at, the newest without one.
+    Messages of older notes without a time get the thread's.
+    """
+    latest = change.latest_patch_set()
+    shown = shown if shown in change.patch_sets else latest
+    result = []
+    for index, message in enumerate(comment.messages):
+        if 0 == index or (message.sent and not message.time):
+            result.append(comment.patch_set)
+        elif not message.sent:
+            result.append(shown)
+        else:
+            result.append(newest_patch_set_at(change, message.time))
+    return result
+
+
 def patch_set_history(change, shown=None, repository=None):
     """The change's patch sets, oldest first, as PatchSetEntry: when and by
     whom each was uploaded, its kind against the one before (computed, so
@@ -3278,10 +3307,7 @@ def patch_set_history(change, shown=None, repository=None):
     shown = shown if shown in change.patch_sets else numbers[-1]
 
     def newest_at(when):
-        # The patch set that was the newest at a time, the thread's own for
-        # messages of older notes without one
-        uploaded = [number for number in numbers if change.uploads.get(number, 0) <= when]
-        return uploaded[-1] if uploaded else numbers[0]
+        return newest_patch_set_at(change, when)
 
     events = {number: [] for number in numbers}
     for comment in change.comments:

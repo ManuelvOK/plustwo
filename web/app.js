@@ -502,7 +502,9 @@ function threadView(comment) {
     if (editing && last && !message.sent) return null;
     return el('div', {class: `msg${message.sent ? '' : ' draft'}`},
       el('span', {class: 'who'}, message.author === 'reviewer' ? 'Reviewer' : 'Author',
-         message.sent ? '' : ' (draft)', ': '),
+         message.sent ? '' : ' (draft)',
+         // The patch set it belongs to, like Gerrit's "Patchset 3"
+         message.patch_set ? el('span', {class: 'dim'}, ` · PS${message.patch_set}`) : null, ': '),
       message.text || (message.unresolved ? '(unresolved)' : '(resolved)'));
   });
   const number = comment.number;
