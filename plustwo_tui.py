@@ -1121,6 +1121,9 @@ class StackView:
         self._interface = interface
         self._changes = []
         self._behind = set()
+        # The sections of each change and the folded sections, see reload()
+        self._sections = []
+        self._folded = set()
         # ('section', name, count), ('change', index) or ('none',)
         self._rows = []
         self._selected = 0
@@ -1142,9 +1145,12 @@ class StackView:
         self._behind = {(change.repository, change.topic) for change in self._changes
                         if change.rebase_requested or core.needs_rebase(change.topic,
                                                                          change.repository)}
-        folded = core.folded_sections()
+        # What draw() needs, so drawing runs no git command
+        self._folded = folded = core.folded_sections()
+        user = core.current_user()
+        self._sections = [change.sections(user) for change in self._changes]
         self._rows = []
-        for section, entries in core.dashboard(self._changes):
+        for section, entries in core.dashboard(self._changes, user):
             self._rows.append(('section', section, len(entries)))
             if section in folded:
                 continue
@@ -1167,8 +1173,7 @@ class StackView:
         """
         out = self._interface.text
         core = self._interface.core
-        mine = sum('your-turn' in change.sections(core.current_user())
-                   for change in self._changes)
+        mine = sum('your-turn' in sections for sections in self._sections)
         bar = self._interface.colour_pairs.attribute(15, tone(HEADER_BACKGROUND))
         out(0, 0, ' ' * area.width, bar)
         title = 'plustwo' + (f'  list {self._interface.list_name}'
@@ -1186,7 +1191,7 @@ class StackView:
         self._scroll = min(self._scroll, self._selected)
         if self._selected >= self._scroll + height:
             self._scroll = self._selected - height + 1
-        folded = core.folded_sections()
+        folded = self._folded
         for offset, row_content in enumerate(self._rows[self._scroll:self._scroll + height]):
             index = self._scroll + offset
             row = self.TOP + offset
@@ -1222,7 +1227,7 @@ class StackView:
                     out(row, column, badge[0], badge[1])
                 column += 8
             turn = change.turn()
-            yours = 'your-turn' in change.sections(core.current_user())
+            yours = 'your-turn' in self._sections[row_content[1]]
             out(row, column, f'{TURN_LABELS.get(turn, turn) if not yours else "▶ yours":<10} ',
                 attributes | (curses.A_BOLD | curses.color_pair(3) if yours else curses.A_DIM))
             out(row, column + 11, core.comment_counts(change), attributes | curses.A_DIM)
@@ -1260,8 +1265,7 @@ class StackView:
             return
         if 'next-turn' == action:
             turns = [index for index in selectable if 'change' == self._rows[index][0]
-                     and 'your-turn' in self._changes[self._rows[index][1]].sections(
-                         core.current_user())]
+                     and 'your-turn' in self._sections[self._rows[index][1]]]
             later = [index for index in turns if index > self._selected]
             if later or turns:
                 self._selected = (later or turns)[0]

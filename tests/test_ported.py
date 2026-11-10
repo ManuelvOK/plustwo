@@ -7,6 +7,7 @@ reported as the same or moved has the same text where it was moved to.
 
 import importlib.machinery
 import importlib.util
+import os
 import shutil
 import subprocess
 import tempfile
@@ -272,6 +273,26 @@ class SubmittableTest(unittest.TestCase):
             self.assertEqual([], submittable())
         finally:
             shutil.rmtree(directory)
+
+
+class UserTest(unittest.TestCase):
+
+    def test_user_name_read_once(self):
+        # The dashboard asks for every change, git must run only once.
+        runs = []
+        real = core.git
+        core.git_user_name.cache_clear()
+        core.git = lambda *arguments, **keywords: runs.append(arguments) or real(
+            *arguments, **keywords)
+        environment = os.environ.pop('PLUSTWO_USER', None)
+        try:
+            names = {core.current_user() for _ in range(5)}
+        finally:
+            core.git = real
+            if environment is not None:
+                os.environ['PLUSTWO_USER'] = environment
+        self.assertEqual(1, len(names))
+        self.assertEqual(1, len(runs))
 
 
 class HistoryTest(unittest.TestCase):
