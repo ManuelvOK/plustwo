@@ -343,7 +343,14 @@ function fileList(change) {
          file.removed ? el('span', {class: 'bar del', style: `width:${width(file.removed)}`}) : null));
   });
   const reviewed = change.files.filter((file) => file.reviewed).length;
-  return el('div', {class: 'files'},
+  const {subject, body, trailers} = change.message_parts;
+  // The message itself, without /COMMIT_MSG's header. A click opens that
+  // file in the diff, to comment on it.
+  const message = el('div', {class: 'message', title: 'Click to comment on the commit message',
+                             onclick: () => openFile(COMMIT_MSG)},
+    el('div', {class: 'subject'}, subject), body ? el('div', {class: 'body'}, body) : null,
+    trailers.length ? el('div', {class: 'trailers dim'}, trailers.join('\n')) : null);
+  return el('div', {class: 'files'}, message,
     el('div', {class: 'dim'}, `${reviewed}/${change.files.length} reviewed`),
     el('table', {}, el('tbody', {}, rows)));
 }

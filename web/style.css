@@ -62,6 +62,12 @@ table.list tr.selected td { background: var(--cursor); }
 .files { flex: 0 0 280px; position: sticky; top: 56px; max-height: calc(100vh - 72px);
          overflow: auto; }
 .files table { width: 100%; }
+.files .message { max-height: 12em; overflow: auto; margin-bottom: 8px; padding: 6px 8px;
+                  background: var(--panel); border-radius: 6px; cursor: pointer;
+                  font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap;
+                  overflow-wrap: anywhere; }
+.files .message .subject { font-weight: 600; }
+.files .message .body, .files .message .trailers { margin-top: 0.7em; }
 .files td { padding: 2px 4px; }
 .files tr.current td { background: var(--cursor); }
 .files .path { word-break: break-all; cursor: pointer; }

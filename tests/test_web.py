@@ -94,6 +94,8 @@ class WebTest(unittest.TestCase):
         change_id = self.change_id()
         _, change = self.request(f'/api/change?id={change_id}')
         self.assertEqual('Change two', change['subject'])
+        self.assertEqual('Change two', change['message_parts']['subject'])
+        self.assertTrue(change['message_parts']['trailers'][0].startswith('Change-Id: I'))
         self.assertEqual(['/COMMIT_MSG', 'base.txt'], [file['path'] for file in change['files']])
         self.assertEqual([(1, '-')], [(entry['number'], entry['kind'])
                                       for entry in change['history']])

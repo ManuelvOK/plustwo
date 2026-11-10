@@ -101,7 +101,8 @@ ACTIONS = (
     ('section-up', 'Stacks', 'move section', 'on a section heading: move the section up'),
     ('rebase', 'Stacks and changes', 'rebase', 'rebase the stack onto the base branch, without '
      'touching any checkout. On a conflict the author is asked to rebase.'),
-    ('next-pane', 'Change', 'next pane', 'next pane: stack, files, comments, diff'),
+    ('next-pane', 'Change', 'next pane', 'next pane: stack, commit message, files, comments, '
+     'diff'),
     ('sidebar', 'Change', 'sidebar', 'hide or show the left column (stack, files, comments), '
      'so the diff gets the whole width. The setting tui.sidebar (auto, shown, hidden) picks the '
      'start, auto hides it below 100 columns.'),
@@ -2124,10 +2125,13 @@ def thread_rows(comment, width, expanded, core, note='', origin=''):
 # ── the change screen ─────────────────────────────────────────────────────
 
 STACK = 'stack'
+MESSAGE = 'message'
 FILES = 'files'
 COMMENTS = 'comments'
 DIFF = 'diff'
-PANES = (STACK, FILES, COMMENTS, DIFF)
+PANES = (STACK, MESSAGE, FILES, COMMENTS, DIFF)
+# The commit message box shows at most this many rows
+MESSAGE_ROWS = 6
 
 def thread_footer(comment):
     """The footer's actions on a thread: reply or edit the draft, Done,
@@ -2357,6 +2361,10 @@ class ChangeView:
         self._stack = []
         # The cursor in the stack pane, counted from its top (the newest)
         self._stack_index = 0
+        # The commit message (subject, body, trailers) and how far its box
+        # is scrolled
+        self._message = ('', '', [])
+        self._message_scroll = 0
         # The Change-Ids of the stack that could be submitted now, and those
         # where it is the user's turn
         self._submittable = set()
@@ -2371,6 +2379,8 @@ class ChangeView:
         core = self._interface.core
         if STACK == self._focus:
             entries = [(('down', 'up'), 'move'), (('open',), 'show change')]
+        elif MESSAGE == self._focus:
+            entries = [(('down', 'up'), 'scroll'), (('open',), 'comment on it')]
         elif FILES == self._focus:
             entries = [(('open',), 'diff'), (('reviewed',), 'reviewed'),
                        (('file-comment',), 'comment')]
@@ -2421,6 +2431,7 @@ class ChangeView:
                 if STACK != self._focus:
                     self._stack_index = self._current_in_stack()
                 self._submittable = core.submittable_in(self._stack)
+                self._message = core.commit_message_parts(change.commit)
                 # Where it is the user's turn, like the dashboard's "▶ yours"
                 user = core.current_user()
                 self._yours = {other.change_id for other in self._stack
@@ -2457,10 +2468,16 @@ class ChangeView:
         left_width = min(max(area.width * 3 // 10, 28), 50)
         # The stack on top, like Gerrit's relation chain, at most 5 rows
         stack_rows = min(max(len(self._stack), 1), 5)
-        files_top = 3 + stack_rows + 2
+        # The commit message below, as tall as it is up to MESSAGE_ROWS. The
+        # files and comments come first when there is little room.
+        message_top = 3 + stack_rows + 2
+        room = area.height - message_top - 1 - 2 - 2 * (4 + 2)
+        message_rows = max(1, min(MESSAGE_ROWS, len(self._message_lines(left_width - 2)), room))
+        files_top = message_top + message_rows + 2
         files_height = max((area.height - files_top - 2) // 2, 2)
         comments_top = files_top + files_height + 2
         return {STACK: (3, 1, stack_rows, left_width - 2),
+                MESSAGE: (message_top, 1, message_rows, left_width - 2),
                 FILES: (files_top, 1, files_height, left_width - 2),
                 COMMENTS: (comments_top, 1, max(area.height - comments_top - 1, 1),
                            left_width - 2),
@@ -2517,6 +2534,7 @@ class ChangeView:
         self._draw_votes(4 + len(header))
         if FILES in self._layout:
             self._draw_stack()
+            self._draw_message()
             self._draw_files()
             self._draw_comments()
         self._draw_diff()
@@ -2549,6 +2567,35 @@ class ChangeView:
             if marker:
                 out(top + row, left + 2 + len(subject), marker,
                     attributes | curses.color_pair(2), left + width)
+
+    def _message_lines(self, width):
+        """The commit message as rows of the box: (text, attributes), the
+        subject bold, the trailers dimmed.
+        """
+        subject, body, trailers = self._message
+        width = max(width, 10)
+        lines = [(line, curses.A_BOLD) for line in textwrap.wrap(subject, width) or ['']]
+        if body:
+            lines.append(('', 0))
+            lines += [(line, 0) for paragraph in body.split('\n')
+                      for line in textwrap.wrap(paragraph, width) or ['']]
+        if trailers:
+            lines.append(('', 0))
+            lines += [(line[:width], curses.A_DIM) for line in trailers]
+        return lines
+
+    def _draw_message(self):
+        """The box with the commit message, scrolled while focused."""
+        out = self._interface.text
+        top, left, height, width = self._layout[MESSAGE]
+        lines = self._message_lines(width)
+        self._message_scroll = max(0, min(self._message_scroll, len(lines) - height))
+        more = len(lines) - height
+        self._frame(MESSAGE, 'Commit message' + (f'  ({self._message_scroll + height}/'
+                                                 f'{len(lines)})' if more > 0 else ''))
+        for row, (text, attributes) in enumerate(
+                lines[self._message_scroll:self._message_scroll + height]):
+            out(top + row, left, text, attributes, left + width)
 
     def _switch_to(self, change_id):
         """Shows another change of the stack."""
@@ -2887,6 +2934,11 @@ class ChangeView:
                 self._switch_to(ids[index])
             else:
                 interface.say('No more changes in this direction.')
+        elif MESSAGE == self._focus and action in LIST_ACTIONS:
+            _top, _left, box_height, width = self._layout[MESSAGE]
+            self._message_scroll = move(self._message_scroll, action,
+                                        max(len(self._message_lines(width)) - box_height + 1, 1),
+                                        count)
         elif STACK == self._focus and action in LIST_ACTIONS:
             self._stack_index = move(self._stack_index, action, len(self._stack), count)
         elif FILES == self._focus and action in LIST_ACTIONS:
@@ -2997,6 +3049,10 @@ class ChangeView:
             shown = list(reversed(self._stack))
             if self._stack_index < len(shown):
                 self._switch_to(shown[self._stack_index].change_id)
+        elif MESSAGE == self._focus:
+            # /COMMIT_MSG in the diff, to comment on it
+            self._file_index = 0
+            self._focus_pane(DIFF)
         elif FILES == self._focus:
             self._focus_pane(DIFF)
         elif COMMENTS == self._focus and comment:

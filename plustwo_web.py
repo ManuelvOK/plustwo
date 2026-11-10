@@ -166,6 +166,8 @@ class Server:
         return {**change_summary(core, change, repository),
                 'message': core.git('log', '-1', '--format=%B', change.commit,
                                     repository=repository),
+                'message_parts': dict(zip(('subject', 'body', 'trailers'),
+                                          core.commit_message_parts(change.commit, repository))),
                 'patch_sets': sorted(change.patch_sets),
                 'verified_required': change.verified_required,
                 'problems': change.submit_problems(),

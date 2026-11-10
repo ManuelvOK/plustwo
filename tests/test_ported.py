@@ -260,6 +260,18 @@ class PortTest(unittest.TestCase):
         self.assertEqual([4], [event.number for event in shown[1].events if event.draft])
         self.assertEqual([3], [event.number for event in shown[2].events if event.draft])
 
+    def test_commit_message_parts(self):
+        commit = self.commit({'a.txt': 'x\n'}, 'Subject line\n\nFirst paragraph\ngoes on.\n\n'
+                             '- a list\n\nChange-Id: I' + '1' * 40 + '\nSigned-off-by: A <a@b>',
+                             self.base)
+        self.assertEqual(core.commit_message_parts(commit, self.directory),
+                         ('Subject line', 'First paragraph\ngoes on.\n\n- a list',
+                          ['Change-Id: I' + '1' * 40, 'Signed-off-by: A <a@b>']))
+        # Only a subject, or a last paragraph that is no trailer block
+        self.assertEqual(core.commit_message_parts(self.base, self.directory), ('Base', '', []))
+        plain = self.commit({'a.txt': 'y\n'}, 'Subject\n\nJust text: here and more', self.base)
+        self.assertEqual(core.commit_message_parts(plain, self.directory)[2], [])
+
     def test_labels(self):
         ported = core.PortedPlace('a.txt:50', 50, core.MOVED, 4)
         self.assertEqual(ported.label('a.txt:44'), 'now :50')

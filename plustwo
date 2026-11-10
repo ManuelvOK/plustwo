@@ -1066,6 +1066,28 @@ def commit_message_text(commit, repository=None):
 
 
 @cached_for_objects(0)
+def commit_message_parts(commit, repository=None):
+    """A commit's message for reading: (subject, body, trailers), without
+    the header /COMMIT_MSG has. body is the text between the subject and
+    the trailers like Change-Id, '' without one. trailers are the lines
+    of the last paragraph if git reads them all as trailers.
+    """
+    message = git('log', '-1', '--format=%B', commit, repository=repository).strip('\n')
+    subject, _, rest = message.partition('\n')
+    paragraphs = rest.strip('\n').split('\n\n') if rest.strip() else []
+    trailers = []
+    if paragraphs:
+        last = paragraphs[-1].split('\n')
+        # A lone paragraph would be the subject to git, so one goes first.
+        parsed = git('interpret-trailers', '--parse', input_text='-\n\n' + paragraphs[-1] + '\n',
+                     repository=repository).split('\n')
+        if last and len([line for line in parsed if line]) == len(last):
+            trailers = last
+            paragraphs = paragraphs[:-1]
+    return subject.strip(), '\n\n'.join(paragraphs).strip('\n'), trailers
+
+
+@cached_for_objects(0)
 def commit_message_tree(commit, repository=None):
     """A tree with only the file COMMIT_MSG, holding commit_message_text().
     Without a commit, the empty tree. Two of these diff like two versions
