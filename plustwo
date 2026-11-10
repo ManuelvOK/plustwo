@@ -1393,13 +1393,45 @@ def patch_id(commit, repository=None):
     return output.split(' ')[0] if output else ''
 
 
+def rebased_tree(commit, parent, repository=None):
+    """The tree of a commit replayed onto another parent, like a rebase
+    without touching anything: a merge of the commit into parent with the
+    commit's own parent as base. '' on a conflict, None when git can't do
+    it in memory: that needs git 2.40 (merge-tree --merge-base).
+    """
+    result = subprocess.run([*git_command(repository), 'merge-tree', '--write-tree',
+                             f'--merge-base={commit}^', parent, commit],
+                            capture_output=True, text=True)
+    # merge-tree exits with 1 on conflicts, anything else is an error.
+    if 1 == result.returncode:
+        return ''
+    if 0 != result.returncode:
+        return None
+    return result.stdout.split('\n')[0].strip() or None
+
+
 def patch_set_kind(old, new, repository=None):
     """How a new patch set differs from the one before, like Gerrit's
     change kinds: no code change (the same files, e.g. a new message),
     trivial rebase (the same patch on another parent) or rework.
+
+    Like Gerrit's ChangeKindCacheImpl, a trivial rebase is one where the
+    old patch set, replayed onto the new one's parent, gives the new one's
+    tree. So a change whose context moved because the change below edited
+    nearby lines is one too. A conflict means rework. Without git 2.40
+    it falls back to the patch ids, which see context changes as rework.
     """
     if tree_of(old, repository) == tree_of(new, repository):
         return NO_CODE_CHANGE
+    if not (git('rev-parse', '--verify', '--quiet', f'{old}^', check=False,
+                repository=repository)
+            and git('rev-parse', '--verify', '--quiet', f'{new}^', check=False,
+                    repository=repository)):
+        # A root commit has no parent to rebase onto, like in Gerrit
+        return REWORK
+    rebased = rebased_tree(old, f'{new}^', repository)
+    if rebased is not None:
+        return TRIVIAL_REBASE if rebased and rebased == tree_of(new, repository) else REWORK
     if patch_id(old, repository) == patch_id(new, repository):
         return TRIVIAL_REBASE
     return REWORK

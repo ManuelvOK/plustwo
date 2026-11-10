@@ -182,6 +182,35 @@ class PortTest(unittest.TestCase):
         self.git('update-ref', 'refs/heads/moving', second)
         self.assertEqual(['two'], core.file_lines('moving', 'a.txt', self.directory))
 
+    def test_kind_context_only_is_trivial_rebase(self):
+        # The base edited a line near the change: its diff's context moved,
+        # the patch is the same. Like Gerrit, a trivial rebase.
+        first = self.commit({'a.txt': LINES.replace('line 10\n', 'line ten\n')}, 'PS1', self.base)
+        newer_base = self.commit({'a.txt': LINES.replace('line 8\n', 'line eight\n')},
+                                 'Newer base', self.base)
+        second = self.commit({'a.txt': LINES.replace('line 8\n', 'line eight\n')
+                              .replace('line 10\n', 'line ten\n')}, 'PS2', newer_base)
+        self.assertNotEqual(core.patch_id(first, self.directory),
+                            core.patch_id(second, self.directory))
+        self.assertEqual(core.TRIVIAL_REBASE, core.patch_set_kind(first, second, self.directory))
+
+    def test_kind_real_edit_and_conflict_are_rework(self):
+        first = self.commit({'a.txt': LINES.replace('line 10\n', 'line ten\n')}, 'PS1', self.base)
+        edited = self.commit({'a.txt': LINES.replace('line 10\n', 'line TEN\n')}, 'PS2',
+                             self.base)
+        self.assertEqual(core.REWORK, core.patch_set_kind(first, edited, self.directory))
+        # The base changed the same line: the rebase conflicts.
+        newer_base = self.commit({'a.txt': LINES.replace('line 10\n', 'line 10!\n')
+                                  .replace('line 1\n', 'line one\n')}, 'Newer base', self.base)
+        rebased = self.commit({'a.txt': LINES.replace('line 10\n', 'line ten\n')
+                               .replace('line 1\n', 'line one\n')}, 'PS2', newer_base)
+        self.assertEqual('', core.rebased_tree(first, newer_base, self.directory))
+        self.assertEqual(core.REWORK, core.patch_set_kind(first, rebased, self.directory))
+        # Only a new message: no code change
+        message = self.commit({'a.txt': LINES.replace('line 10\n', 'line ten\n')}, 'Other',
+                              self.base)
+        self.assertEqual(core.NO_CODE_CHANGE, core.patch_set_kind(first, message, self.directory))
+
     def test_labels(self):
         ported = core.PortedPlace('a.txt:50', 50, core.MOVED, 4)
         self.assertEqual(ported.label('a.txt:44'), 'now :50')
