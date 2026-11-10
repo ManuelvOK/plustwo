@@ -58,6 +58,14 @@ touches your branch. `plustwo pull` brings it in.
    the quoted source line, the reviewer's message on the whole change
    (place `/PATCHSET_LEVEL`), and negative votes with the end of their
    message. `plustwo show <CHANGE>` gives all threads of a change.
+   A thread made on an older patch set than the latest says so, with
+   where its line is now. The place and the quote are still the old
+   patch set's:
+
+       repo I3f2a #5 (PS2) a.py:44  | same line in the latest patch set
+       repo I3f2a #6 (PS2, now :50) a.py:44  | moved to line 50
+       repo I3f2a #7 (PS2, edited, now :52) a.py:46  | changed since
+       repo I3f2a #8 (PS2, line removed) a.py:59  | gone (also: file gone)
 3. Work through all threads of the batch before answering (see below).
 4. Fold each fix into the commit it belongs to, not into a new commit:
 

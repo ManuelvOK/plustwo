@@ -1853,13 +1853,15 @@ def add_message(change_id, number, author, text, sent=True, status=None, reposit
 
 # A line of `plustwo answer`: Change-Id prefix, thread, optional verb, text
 ANSWER_PATTERN = re.compile(
-    r'^\s*(?:\S+\s+)?(I[0-9a-f]+)\s+#(\d+)\s*(resolve|unresolve|done)?\s*:?\s*(.*)$')
+    r'^\s*(?:\S+\s+)?(I[0-9a-f]+)\s+#(\d+)\s*(?:\(PS\d+[^)]*\)\s*)?'
+    r'(resolve|unresolve|done)?\s*:?\s*(.*)$')
 
 
 def parse_answers(text):
     """The author's answers, one per line: "I3f2a #2 done", "I3f2a #3:
     text", "I3f2a #4 resolve: text" or "unresolve: text". A repository
-    name before the Change-Id, as inbox prints it, is allowed. Returns
+    name before the Change-Id and a patch set note after the number, as
+    inbox prints them, are allowed. Returns
     [(Change-Id prefix, number, status or None, text)].
     """
     answers = []
@@ -2507,6 +2509,154 @@ def rebase_lines(change, first=None, second=None, path=None, repository=None):
     return from_below, partly
 
 
+# ── threads on newer patch sets, like Gerrit's ported comments ────────────
+
+# How a thread's line fared on the way to another patch set
+SAME = 'same'
+MOVED = 'moved'
+EDITED = 'edited'
+REMOVED = 'removed'
+FILE_GONE = 'file gone'
+
+
+@dataclass
+class PortedPlace:
+    """Where a thread of an older patch set is in a newer one.
+
+    place is the thread's place there, line its line (None for a thread
+    on a whole file, or when the line or file is gone). state is SAME
+    (same line number and text), MOVED (same text, other number or file),
+    EDITED (the line was changed, line is the best guess), REMOVED or
+    FILE_GONE.
+    """
+    place: str
+    line: int | None
+    state: str
+    patch_set: int
+
+    def label(self, place):
+        """The note for inbox lines, without the patch set: '' when the
+        thread is where it was, else like 'now :50' or 'line removed'.
+        """
+        if self.state in (REMOVED, FILE_GONE):
+            return 'line removed' if REMOVED == self.state else 'file gone'
+        path, _, line = place.rpartition(':')
+        new_path, _, new_line = self.place.rpartition(':')
+        if not line.isdigit():
+            return '' if self.place == place else f'now {self.place}'
+        moved = f'{new_path if new_path != path else ""}:{new_line}'
+        if EDITED == self.state:
+            return f'edited, now {moved}'
+        return '' if self.place == place else f'now {moved}'
+
+
+def path_in(old, new, path, repository=None):
+    """The path a file of commit old has in commit new: the same if new
+    has it, else where git's rename detection finds it, None if it is gone.
+    """
+    if git('rev-parse', '--verify', '--quiet', f'{new}:{path}', check=False,
+           repository=repository):
+        return path
+    fields = git('diff-tree', '-M', '-r', '--name-status', '-z', old, new, '--',
+                 repository=repository).split('\0')
+    index = 0
+    while index < len(fields) and fields[index]:
+        if fields[index].startswith(('R', 'C')):
+            if fields[index + 1] == path:
+                return fields[index + 2]
+            index += 3
+        else:
+            index += 2
+    return None
+
+
+def ported_line(line, edits):
+    """Moves a line through the edits of a diff, like Gerrit's
+    GitPositionTransformer: lines outside the edits shift by the lines the
+    edits before them added or removed. Returns (line, state).
+    """
+    shift = 0
+    for old_begin, old_end, new_begin, new_end in edits:
+        if old_begin <= line < old_end:
+            if new_begin == new_end:
+                return None, REMOVED
+            # Gerrit drops the line here and keeps the file. The line at
+            # the same offset in the new lines is a better place to show.
+            return new_begin + min(line - old_begin, new_end - new_begin - 1), EDITED
+        if old_end <= line:
+            shift += new_end - new_begin - (old_end - old_begin)
+    return line + shift, SAME if 0 == shift else MOVED
+
+
+@functools.lru_cache(maxsize=4096)
+def _ported(old, new, place, side, repository=None):
+    """port_thread() between two commits, see there. Commits never change,
+    so the result is kept.
+    """
+    path, _, line = place.rpartition(':')
+    if not path or not line.isdigit():
+        path, line = place, ''
+    if PATCHSET_LEVEL == path:
+        return place, None, SAME
+    if COMMIT_MSG == path:
+        if not line or OLD_SIDE == side:
+            return place, int(line) if line else None, SAME
+        edits = edits_of(commit_message_tree(old, repository), commit_message_tree(new, repository),
+                         COMMIT_MSG_NAME, repository)
+        number, state = ported_line(int(line), edits)
+        return (f'{path}:{number}' if number else place), number, state
+    new_path = path_in(old, new, path, repository)
+    if new_path is None:
+        return place, None, FILE_GONE
+    if not line:
+        return new_path, None, SAME if new_path == path else MOVED
+    if OLD_SIDE == side:
+        # The old side is the parent: its lines move through the diff of
+        # the two parents, under the file's paths there.
+        old_path = renames_of(old, repository).get(path, path)
+        target_path = renames_of(new, repository).get(new_path, new_path)
+        if not git('rev-parse', '--verify', '--quiet', f'{new}^:{target_path}', check=False,
+                   repository=repository):
+            return place, None, FILE_GONE
+        edits = edits_of(f'{old}^', f'{new}^', target_path, repository,
+                         old_path if old_path != target_path else None)
+    else:
+        edits = edits_of(old, new, new_path, repository, path if path != new_path else None)
+    number, state = ported_line(int(line), edits)
+    if SAME == state and new_path != path:
+        state = MOVED
+    return (f'{new_path}:{number}' if number else place), number, state
+
+
+def port_thread(change, comment, target=None, repository=None):
+    """Where a thread of an older patch set is in a newer version, like
+    Gerrit's ported comments, as a PortedPlace. target is a patch set
+    number, the latest without it. None when the thread is on that patch
+    set already, or on a newer one. target can also be CURRENT, the
+    change's commit.
+
+    Like Gerrit, a thread moves through one direct diff from its patch set
+    to the target, rebases included, and an old side thread through the
+    diff of the two parents. Renamed files are followed. Unlike Gerrit,
+    which then keeps only the file, a thread on edited lines keeps the line
+    at the same offset of the new lines (state EDITED), and a thread on a
+    removed line or a gone file keeps its file (Gerrit moves the latter to
+    the whole change). The interfaces show those at the top of the file.
+    """
+    target = target or change.latest_patch_set()
+    origin = change.patch_sets.get(comment.patch_set)
+    if CURRENT == target:
+        commit = change.commit
+    elif target in change.patch_sets and comment.patch_set < target:
+        commit = change.patch_sets[target]
+    else:
+        return None
+    if origin is None or origin == commit:
+        return None
+    place, line, state = _ported(origin, commit, comment.place, comment.side, repository)
+    return PortedPlace(place, line, state, target)
+
+
 def range_diff_command(change, first=None, second=None):
     """The git command showing the range-diff between two versions."""
     if BASE in (first, second):
@@ -2554,11 +2704,23 @@ def inbox_lines(repositories, topic=None):
                     continue
                 commit = change.patch_sets.get(comment.patch_set, change.commit)
                 quoted = line_at(commit, comment.place, repository, comment.side)
-                lines.append(f'{name} {change.short_id()} #{comment.number} {comment.place_label()}'
-                             + (f'  | {quoted}' if quoted else ''))
+                lines.append(f'{name} {change.short_id()} #{comment.number} '
+                             + patch_set_note(change, comment, repository)
+                             + comment.place_label() + (f'  | {quoted}' if quoted else ''))
                 sent = [message for message in comment.messages if message.sent]
                 lines.append(f'    {message_text(sent[-1])}')
     return lines
+
+
+def patch_set_note(change, comment, repository=None):
+    """'(PS2, now :50) ' for a thread of an older patch set than the latest,
+    with where it is now, see port_thread(). Empty for one on the latest.
+    """
+    ported = port_thread(change, comment, repository=repository)
+    if ported is None:
+        return ''
+    label = ported.label(comment.place)
+    return f'(PS{comment.patch_set}' + (f', {label}' if label else '') + ') '
 
 
 def events_of(repository, topic=None):

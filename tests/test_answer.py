@@ -28,6 +28,15 @@ class AnswerFormatTest(unittest.TestCase):
                                    ('I3f2a', 4, core.UNRESOLVED, 'Not yet.'),
                                    ('I3f2a', 5, core.RESOLVED, 'Done, renamed too.')])
 
+    def test_inbox_heads(self):
+        # The head of an inbox line, patch set note included, then the answer
+        answers = core.parse_answers('claudel4 I996ea4f #5 (PS2, now :50) done\n'
+                                     'claudel4 I996ea4f #7 (PS2, line removed): Gone.\n'
+                                     'claudel4 I996ea4f #8 (PS3) resolve: Yes.\n')
+        self.assertEqual(answers, [('I996ea4f', 5, core.RESOLVED, core.DONE),
+                                   ('I996ea4f', 7, None, 'Gone.'),
+                                   ('I996ea4f', 8, core.RESOLVED, 'Yes.')])
+
     def test_errors(self):
         for text in ('no answer here', 'I3f2a #2', 'I3f2a #2:'):
             with self.subTest(text), self.assertRaises(core.ChangeError):
