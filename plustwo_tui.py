@@ -22,7 +22,9 @@ scrolls.
 import curses
 import os
 import re
+import select
 import subprocess
+import sys
 import tempfile
 import textwrap
 import time
@@ -443,13 +445,114 @@ def run(core, list_name=None):
     """Starts the interface. core is the plustwo module. list_name limits
     the dashboard to a list of repositories.
     """
+    global TERMINAL_BACKGROUND  # pylint: disable=global-statement
+    TERMINAL_BACKGROUND = (parse_colour(core.setting('tui.background', '')) or query_background()
+                           or (0, 0, 0))
+    wanted = true_colour_terminal(core.setting('tui.colours', 'auto'))
+
     def start(screen):
+        global TRUE_COLOUR  # pylint: disable=global-statement
+        TRUE_COLOUR = wanted and curses.COLORS >= 1 << 24
         # Enter then arrives as \r and Ctrl+J as \n, so the comment box
         # tells them apart.
         curses.nonl()
         Interface(screen, core, list_name).loop()
 
     curses.wrapper(start)
+
+
+# The reply to OSC 11, the question for the terminal's background
+BACKGROUND_REPLY = re.compile(r'\x1b\]11;rgb:([0-9a-fA-F]{1,4})/([0-9a-fA-F]{1,4})/'
+                              r'([0-9a-fA-F]{1,4})(?:\x1b\\|\x07)')
+# The reply to DA1, which every terminal answers, after the one to OSC 11
+ATTRIBUTES_REPLY = re.compile(r'\x1b\[\?[0-9;]*c')
+# How long to wait for the terminal's replies, in seconds
+QUERY_TIMEOUT = 0.1
+
+
+def parse_background_reply(text):
+    """(red, green, blue) from a terminal's reply to OSC 11, like
+    "\\e]11;rgb:1c1c/1c1c/1c1c\\e\\", 1 to 4 hex digits a channel, ended by
+    ST or BEL. None if text has none.
+    """
+    match = BACKGROUND_REPLY.search(text)
+    if match is None:
+        return None
+    return tuple(round(int(value, 16) * 255 / (16 ** len(value) - 1)) for value in match.groups())
+
+
+def parse_colour(text):
+    """(red, green, blue) of a colour like #1c1c1c, None for anything else."""
+    match = re.fullmatch(r'#?([0-9a-fA-F]{6})', text.strip())
+    if match is None:
+        return None
+    return tuple(int(match.group(1)[index:index + 2], 16) for index in (0, 2, 4))
+
+
+def query_background():
+    """The terminal's background, asked with OSC 11 before curses starts,
+    None if it doesn't say. DA1 is asked after it: every terminal answers
+    that, in order, so once its reply is there, no other one can come late
+    and be read as keys. QUERY_TIMEOUT bounds the wait for terminals that
+    answer neither.
+    """
+    try:
+        import termios  # pylint: disable=import-outside-toplevel
+        import tty  # pylint: disable=import-outside-toplevel
+        descriptor = os.open('/dev/tty', os.O_RDWR | os.O_NOCTTY)
+    except (ImportError, OSError):
+        return None
+    try:
+        saved = termios.tcgetattr(descriptor)
+    except termios.error:
+        os.close(descriptor)
+        return None
+    reply = ''
+    try:
+        tty.setraw(descriptor)
+        os.write(descriptor, b'\x1b]11;?\x1b\\\x1b[c')
+        deadline = time.monotonic() + QUERY_TIMEOUT
+        while not ATTRIBUTES_REPLY.search(reply):
+            left = deadline - time.monotonic()
+            if left <= 0 or not select.select([descriptor], [], [], left)[0]:
+                break
+            reply += os.read(descriptor, 256).decode('latin-1')
+    finally:
+        # Whatever else came stays out of the keys.
+        termios.tcsetattr(descriptor, termios.TCSAFLUSH, saved)
+        os.close(descriptor)
+    return parse_background_reply(reply)
+
+
+def has_terminfo(name):
+    """Whether the terminal database has an entry of this name."""
+    try:
+        curses.setupterm(name, sys.stdout.fileno())
+    except (curses.error, OSError, ValueError):
+        return False
+    return True
+
+
+def true_colour_terminal(mode):
+    """Whether to draw in true colour, for the setting tui.colours: auto,
+    true or 256. ncurses draws RGB colours only with a terminfo entry for
+    them, like xterm-direct: with auto or true, and COLORTERM saying the
+    terminal can, TERM changes to its -direct entry if there is one, like
+    st-256color to st-direct. The keys of both entries are the same.
+    Without such an entry, it stays at 256 colours.
+    """
+    term = os.environ.get('TERM', '')
+    if '256' == mode or not term:
+        return False
+    if 'true' != mode and os.environ.get('COLORTERM') not in ('truecolor', '24bit'):
+        return False
+    if term.endswith('-direct'):
+        return True
+    direct = re.sub(r'-256colou?r$', '', term) + '-direct'
+    if not has_terminfo(direct):
+        return False
+    os.environ['TERM'] = direct
+    return True
 
 
 class Interface:
@@ -471,7 +574,7 @@ class Interface:
         curses.mouseinterval(300)
         curses.use_default_colors()
         for number in range(1, 9):
-            curses.init_pair(number, number if number < 8 else 8, -1)
+            curses.init_pair(number, curses_colour(number if number < 8 else 8), -1)
         screen.timeout(RELOAD_INTERVAL_MS)
         self.colour_pairs = ColourPairs()
         global DIM_COLOUR  # pylint: disable=global-statement
@@ -1493,9 +1596,9 @@ MIN_CONTRAST = 4.5
 
 
 def contrast(first, second):
-    """The contrast ratio of two palette colours, 1 to 21."""
-    def luminance(index):
-        channels = [value / 255 for value in palette_colour(index)]
+    """The contrast ratio of two colours (palette or RGB), 1 to 21."""
+    def luminance(colour):
+        channels = [value / 255 for value in rgb_of(colour)]
         channels = [value / 12.92 if value <= 0.03928 else ((value + 0.055) / 1.055) ** 2.4
                     for value in channels]
         return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
@@ -1511,10 +1614,13 @@ def secondary(background=-1):
     if curses.COLORS < 256:
         return -1
     colour = DIM_COLOUR
-    if background < 0:
-        return colour
-    while 232 <= colour < 255 and contrast(colour, background) < MIN_CONTRAST:
-        colour += 1
+    if -1 == background:
+        background = TERMINAL_BACKGROUND
+    # Lighter on a dark background, darker on a light one
+    step = -1 if is_light(background) else 1
+    while 232 < colour + step <= 255 and 232 <= colour <= 255 \
+            and contrast(colour, background) < MIN_CONTRAST:
+        colour += step
     return colour
 
 
@@ -1535,11 +1641,11 @@ class ColourPairs:
         """
         if SECONDARY == foreground:
             foreground = secondary(background)
-        key = (foreground, background)
+        key = (curses_colour(foreground), curses_colour(background))
         if key not in self._pairs:
             if self._next >= curses.COLOR_PAIRS or max(key) >= curses.COLORS:
                 return 0
-            curses.init_pair(self._next, foreground, background)
+            curses.init_pair(self._next, *key)
             self._pairs[key] = self._next
             self._next += 1
         return curses.color_pair(self._pairs[key])
@@ -1553,8 +1659,66 @@ BASIC_COLOURS = ((0, 0, 0), (205, 0, 0), (0, 205, 0), (205, 205, 0), (0, 0, 238)
 
 # Background of the cursor line where the diff has none: a dark grey
 CURSOR_LINE_GREY = 236
-# Background of the cursor's half of the diff row, on context lines
-CURSOR_SIDE_GREY = 240
+# The cursor's frame: thin lines left and right of its half's code, in
+# columns every row reserves, so nothing moves with the cursor. Segments
+# mark those columns with these foregrounds, the line number with
+# LINE_NUMBER, which the cursor row highlights.
+LEFT_MARK = -3
+RIGHT_MARK = -4
+LINE_NUMBER = -5
+FRAME_COLOUR = 250
+LINE_NUMBER_BACKGROUND = 237
+
+
+# Whether the interface draws in true colour, see true_colour_terminal().
+# Colours are palette indexes or (red, green, blue): in true colour all go
+# to the terminal as RGB, else as the nearest of the 256.
+TRUE_COLOUR = False
+# The terminal's own background, for the cursor's tint and the contrast of
+# secondary text on it: the setting tui.background, else what the terminal
+# says (see query_background()), else black
+TERMINAL_BACKGROUND = (0, 0, 0)
+# The cursor's tint: this share of white mixed into a row's background
+CURSOR_TINT = 0.07
+
+
+def rgb_of(colour):
+    """(red, green, blue) of a palette index or an RGB colour."""
+    return colour if isinstance(colour, tuple) else palette_colour(colour)
+
+
+def curses_colour(colour):
+    """A colour as curses takes it: -1 is the default. In true colour an
+    RGB number, where a direct colour terminal reads 0 to 7 as the basic
+    colours, which stay. Else a palette index.
+    """
+    if -1 == colour:
+        return -1
+    if not TRUE_COLOUR:
+        return palette_index(*colour) if isinstance(colour, tuple) else colour
+    if not isinstance(colour, tuple) and colour < 8:
+        return colour
+    red, green, blue = rgb_of(colour)
+    # Below 8 would be a basic colour: almost black is near enough.
+    return max(red << 16 | green << 8 | blue, 8)
+
+
+def is_light(colour):
+    """Whether dark text reads better on a colour than light text."""
+    return contrast(colour, (0, 0, 0)) > contrast(colour, (255, 255, 255))
+
+
+def cursor_tint(background):
+    """The cursor's background over a row's: CURSOR_TINT towards white in
+    true colour, towards black on a light one. The same without true
+    colour, where only the side lines mark it.
+    """
+    if not TRUE_COLOUR:
+        return background
+    colour = TERMINAL_BACKGROUND if -1 == background else rgb_of(background)
+    if is_light(colour):
+        return tuple(round(value * (1 - CURSOR_TINT)) for value in colour)
+    return tuple(round(value + (255 - value) * CURSOR_TINT) for value in colour)
 
 
 def palette_colour(index):
@@ -1568,25 +1732,16 @@ def palette_colour(index):
     return tuple(CUBE_LEVELS[level] for level in (index // 36, index // 6 % 6, index % 6))
 
 
-def lighter(background):
-    """A lighter palette colour for the cursor line's background, so the
-    line stands out but keeps the diff's red or green.
-    """
-    if background < 0 or curses.COLORS < 256:
-        return CURSOR_LINE_GREY if curses.COLORS >= 256 else background
-    red, green, blue = palette_colour(background)
-    # The palette is coarse: mix in more white until the colour changes.
-    for share in (0.15, 0.25, 0.35, 0.5):
-        colour = palette_index(*(round(value + (255 - value) * share)
-                                 for value in (red, green, blue)))
-        if colour != background:
-            return colour
-    return background
-
-
 # Backgrounds of removed and added lines: (line, changed characters). The
 # greens are the ones the reviewer's delta used, the reds delta's defaults.
 REMOVED_BACKGROUNDS = (palette_index(0x3f, 0x00, 0x01), palette_index(0x90, 0x10, 0x11))
+# The shades of the diff in true colour, light and strong, the exact ones
+# of delta and the web page
+TRUE_SHADES = {'removed': ((0x4b, 0x11, 0x13), (0xa3, 0x26, 0x2a)),
+               'added': ((0x1f, 0x4d, 0x2a), (0x2f, 0x7a, 0x40)),
+               'below': ((0x0c, 0x2d, 0x6b), (0x1f, 0x4f, 0x9e)),
+               'partly': ((0x2e, 0x14, 0x52), (0x4f, 0x2a, 0x85)),
+               'moved': ((0x0f, 0x3b, 0x3a), (0x1d, 0x6b, 0x68))}
 ADDED_BACKGROUNDS = (palette_index(0x1f, 0x4d, 0x2a), palette_index(0x2f, 0x7a, 0x40))
 # The same for terminals with fewer colours: red and green
 REMOVED_BASIC = 1
@@ -1612,8 +1767,9 @@ def highlighted(core, lines, path):
     for line in segments:
         cells = []
         for text, colour, styles in line:
-            foreground = -1 if colour is None else palette_index(
-                *(int(colour[index:index + 2], 16) for index in (1, 3, 5)))
+            # Kept as RGB, curses_colour() rounds them without true colour
+            foreground = -1 if colour is None else tuple(
+                int(colour[index:index + 2], 16) for index in (1, 3, 5))
             attributes = 0
             for style in styles:
                 attributes |= STYLE_ATTRIBUTES[style]
@@ -1640,6 +1796,11 @@ def half_cells(core, half, colours, marks):
             backgrounds = ((REMOVED_BASIC,) if core.REMOVED == half.kind else (ADDED_BASIC,)) * 2
         else:
             backgrounds = REMOVED_BACKGROUNDS if core.REMOVED == half.kind else ADDED_BACKGROUNDS
+        if TRUE_COLOUR:
+            backgrounds = TRUE_SHADES[
+                'partly' if half.number in marks[1] and half.number not in marks[0]
+                else 'below' if half.number in marks[0] else 'moved' if half.moved
+                else half.kind]
     else:
         backgrounds = (-1, -1)
     if half.whole:
@@ -1685,8 +1846,9 @@ def rendered_rows(core, rows, width, colours, marks):
     """
     digits = max([4] + [len(str(half.number)) for row in rows for half in (row.old, row.new)
                         if half.number])
-    half_width = max((width - len(HALF_SEPARATOR)) // 2, digits + 2)
-    text_width = half_width - digits - 1
+    half_width = max((width - len(HALF_SEPARATOR)) // 2, digits + 4)
+    # Two columns for the cursor's frame, see LEFT_MARK
+    text_width = half_width - digits - 1 - 2
     result = []
     for row in rows:
         if row.skipped:
@@ -1708,11 +1870,14 @@ def rendered_rows(core, rows, width, colours, marks):
             for side, (half, pieces, background) in enumerate(halves):
                 number = f'{half.number:>{digits}} ' if half.number and 0 == piece else \
                     ' ' * (digits + 1)
-                segments.append((number, SECONDARY, -1, 0))
+                segments.append((number, LINE_NUMBER if 0 == piece and half.number else SECONDARY,
+                                 -1, 0))
+                segments.append((' ', LEFT_MARK, -1, 0))
                 cells = pieces[piece] if piece < len(pieces) else []
                 padding = text_width - len(cells)
                 fill = background if piece < len(pieces) else -1
                 segments += grouped(cells + [(' ', -1, fill, 0)] * padding)
+                segments.append((' ', RIGHT_MARK, -1, 0))
                 if 0 == side:
                     segments.append((HALF_SEPARATOR, SECONDARY, -1, 0))
             numbers = (row.old.number, row.new.number) if 0 == piece else (None, None)
@@ -1943,7 +2108,9 @@ class DiffPane:
 
     def segments(self, index, highlighted):
         """The parts of a row as (text, curses attribute). The cursor row
-        is highlighted with lighter backgrounds, on the cursor's side only.
+        gets thin lines in the columns reserved left and right of the code,
+        a highlighted line number and a subtle tint, on the cursor's side
+        only.
         """
         result = []
         parts = self.lines[index]
@@ -1953,13 +2120,23 @@ class DiffPane:
         for number, (text, foreground, background, styles) in enumerate(parts):
             on_side = separator is None or (number < separator if 'old' == self.side
                                             else number > separator)
+            mark = highlighted and on_side
+            if foreground in (LEFT_MARK, RIGHT_MARK):
+                result.append((('▏' if LEFT_MARK == foreground else '▕') if mark else ' ',
+                               self._pairs.attribute(FRAME_COLOUR if curses.COLORS >= 256
+                                                     else -1, -1)))
+                continue
+            if LINE_NUMBER == foreground:
+                result.append((text, (self._pairs.attribute(255, LINE_NUMBER_BACKGROUND)
+                                      if curses.COLORS >= 256 else curses.A_REVERSE)
+                               | curses.A_BOLD if mark
+                               else self._pairs.attribute(SECONDARY, -1)))
+                continue
             if is_thread and not text.strip(HALF_SEPARATOR + ' '):
-                # A thread is highlighted, not the blanks around it.
+                # A thread is tinted, not the blanks around it.
                 on_side = False
             if highlighted and on_side:
-                background = (CURSOR_SIDE_GREY if background < 0 else lighter(lighter(background))) \
-                    if curses.COLORS >= 256 else background
-                styles |= curses.A_BOLD if curses.COLORS >= 256 else curses.A_REVERSE
+                background = cursor_tint(background)
             result.append((text, self._pairs.attribute(foreground, background) | styles))
         return result
 
@@ -2191,15 +2368,17 @@ def thread_rows(comment, width, expanded, core, note='', origin=''):
     label = comment_label(comment) + (f' {origin}' if origin else '')
     colour = STATUS_COLOURS['draft' if comment.is_draft() else comment.status]
     tint = THREAD_TINT if curses.COLORS >= 256 else -1
-    pad = (' ' * THREAD_INDENT, -1, -1, 0)
+    # The first column and the last are the cursor's frame, see LEFT_MARK.
+    pad = [(' ', LEFT_MARK, -1, 0), (' ' * (THREAD_INDENT - 1), -1, -1, 0)]
     # Indent, the two borders and one space: the rows are as wide as the pane
-    inner = max(width - THREAD_INDENT - 3, 20)
+    inner = max(width - THREAD_INDENT - 4, 20)
     title = f' #{comment.number} {label} '
     if not expanded:
         first = core.message_text(comment.messages[0]).split('\n')[0] if comment.messages else ''
         rest = f' {first}'[:max(inner - len(title), 0)]
-        return [[pad, ('▸', colour, tint, curses.A_BOLD), (title, colour, tint, curses.A_BOLD),
-                 (rest.ljust(inner + 1 - len(title)), SECONDARY, tint, 0)]]
+        return [[*pad, ('▸', colour, tint, curses.A_BOLD), (title, colour, tint, curses.A_BOLD),
+                 (rest.ljust(inner + 1 - len(title)), SECONDARY, tint, 0),
+                 (' ', RIGHT_MARK, -1, 0)]]
     border = (colour, -1, curses.A_BOLD)
     # A long note, like the line the thread was on, goes on below the
     # title, so it can always be read whole.
@@ -2212,10 +2391,10 @@ def thread_rows(comment, width, expanded, core, note='', origin=''):
         note = first
     extra = f' {note} ' if note else ''
     top = '─' * max(inner - len(title) - len(extra), 0)
-    rows = [[pad, ('┌─', *border), (title, colour, -1, curses.A_BOLD),
+    rows = [[*pad, ('┌─', *border), (title, colour, -1, curses.A_BOLD),
              (extra, SECONDARY, -1, 0), (top + '┐', *border)]]
     for line in note_rows:
-        rows.append([pad, ('│', *border), (' ' + line.ljust(inner), SECONDARY, -1, 0),
+        rows.append([*pad, ('│', *border), (' ' + line.ljust(inner), SECONDARY, -1, 0),
                      ('│', *border)])
     for message in comment.messages:
         reviewer = core.REVIEWER == message.author
@@ -2228,10 +2407,10 @@ def thread_rows(comment, width, expanded, core, note='', origin=''):
         for number, line in enumerate(lines):
             start_part = (prefix, name_colour, tint, curses.A_BOLD) if 0 == number else (
                 ' ' * len(prefix), -1, tint, 0)
-            rows.append([pad, ('│', *border), start_part,
+            rows.append([*pad, ('│', *border), start_part,
                          (line.ljust(inner + 1 - len(prefix)), -1, tint, 0), ('│', *border)])
-    rows.append([pad, ('└' + '─' * (inner + 1) + '┘', *border)])
-    return rows
+    rows.append([*pad, ('└' + '─' * (inner + 1) + '┘', *border)])
+    return [row + [(' ', RIGHT_MARK, -1, 0)] for row in rows]
 
 
 # ── the change screen ─────────────────────────────────────────────────────

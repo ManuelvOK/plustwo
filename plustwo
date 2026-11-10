@@ -159,6 +159,15 @@ plustwo config changes them, git config --file works too. Settings:
                                         below 100 columns), shown or hidden.
                                         The web page hides it on narrow
                                         windows.
+    tui.colours                         auto (the default), true or 256: true
+                                        colour needs a -direct terminfo
+                                        entry like st-direct, auto uses it
+                                        when COLORTERM says truecolor
+    tui.background                      the terminal's background, like
+                                        #1c1c1c, for the cursor's tint and
+                                        the contrast of grey text. Without
+                                        it the terminal is asked (OSC 11),
+                                        else black.
     tui.dim-colour                      the grey of secondary text like line
                                         numbers, a palette index, default
                                         246. Made lighter where a background

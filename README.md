@@ -96,6 +96,8 @@ repository (it wins).
 | 6   | `checks.setup`    | run before the check, e.g. a submodule update            |
 | 7   | `tui.sidebar`     | `auto` (hidden below 100 columns), `shown` or `hidden`   |
 | 8   | `tui.dim-colour`  | grey of secondary text, palette index, default `246`     |
+| 9   | `tui.colours`     | `auto`, `true` (needs a `-direct` terminfo) or `256`     |
+| 10  | `tui.background`  | terminal background `#rrggbb`, else asked, else black    |
 
 A check runs in its own worktree (`.git/plustwo/check`) at the stack's top
 change, so no checkout is touched. A newer upload stops a running one.

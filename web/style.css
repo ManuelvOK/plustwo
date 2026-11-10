@@ -3,7 +3,7 @@
   --bg: #ffffff; --fg: #1f2328; --dim: #656d76; --line: #d0d7de; --panel: #f6f8fa;
   --accent: #0969da; --removed: #ffebe9; --removed-emph: #ffc1bc; --added: #e6ffec;
   --added-emph: #abf2bc; --below: #ddf4ff; --below-emph: #b6e3ff; --partly: #f3e8ff;
-  --partly-emph: #e0c8ff; --moved: #d8f5f2; --moved-emph: #a8e6df; --thread: #fff8c5; --draft: #fbefff; --cursor: #fff5b1;
+  --partly-emph: #e0c8ff; --moved: #d8f5f2; --moved-emph: #a8e6df; --thread: #fff8c5; --frame: #8c959f; --draft: #fbefff; --cursor: #fff5b1;
   --good: #1a7f37; --bad: #cf222e; --warn: #9a6700;
 }
 /* Dark follows the system unless the toggle chose, see theme() in app.js.
@@ -14,7 +14,7 @@
     --bg: #0d1117; --fg: #f0f6fc; --dim: #b1bac4; --line: #555d68; --panel: #1c2128;
     --accent: #58a6ff; --removed: #4b1113; --removed-emph: #7d1d21; --added: #1f4d2a;
     --added-emph: #2a6436; --below: #0c2d6b; --below-emph: #1a4590; --partly: #2e1452;
-    --partly-emph: #47287a; --moved: #0f3b3a; --moved-emph: #175c59; --thread: #3a3214; --draft: #3b2445; --cursor: #4a4320;
+    --partly-emph: #47287a; --moved: #0f3b3a; --moved-emph: #175c59; --thread: #3a3214; --frame: #c9d1d9; --draft: #3b2445; --cursor: #4a4320;
     --good: #56d364; --bad: #ff7b72; --warn: #e3b341;
   }
 }
@@ -22,7 +22,7 @@
     --bg: #0d1117; --fg: #f0f6fc; --dim: #b1bac4; --line: #555d68; --panel: #1c2128;
     --accent: #58a6ff; --removed: #4b1113; --removed-emph: #7d1d21; --added: #1f4d2a;
     --added-emph: #2a6436; --below: #0c2d6b; --below-emph: #1a4590; --partly: #2e1452;
-    --partly-emph: #47287a; --moved: #0f3b3a; --moved-emph: #175c59; --thread: #3a3214; --draft: #3b2445; --cursor: #4a4320;
+    --partly-emph: #47287a; --moved: #0f3b3a; --moved-emph: #175c59; --thread: #3a3214; --frame: #c9d1d9; --draft: #3b2445; --cursor: #4a4320;
     --good: #56d364; --bad: #ff7b72; --warn: #e3b341;
 }
 * { box-sizing: border-box; }
@@ -99,7 +99,12 @@ td.text.below.whole { background: var(--below-emph); }
 td.text.partly.whole { background: var(--partly-emph); }
 td.text.moved.whole { background: var(--moved-emph); }
 td.empty { background: var(--panel); }
-tr.cursor td.side { box-shadow: inset 3px 0 var(--accent); }
+/* The cursor: a thin frame around its half's code, its line's background
+   7 % towards white like in the terminal, its line number highlighted */
+tr.cursor td.text.side { box-shadow: inset 0 0 0 1px var(--frame);
+                         background-image: linear-gradient(rgba(255, 255, 255, 0.07),
+                                                           rgba(255, 255, 255, 0.07)); }
+tr.cursor td.num.side { color: var(--fg); font-weight: 600; background-color: var(--panel); }
 tr.gap td { text-align: center; color: var(--dim); background: var(--panel); cursor: pointer; }
 .thread { margin: 4px 8px 8px; padding: 6px 10px; border: 1px solid var(--line);
           border-radius: 6px; background: var(--thread); font: 13px/1.4 system-ui, sans-serif;

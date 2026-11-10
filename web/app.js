@@ -430,7 +430,7 @@ function diffView(change) {
       const isCursorSide = index === state.cursor && side === state.side;
       // New text all over gets the strong shade, see Half in the core.
       if (half.whole && kind !== 'context' && kind !== 'empty') kind += ' whole';
-      tr.append(el('td', {class: `num ${kind}`, title: 'comment',
+      tr.append(el('td', {class: `num ${kind}${isCursorSide ? ' side' : ''}`, title: 'comment',
                           onclick: () => half.number && openEditor(side, half.number, index)},
                    half.number || ''),
                 el('td', {class: `text ${kind}${isCursorSide ? ' side' : ''}`,

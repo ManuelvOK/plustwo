@@ -221,5 +221,31 @@ class CursorTest(unittest.TestCase):
         self.assertTrue(set(range(2, 32)) <= seen)
         self.assertEqual(32, diff.cursor)
 
+
+class BackgroundReplyTest(unittest.TestCase):
+    """The terminal's answer to OSC 11, its background."""
+
+    def test_replies(self):
+        parse = tui.parse_background_reply
+        self.assertEqual((0x1c, 0x1c, 0x1c), parse('\x1b]11;rgb:1c1c/1c1c/1c1c\x1b\\'))
+        self.assertEqual((255, 0, 128), parse('\x1b]11;rgb:ff/00/80\x07'))
+        self.assertEqual((255, 136, 0), parse('\x1b]11;rgb:f/8/0\x07\x1b[?62;22c'))
+        self.assertEqual((0x1c, 0x1c, 0x1c), parse('junk\x1b]11;rgb:1c1c/1c1c/1c1c\x07\x1b[?1;2c'))
+        for garbage in ('', '\x1b[?1;2c', '\x1b]11;rgb:zz/00/00\x07', '\x1b]11;rgb:ff/00/00'):
+            self.assertIsNone(parse(garbage), garbage)
+        self.assertEqual((0x1c, 0x1c, 0x1c), tui.parse_colour('#1c1c1c'))
+        self.assertIsNone(tui.parse_colour('dark'))
+
+    def test_tint_follows_the_background(self):
+        tui.TRUE_COLOUR = True
+        try:
+            tui.TERMINAL_BACKGROUND = (0, 0, 0)
+            self.assertEqual((18, 18, 18), tui.cursor_tint(-1))
+            tui.TERMINAL_BACKGROUND = (250, 250, 250)
+            self.assertEqual((232, 232, 232), tui.cursor_tint(-1))
+        finally:
+            tui.TRUE_COLOUR = False
+            tui.TERMINAL_BACKGROUND = (0, 0, 0)
+
 if __name__ == '__main__':
     unittest.main()
