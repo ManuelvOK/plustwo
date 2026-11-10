@@ -80,6 +80,9 @@ ACTIONS = (
      'that line of the new version.'),
     ('page-down', 'Moving', 'half page', 'half a page down'),
     ('page-up', 'Moving', 'half page', 'half a page up'),
+    ('scroll-down', 'Moving', 'scroll', 'in the diff: the view one row down, the cursor stays. '
+     'j and k scroll through a thread taller than the pane, too.'),
+    ('scroll-up', 'Moving', 'scroll', 'in the diff: the view one row up, the cursor stays'),
     ('open', 'Moving', 'open', 'open. In the stack (▶ is the change shown, › and the turn '
      'colour mark those where it is your turn, "(submittable)" those a submit would take '
      'now): shows that change. On a file: into the '
@@ -161,6 +164,7 @@ VIM_KEYS = {
     'quit': 'q', 'quit-now': 'Z Q', 'help': '?', 'reload': 'R', 'back': 'h,Esc',
     'down': 'j,Down', 'up': 'k,Up', 'top': 'g g,Home', 'bottom': 'G,End',
     'page-down': 'C-d,PageDown', 'page-up': 'C-u,PageUp', 'open': 'l,Enter',
+    'scroll-down': 'C-e', 'scroll-up': 'C-y',
     'diff': 'd', 'vote': 'v', 'verified': 'V', 'submit': 'S', 'rebase': 'B',
     'next-pane': 'Tab', 'next-file': '] f', 'prev-file': '[ f',
     'next-change': '] s', 'prev-change': '[ s',
@@ -1940,28 +1944,64 @@ class DiffPane:
         """The rows the cursor stops on."""
         return [index for index, row in enumerate(self.rows) if 'thread' != row[0] or 0 == row[2]]
 
-    def set_cursor(self, index, height):
+    def set_cursor(self, index, height, upwards=False):
         """Puts the cursor on the stop of a row and scrolls it into view,
-        all of it if it fits.
+        all of it if it fits. A taller thread shows its start, or its end
+        when the cursor came from below (upwards), to read on from there.
         """
         self.cursor = self.stop_of(max(0, min(index, len(self.rows) - 1)))
         end = self.stop_end(self.cursor)
-        if self.cursor < self.scroll:
+        if upwards and end - self.cursor + 1 > height:
+            self.scroll = max(end - height + 1, 0)
+        elif self.cursor < self.scroll:
             self.scroll = self.cursor
         elif end >= self.scroll + height:
             self.scroll = max(min(self.cursor, end - height + 1), 0)
 
     def move_cursor(self, steps, height):
         """Moves the cursor by stops, a whole thread being one, and
-        scrolls so it stays visible.
+        scrolls so it stays visible. In a thread taller than the pane, each
+        step first scrolls one row through it, until its end (or start)
+        shows.
         """
         if not self.rows:
             self.cursor = 0
             return
-        stops = self._stops()
-        current = self.stop_of(min(self.cursor, len(self.rows) - 1))
-        position = stops.index(current) if current in stops else 0
-        self.set_cursor(stops[max(0, min(position + steps, len(stops) - 1))], height)
+        if not steps:
+            self.set_cursor(self.cursor, height)
+            return
+        direction = 1 if steps > 0 else -1
+        for _ in range(abs(steps)):
+            start = self.stop_of(min(self.cursor, len(self.rows) - 1))
+            end = self.stop_end(start)
+            if end - start + 1 > height:
+                if direction > 0 and end >= self.scroll + height:
+                    self.scroll += 1
+                    continue
+                if direction < 0 and start < self.scroll:
+                    self.scroll -= 1
+                    continue
+            stops = self._stops()
+            position = stops.index(start) if start in stops else 0
+            self.set_cursor(stops[max(0, min(position + direction, len(stops) - 1))], height,
+                            direction < 0)
+
+    def scroll_rows(self, rows, height):
+        """Scrolls the view by rows without moving the cursor, unless it
+        would leave the pane: then it goes to the nearest stop shown.
+        """
+        if not self.rows:
+            return
+        self.scroll = max(0, min(self.scroll + rows, max(len(self.rows) - height, 0)))
+        if self.stop_end(self.cursor) < self.scroll:
+            self.cursor = next((stop for stop in self._stops() if stop >= self.scroll),
+                               self.cursor)
+        elif self.cursor >= self.scroll + height:
+            self.cursor = self.stop_of(self.scroll + height - 1)
+
+    def is_tall(self, height):
+        """Whether the cursor's stop is a thread taller than the pane."""
+        return self.stop_end(self.cursor) - self.cursor + 1 > height
 
     def scroll_by(self, rows, height):
         """Scrolls the view by rows, the cursor along at the same place of
@@ -2401,6 +2441,8 @@ class ChangeView:
         elif self._diff.rows and self._diff.thread_at(self._diff.cursor) is not None:
             entries = thread_footer(self._thread_at_cursor()) + [
                 (('comment',), 'new thread'), (('open',), 'fold')]
+            if self._diff.is_tall(self._diff_height()):
+                entries.insert(0, (('down', 'up'), 'read on'))
         elif self._diff.rows and self._diff.gap_at(self._diff.cursor) is not None:
             entries = [(('open',), 'expand')]
         else:
@@ -2970,11 +3012,13 @@ class ChangeView:
             'down': lambda: self._diff.move_cursor(count or 1, height),
             'up': lambda: self._diff.move_cursor(-(count or 1), height),
             'top': lambda: (self._diff.go_to_new_line(count, height) if count
-                            else self._diff.move_cursor(-self._diff.cursor, height)),
+                            else self._diff.set_cursor(0, height)),
             'bottom': lambda: (self._diff.go_to_new_line(count, height) if count
-                               else self._diff.move_cursor(len(self._diff.rows), height)),
+                               else self._diff.set_cursor(len(self._diff.rows) - 1, height)),
             'page-down': lambda: self._diff.scroll_by(height // 2, height),
             'page-up': lambda: self._diff.scroll_by(-(height // 2), height),
+            'scroll-down': lambda: self._diff.scroll_rows(count or 1, height),
+            'scroll-up': lambda: self._diff.scroll_rows(-(count or 1), height),
         }
         if 'next-pane' == action:
             # Only the panes shown
