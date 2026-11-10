@@ -474,6 +474,10 @@ class Interface:
             curses.init_pair(number, number if number < 8 else 8, -1)
         screen.timeout(RELOAD_INTERVAL_MS)
         self.colour_pairs = ColourPairs()
+        global DIM_COLOUR  # pylint: disable=global-statement
+        dim_colour = core.setting('tui.dim-colour', str(DIM_COLOUR))
+        if dim_colour.isdigit() and int(dim_colour) < 256:
+            DIM_COLOUR = int(dim_colour)
         # Index into CONTEXT_STEPS, kept for all changes
         self.context_step = 0
         # Gerrit's whitespace mode of the diff, one of core.WHITESPACE_MODES
@@ -636,7 +640,7 @@ class Interface:
             if not keys or column + len(keys) + len(label) + 1 >= width:
                 continue
             self.text(height - 2, column, keys, curses.A_BOLD, width)
-            self.text(height - 2, column + len(keys) + 1, label, curses.A_DIM, width)
+            self.text(height - 2, column + len(keys) + 1, label, self.dim(), width)
             column += len(keys) + len(label) + 4
         colour = {OK: curses.color_pair(2), ERROR: curses.color_pair(1)}.get(
             getattr(self, '_message_kind', None), 0)
@@ -647,6 +651,14 @@ class Interface:
             self.text(height - 1, width - len(prefix) - 2, prefix, curses.A_BOLD)
         if refresh:
             self._screen.refresh()
+
+    def dim(self, attributes=0, background=-1):
+        """The attribute of secondary text, see secondary(). Nothing on a
+        reversed row, whose text is plain there.
+        """
+        if attributes & curses.A_REVERSE:
+            return 0
+        return self.colour_pairs.attribute(SECONDARY, background)
 
     def text(self, row, column, text, attributes=0, width=None):
         """Writes text, cut at the screen's edge. Never raises for space."""
@@ -677,7 +689,7 @@ class Interface:
                 more = len(lines) > height - 1
                 self.text(height - 1, 1, (f'{self.keymap.label("down")}/'
                                           f'{self.keymap.label("up")} scroll, ' if more else '')
-                          + 'any other key closes', curses.A_DIM)
+                          + 'any other key closes', self.dim())
                 self._screen.refresh()
                 result = self.keymap.feed(self._with_meta(self._screen.getch()))
                 if PENDING == result:
@@ -835,7 +847,7 @@ class Interface:
         self.text(top, left + 2, f' {title} ', curses.A_BOLD)
         self.text(top + inside + 1, left, '└' + '─' * (box_width - 2) + '┘', curses.A_BOLD)
         if len(hint) + 4 < box_width:
-            self.text(top + inside + 1, left + box_width - len(hint) - 2, hint, curses.A_DIM)
+            self.text(top + inside + 1, left + box_width - len(hint) - 2, hint, self.dim())
         for offset in range(inside):
             line = rows[first + offset] if first + offset < len(rows) else ''
             self.text(top + 1 + offset, left, '│', curses.A_BOLD)
@@ -1208,7 +1220,7 @@ class StackView:
         subject_width = max(area.width - 104, 16)
         out(2, 1, f'{"#":>3}  {"Change":<9} {"Repo":<12} {"Topic":<14} '
             f'{"Subject":<{subject_width}} {"PS":<5} {"CR":<7} {"V":<7} {"Turn":<10} Comments',
-            curses.A_DIM | curses.A_UNDERLINE)
+            self._interface.dim() | curses.A_UNDERLINE)
         height = area.height - self.TOP
         self._scroll = min(self._scroll, self._selected)
         if self._selected >= self._scroll + height:
@@ -1227,20 +1239,22 @@ class StackView:
                     attributes | curses.A_BOLD)
                 continue
             if 'none' == row_content[0]:
-                out(row, 6, '(none)', curses.A_DIM)
+                out(row, 6, '(none)', self._interface.dim())
                 continue
             change = self._changes[row_content[1]]
-            dim = curses.A_DIM if change.wip else 0
+            # Plain text on the reversed cursor row
+            secondary_text = self._interface.dim(attributes)
+            dim = secondary_text if change.wip else 0
             out(row, 1, ' ' * (area.width - 2), attributes)
             out(row, 1, f'{row_content[1] + 1:>3}  ', attributes | dim)
-            out(row, 6, f'{change.short_id():<9} ', attributes | curses.A_DIM)
+            out(row, 6, f'{change.short_id():<9} ', attributes | secondary_text)
             out(row, 16, f'{change.repo:<12.12} ', attributes | dim)
             behind = (change.repository, change.topic) in self._behind
             out(row, 29, f'{("↻ " if behind else "") + change.topic:<14.14} ',
-                attributes | (curses.color_pair(3) if behind else curses.A_DIM))
+                attributes | (curses.color_pair(3) if behind else secondary_text))
             out(row, 44, f'{change.subject:<{subject_width}.{subject_width}} ', attributes | dim)
             column = 45 + subject_width
-            out(row, column, f'{core.version_label(change):<5} ', attributes | curses.A_DIM)
+            out(row, column, f'{core.version_label(change):<5} ', attributes | secondary_text)
             column += 6
             for label, short in ((core.CODE_REVIEW, 'CR'), (core.VERIFIED, 'V')):
                 badge = vote_badge(self._interface, short, change.label_value(label),
@@ -1251,8 +1265,9 @@ class StackView:
             turn = change.turn()
             yours = 'your-turn' in self._sections[row_content[1]]
             out(row, column, f'{TURN_LABELS.get(turn, turn) if not yours else "▶ yours":<10} ',
-                attributes | (curses.A_BOLD | curses.color_pair(3) if yours else curses.A_DIM))
-            out(row, column + 11, core.comment_counts(change), attributes | curses.A_DIM)
+                attributes | (curses.A_BOLD | curses.color_pair(3) if yours
+                              else secondary_text))
+            out(row, column + 11, core.comment_counts(change), attributes | secondary_text)
 
     def mouse(self, row, _column, kind):
         """A click selects a row, a double click opens it."""
@@ -1467,6 +1482,42 @@ def palette_index(red, green, blue):
     return 16 + 36 * cube[0] + 6 * cube[1] + cube[2]
 
 
+# The foreground of secondary text, like line numbers and ids, in segments
+# and colour pairs: a grey readable on the background, see secondary().
+# Not curses' A_DIM, which many terminals draw almost invisible.
+SECONDARY = -2
+# The grey of secondary text, the setting tui.dim-colour
+DIM_COLOUR = 246
+# The least contrast of secondary text, like WCAG's for normal text
+MIN_CONTRAST = 4.5
+
+
+def contrast(first, second):
+    """The contrast ratio of two palette colours, 1 to 21."""
+    def luminance(index):
+        channels = [value / 255 for value in palette_colour(index)]
+        channels = [value / 12.92 if value <= 0.03928 else ((value + 0.055) / 1.055) ** 2.4
+                    for value in channels]
+        return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+    lighter_one, darker_one = sorted((luminance(first), luminance(second)), reverse=True)
+    return (lighter_one + 0.05) / (darker_one + 0.05)
+
+
+def secondary(background=-1):
+    """The colour of secondary text on a background (-1 the default):
+    DIM_COLOUR, lighter on the ramp of greys where the background needs
+    it. -1, normal text, with fewer than 256 colours.
+    """
+    if curses.COLORS < 256:
+        return -1
+    colour = DIM_COLOUR
+    if background < 0:
+        return colour
+    while 232 <= colour < 255 and contrast(colour, background) < MIN_CONTRAST:
+        colour += 1
+    return colour
+
+
 class ColourPairs:
     """Hands out curses colour pairs for foreground/background combinations.
 
@@ -1479,7 +1530,11 @@ class ColourPairs:
         self._next = FIRST_DIFF_PAIR
 
     def attribute(self, foreground, background):
-        """The curses attribute for two palette colours (-1 is default)."""
+        """The curses attribute for two palette colours (-1 is default).
+        SECONDARY as foreground is the grey of secondary text.
+        """
+        if SECONDARY == foreground:
+            foreground = secondary(background)
         key = (foreground, background)
         if key not in self._pairs:
             if self._next >= curses.COLOR_PAIRS or max(key) >= curses.COLORS:
@@ -1601,7 +1656,7 @@ def half_cells(core, half, colours, marks):
         if '\t' == character:
             cells += [(' ', foreground, background, styles)] * (TAB_WIDTH - len(cells) % TAB_WIDTH)
         elif ord(character) < 32 or 127 == ord(character):
-            cells.append(('·', foreground, background, styles | curses.A_DIM))
+            cells.append(('·', SECONDARY, background, styles))
         else:
             cells.append((character, foreground, background, styles))
     return cells, backgrounds[0]
@@ -1636,7 +1691,7 @@ def rendered_rows(core, rows, width, colours, marks):
     for row in rows:
         if row.skipped:
             label = f' {row.skipped} common line{"s" if row.skipped > 1 else ""} '
-            result.append(([(label.center(width, '┄'), -1, -1, curses.A_DIM)],
+            result.append(([(label.center(width, '┄'), SECONDARY, -1, 0)],
                            (None, None), False, False, row.old.number))
             continue
         changed = (core.CONTEXT, core.CONTEXT) != (row.old.kind, row.new.kind)
@@ -1653,13 +1708,13 @@ def rendered_rows(core, rows, width, colours, marks):
             for side, (half, pieces, background) in enumerate(halves):
                 number = f'{half.number:>{digits}} ' if half.number and 0 == piece else \
                     ' ' * (digits + 1)
-                segments.append((number, -1, -1, curses.A_DIM))
+                segments.append((number, SECONDARY, -1, 0))
                 cells = pieces[piece] if piece < len(pieces) else []
                 padding = text_width - len(cells)
                 fill = background if piece < len(pieces) else -1
                 segments += grouped(cells + [(' ', -1, fill, 0)] * padding)
                 if 0 == side:
-                    segments.append((HALF_SEPARATOR, -1, -1, curses.A_DIM))
+                    segments.append((HALF_SEPARATOR, SECONDARY, -1, 0))
             numbers = (row.old.number, row.new.number) if 0 == piece else (None, None)
             result.append((segments, numbers, 0 != piece, changed, None))
     return result
@@ -1735,10 +1790,10 @@ class DiffPane:
         from_below, partly = core.rebase_lines(change, *compare, path=path)
         marks = ((from_below[0], partly[0]), (from_below[1], partly[1]))
         if rows is None:
-            rendered = [([('Binary file, not shown.', -1, -1, curses.A_DIM)], (None, None), False,
+            rendered = [([('Binary file, not shown.', SECONDARY, -1, 0)], (None, None), False,
                           False, None)]
         elif not rows:
-            rendered = [([('No differences in this file.', -1, -1, curses.A_DIM)], (None, None),
+            rendered = [([('No differences in this file.', SECONDARY, -1, 0)], (None, None),
                           False, False, None)]
         else:
             if self.expanded_gaps and any(row.skipped for row in rows):
@@ -2121,8 +2176,8 @@ def in_half(parts, side, left_width):
     # for the cursor's side.
     if 'old' == side:
         used = sum(len(part[0]) for part in parts)
-        return parts + [(' ' * max(left_width - used, 0) + HALF_SEPARATOR, -1, -1, curses.A_DIM)]
-    return [(' ' * left_width + HALF_SEPARATOR, -1, -1, curses.A_DIM)] + parts
+        return parts + [(' ' * max(left_width - used, 0) + HALF_SEPARATOR, SECONDARY, -1, 0)]
+    return [(' ' * left_width + HALF_SEPARATOR, SECONDARY, -1, 0)] + parts
 
 
 def thread_rows(comment, width, expanded, core, note='', origin=''):
@@ -2144,7 +2199,7 @@ def thread_rows(comment, width, expanded, core, note='', origin=''):
         first = core.message_text(comment.messages[0]).split('\n')[0] if comment.messages else ''
         rest = f' {first}'[:max(inner - len(title), 0)]
         return [[pad, ('▸', colour, tint, curses.A_BOLD), (title, colour, tint, curses.A_BOLD),
-                 (rest.ljust(inner + 1 - len(title)), -1, tint, curses.A_DIM)]]
+                 (rest.ljust(inner + 1 - len(title)), SECONDARY, tint, 0)]]
     border = (colour, -1, curses.A_BOLD)
     # A long note, like the line the thread was on, goes on below the
     # title, so it can always be read whole.
@@ -2158,9 +2213,9 @@ def thread_rows(comment, width, expanded, core, note='', origin=''):
     extra = f' {note} ' if note else ''
     top = '─' * max(inner - len(title) - len(extra), 0)
     rows = [[pad, ('┌─', *border), (title, colour, -1, curses.A_BOLD),
-             (extra, -1, -1, curses.A_DIM), (top + '┐', *border)]]
+             (extra, SECONDARY, -1, 0), (top + '┐', *border)]]
     for line in note_rows:
-        rows.append([pad, ('│', *border), (' ' + line.ljust(inner), -1, -1, curses.A_DIM),
+        rows.append([pad, ('│', *border), (' ' + line.ljust(inner), SECONDARY, -1, 0),
                      ('│', *border)])
     for message in comment.messages:
         reviewer = core.REVIEWER == message.author
@@ -2279,7 +2334,7 @@ class PatchSetView:
         sides = f'A: {self._side_label(self._a)}  B: {self._side_label(self._b)} '
         out(0, max(area.width - len(sides), len(title) + 3), sides, bar | curses.A_BOLD)
         out(2, 1, f'{"A":<2}{"B":<2} {"PS":<6} {"Uploaded":<17} {"By":<12} {"Type":<15} '
-            f'{"CR":<6} {"V":<6} Comments', curses.A_DIM | curses.A_UNDERLINE)
+            f'{"CR":<6} {"V":<6} Comments', self._interface.dim() | curses.A_UNDERLINE)
         height = area.height - self.TOP
         self._scroll = min(self._scroll, self._selected)
         if self._selected >= self._scroll + height:
@@ -2297,7 +2352,7 @@ class PatchSetView:
                 + ('●' if version == self._b else ' ') + ' '
             out(row, 1, marks, attributes | curses.A_BOLD | curses.color_pair(3))
             if 'base' == content[0]:
-                out(row, 6, 'base', attributes | curses.A_DIM)
+                out(row, 6, 'base', attributes | self._interface.dim(attributes))
                 continue
             entry = content[1]
             when = time.strftime('%Y-%m-%d %H:%M', time.localtime(entry.uploaded)) \
@@ -2307,8 +2362,9 @@ class PatchSetView:
                 f'{entry.kind:<15} {entry.vote_label(core.CODE_REVIEW):<6} '
                 f'{entry.vote_label(core.VERIFIED):<6} ', attributes)
             comments = entry.comments_label()
-            out(row, 71, comments, attributes | (status_attribute('unresolved') | curses.A_BOLD
-                                                 if entry.open_threads() else curses.A_DIM))
+            out(row, 71, comments, attributes | (
+                status_attribute('unresolved') | curses.A_BOLD if entry.open_threads()
+                else self._interface.dim(attributes)))
 
     def _draw_event(self, row, event, attributes, width):
         """An unfolded row: a thread, a reply or a vote."""
@@ -2317,7 +2373,7 @@ class PatchSetView:
             'Author' if self._interface.core.AUTHOR == event.author else event.author)
         if 'vote' == event.kind:
             text = f'{when:<11} {who}: {event.text}'
-            out_attributes = attributes | curses.A_DIM
+            out_attributes = attributes | self._interface.dim(attributes)
         else:
             label = ('draft' if event.draft else event.status)
             what = 'reply on' if 'reply' == event.kind else 'thread'
@@ -2558,7 +2614,7 @@ class ChangeView:
         """Draws the frame around a pane, with its title."""
         out = self._interface.text
         top, left, height, width = self._layout[pane]
-        attributes = curses.A_BOLD if pane == self._focus else curses.A_DIM
+        attributes = curses.A_BOLD if pane == self._focus else self._interface.dim()
         out(top - 1, left - 1, '┌' + '─' * width + '┐', attributes)
         out(top - 1, left + 1, f' {title} '[:max(width - 2, 0)], attributes)
         for row in range(top, top + height):
@@ -2573,9 +2629,10 @@ class ChangeView:
         change = self._change
         self._layout = self._compute_layout(area)
         bar = self._interface.colour_pairs.attribute(15, tone(HEADER_BACKGROUND))
+        header_dim = self._interface.dim(background=tone(HEADER_BACKGROUND))
         out(0, 0, ' ' * area.width, bar)
         place = f'{change.repo} › {change.topic} ›' if change.repo else f'{change.topic} ›'
-        out(0, 1, place, bar | curses.A_DIM)
+        out(0, 1, place, header_dim)
         out(0, 2 + len(place), change.subject, bar | curses.A_BOLD)
         state = f' {change.state()} '
         chip = self._interface.colour_pairs.attribute(
@@ -2588,7 +2645,7 @@ class ChangeView:
             out(0, max(area.width - len(version) - len(state) - len(behind) - 2, 1), behind,
                 self._interface.colour_pairs.attribute(0, 1 if 'conflicts' == self._behind
                                                        else 3) | curses.A_BOLD)
-        out(0, max(area.width - len(version), 1), version, bar | curses.A_DIM)
+        out(0, max(area.width - len(version), 1), version, header_dim)
         patch_sets = ' '.join(str(number) for number in sorted(change.patch_sets)) or '-'
         try:
             (first, _), (second, _) = core.versions_to_compare(change, *self._compare)
@@ -2601,7 +2658,7 @@ class ChangeView:
             header += (f'   sidebar hidden ({self._interface.keymap.label("sidebar")}), file '
                        f'{self._file_index + 1}/{len(self._files)}: '
                        f'{file_label(core, self._selected_file(), self._renames)}')
-        out(1, 1, header, curses.A_DIM)
+        out(1, 1, header, self._interface.dim())
         self._draw_votes(4 + len(header))
         if FILES in self._layout:
             self._draw_stack()
@@ -2621,7 +2678,7 @@ class ChangeView:
         first = self._stack_first(height)
         for row, other in enumerate(shown[first:first + height]):
             is_current = other.change_id == self._change_id
-            attributes = curses.A_BOLD if is_current else curses.A_DIM
+            attributes = curses.A_BOLD if is_current else self._interface.dim()
             if other.change_id in self._yours:
                 # In the turn colour of the dashboard
                 attributes = curses.A_BOLD | curses.color_pair(3)
@@ -2652,7 +2709,7 @@ class ChangeView:
                       for line in textwrap.wrap(paragraph, width) or ['']]
         if trailers:
             lines.append(('', 0))
-            lines += [(line[:width], curses.A_DIM) for line in trailers]
+            lines += [(line[:width], self._interface.dim()) for line in trailers]
         return lines
 
     def _draw_message(self):
@@ -2698,7 +2755,7 @@ class ChangeView:
         failed = [vote for vote in change.current_votes(core.VERIFIED) if vote.value < 0]
         if failed and failed[0].message:
             lines = failed[0].message.strip().split('\n')
-            out(1, column, f'{failed[0].by}: {lines[-1]}', curses.A_DIM)
+            out(1, column, f'{failed[0].by}: {lines[-1]}', self._interface.dim())
 
     def _draw_files(self):
         """Draws the file list."""
@@ -2733,7 +2790,7 @@ class ChangeView:
         top, left, height, width = self._layout[COMMENTS]
         comments = self._change.comments
         if not comments:
-            out(top, left, 'none yet', curses.A_DIM, left + width)
+            out(top, left, 'none yet', self._interface.dim(), left + width)
         for index, comment in enumerate(comments[:height]):
             selected = index == self._comment_index
             attributes = curses.A_REVERSE if selected and COMMENTS == self._focus else 0

@@ -159,6 +159,11 @@ plustwo config changes them, git config --file works too. Settings:
                                         below 100 columns), shown or hidden.
                                         The web page hides it on narrow
                                         windows.
+    tui.dim-colour                      the grey of secondary text like line
+                                        numbers, a palette index, default
+                                        246. Made lighter where a background
+                                        needs it. Pick a darker one, like
+                                        240, on a light terminal.
 """
 
 import argparse
