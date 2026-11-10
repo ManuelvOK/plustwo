@@ -16,6 +16,8 @@ const state = {
   diff: null, cursor: 0, side: 'new', editor: null, listIndex: 0, listIds: [],
   // the patch set list: unfolded rows, whether it is open, a thread to show
   psExpanded: new Set(), psOpen: false, jumpThread: null,
+  // the comparison to go back to after showing a thread on its own patch set
+  previousCompare: null,
 };
 
 // The file list beside the diff: 'shown' or 'hidden' as chosen in this
@@ -188,7 +190,9 @@ async function renderChange(id, file) {
     if (state.change) state.file = null;
   }
   state.change = change;
-  state.file = file && change.files.some((entry) => entry.path === file) ? file
+  // A file only an older patch set has, while a thread is shown there
+  state.file = file && (state.previousCompare || change.files.some((entry) => entry.path === file))
+    ? file
     : (state.file && change.files.some((entry) => entry.path === state.file) ? state.file
        : (change.files[1] || change.files[0]).path);
   state.diff = await api('diff', {id, path: state.file, a: state.a, b: state.b,
@@ -307,7 +311,13 @@ function toolbar(change) {
     options.map((option, index) => el('option', {value: option, selected: option === value},
                                       labels[index])));
   const b = state.b === 'latest' ? String(change.patch_set) : state.b;
-  return el('div', {class: 'toolbar'},
+  const back = state.previousCompare ? el('button', {onclick: () => {
+    const previous = state.previousCompare;
+    state.previousCompare = null;
+    state.a = previous.a; state.b = previous.b;
+    if (previous.file === state.file) render(); else openFile(previous.file);
+  }}, 'Back to the comparison before') : null;
+  return el('div', {class: 'toolbar'}, back,
     el('button', {onclick: toggleSidebar, title: 'Hide or show the file list'},
        sidebarShown() ? 'Hide files' : 'Show files'),
     el('button', {class: 'primary', onclick: openReply}, 'Reply'),
@@ -497,11 +507,19 @@ function threadView(comment) {
   });
   const number = comment.number;
   const {origin, note} = shownPlace(comment);
+  // A thread of another patch set: show it on its own, the diff against its parent
+  const ownPatchSet = origin ? el('a', {href: '#', onclick: (event) => {
+    event.preventDefault();
+    state.previousCompare = {a: state.a, b: state.b, file: state.file};
+    state.a = 'base'; state.b = String(comment.patch_set); state.jumpThread = comment.number;
+    if (comment.path === PATCHSET_LEVEL || comment.path === state.file) render();
+    else openFile(comment.path);
+  }}, ` show in PS${comment.patch_set}`) : null;
   return el('div', {class: `thread ${comment.status}`, id: `thread-${number}`},
     el('div', {}, el('span', {class: `chip ${status === 'unresolved' ? 'warn' : ''}`},
                      `#${number} ${status}${pending}`), ' ',
        el('span', {class: 'dim thread-place'}, comment.place + (comment.side === 'old' ? ' (old)' : '')
-          + (origin ? ` (${origin}${note ? ', ' + note : ''})` : ''))),
+          + (origin ? ` (${origin}${note ? ', ' + note : ''})` : '')), ownPatchSet),
     messages,
     editing ? editorFor(null, null, comment) : el('div', {class: 'actions'},
       comment.has_draft

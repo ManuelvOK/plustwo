@@ -103,6 +103,9 @@ ACTIONS = (
      'touching any checkout. On a conflict the author is asked to rebase.'),
     ('next-pane', 'Change', 'next pane', 'next pane: stack, commit message, files, comments, '
      'diff'),
+    ('thread-patch-set', 'Threads', 'own PS', 'show the thread on its own patch set: the diff '
+     'against its parent, at the thread. Again (or back in the diff) returns to the '
+     'comparison before.'),
     ('sidebar', 'Change', 'sidebar', 'hide or show the left column (stack, files, comments), '
      'so the diff gets the whole width. The setting tui.sidebar (auto, shown, hidden) picks the '
      'start, auto hides it below 100 columns.'),
@@ -170,7 +173,7 @@ VIM_KEYS = {
     'section-down': 'J', 'section-up': 'K',
     # Like vim's C-w o, which keeps only the current window
     'sidebar': 'C-w o,z s',
-    'set-a': 'a', 'set-b': 'b', 'compare-prompt': ':',
+    'set-a': 'a', 'set-b': 'b', 'compare-prompt': ':', 'thread-patch-set': 'g p',
 }
 PRESETS = {
     'vim': VIM_KEYS,
@@ -185,7 +188,7 @@ PRESETS = {
               'next-chunk': 'n', 'prev-chunk': 'p', 'next-file': 'N', 'prev-file': 'P',
               'next-thread': ']', 'prev-thread': '[', 'patch-sets': 'b',
               # Like delete-other-windows
-              'sidebar': 'C-x 1', 'set-b': 'M-b'},
+              'sidebar': 'C-x 1', 'set-b': 'M-b', 'thread-patch-set': 'C-c p'},
     # Gerrit's web interface: j and k move, n and p go to the next and
     # previous changes, N and P to the next and previous thread, ] and [ to
     # the next and previous file, u goes up, o opens, c comments, and a
@@ -2365,6 +2368,11 @@ class ChangeView:
         self._stack = []
         # The cursor in the stack pane, counted from its top (the newest)
         self._stack_index = 0
+        # (compare, file index, thread number) to return to after a thread
+        # was shown on its own patch set, and the file shown there if this
+        # version doesn't have it
+        self._previous_compare = None
+        self._extra_file = None
         # The commit message (subject, body, trailers) and how far its box
         # is scrolled
         self._message = ('', '', [])
@@ -2410,6 +2418,11 @@ class ChangeView:
             entries.append((('rebase',), 'rebase'))
         if len(self._stack) > 1:
             entries.append((('next-change', 'prev-change'), 'stack'))
+        thread = self._target_thread()
+        if self._previous_compare is not None:
+            entries.insert(0, (('thread-patch-set',), 'back'))
+        elif thread is not None and self._place_of(thread).origin:
+            entries.insert(0, (('thread-patch-set',), f'on PS{thread.patch_set}'))
         return entries + [(('sidebar',), 'sidebar'), (('help',), 'all keys')]
 
     def reload(self):
@@ -2425,6 +2438,8 @@ class ChangeView:
                 self._counts = core.files_of(change.commit)
                 self._files = [core.COMMIT_MSG] + sorted(
                     set(core.files_of(change.commit)) - set(self._renames.values()))
+                if self._extra_file and self._extra_file not in self._files:
+                    self._files.append(self._extra_file)
                 if self._file_index is None:
                     # The commit message stays first, the first real file is shown.
                     self._file_index = 1 if len(self._files) > 1 else 0
@@ -2886,6 +2901,43 @@ class ChangeView:
             return self._thread_at_cursor()
         return None
 
+    def _thread_patch_set(self):
+        """g p: shows the thread at the cursor on its own patch set, the
+        diff against its parent, so a thread that lost its line is seen
+        where it was written. Again, the comparison before comes back.
+        """
+        core = self._interface.core
+        if self._previous_compare is not None:
+            compare, file_index, number = self._previous_compare
+            self._previous_compare = self._extra_file = None
+            self._compare = compare
+            self.reload()
+            self._file_index = min(file_index, len(self._files) - 1)
+            self.show_thread(number)
+            self._interface.say('Back to the comparison before.')
+            return
+        comment = self._target_thread()
+        if comment is None:
+            self._interface.say('No thread here.')
+            return
+        if comment.patch_set not in self._change.patch_sets:
+            self._interface.say(f'#{comment.number} is on no uploaded patch set.')
+            return
+        (first, _), (second, _) = core.versions_to_compare(self._change, *self._compare)
+        if core.BASE == first and str(comment.patch_set) == second:
+            self._interface.say(f'#{comment.number} is shown on its PS{comment.patch_set}.')
+            return
+        self._previous_compare = (self._compare, self._file_index, comment.number)
+        self.compare = (core.BASE, str(comment.patch_set))
+        path, _line = core.split_place(comment.place)
+        if path not in self._files and core.PATCHSET_LEVEL != path:
+            # A file the change doesn't have any more
+            self._extra_file = path
+            self._files.append(path)
+        self.show_thread(comment.number)
+        self._interface.say(f'#{comment.number} on PS{comment.patch_set}. '
+                            f'{self._interface.keymap.label("thread-patch-set")} goes back.')
+
     def _toggle_threads(self):
         """l in the diff: folds or unfolds the thread at the cursor."""
         numbers = self._threads_at_cursor()
@@ -3021,6 +3073,8 @@ class ChangeView:
                 reply_to_thread(interface, self._change_id, comment, anchor)
             else:
                 edit_draft(interface, self._change_id, comment, anchor)
+        elif 'thread-patch-set' == action:
+            self._thread_patch_set()
         else:
             thread_action(interface, change, self._target_thread(), action)
 
@@ -3038,6 +3092,9 @@ class ChangeView:
         """
         if DIFF != self._focus:
             return False
+        if self._previous_compare is not None:
+            self._thread_patch_set()
+            return True
         if self._layout and self._left_pane in self._layout:
             self._focus = self._left_pane
         return True
