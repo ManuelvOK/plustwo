@@ -54,6 +54,9 @@ FROM_BELOW_BACKGROUNDS = (18, 26)
 PARTLY_BACKGROUNDS = (54, 92)
 FROM_BELOW_BASIC = 4
 PARTLY_BASIC = 5
+# Moved lines, like git diff --color-moved, in teal
+MOVED_BACKGROUNDS = (23, 30)
+MOVED_BASIC = 6
 
 # ── keys ──────────────────────────────────────────────────────────────────
 
@@ -1536,6 +1539,8 @@ def half_cells(core, half, colours, marks):
             backgrounds = ((PARTLY_BASIC,) * 2 if partly else (FROM_BELOW_BASIC,) * 2) \
                 if curses.COLORS < 256 else (PARTLY_BACKGROUNDS if partly
                                              else FROM_BELOW_BACKGROUNDS)
+        elif half.moved:
+            backgrounds = (MOVED_BASIC,) * 2 if curses.COLORS < 256 else MOVED_BACKGROUNDS
         elif curses.COLORS < 256:
             backgrounds = ((REMOVED_BASIC,) if core.REMOVED == half.kind else (ADDED_BASIC,)) * 2
         else:
@@ -1661,6 +1666,8 @@ class DiffPane:
         self.gap = None
         # Whether the diff has lines from below, and lines partly from below
         self.marks_from_below = (False, False)
+        # Whether the diff has moved lines, see core.moved_lines()
+        self.has_moved = False
 
     def show(self, core, change, compare, path, width, context, whitespace='none'):
         """Renders the diff of a file with context lines around the changes
@@ -1703,6 +1710,7 @@ class DiffPane:
         marked = [any(numbers[side] in marks[side][kind]
                       for numbers in self._diff_numbers for side in (0, 1)) for kind in (0, 1)]
         self.marks_from_below = tuple(marked)
+        self.has_moved = any(row.old.moved or row.new.moved for row in rows)
         if not is_other_file:
             if self.rows and not self._keep:
                 self._keep = (self.rows[self.cursor], self._anchors[self.cursor])
@@ -2420,6 +2428,8 @@ class ChangeView:
         below = ''.join(legend for legend, shown in zip(
             (', blue: from changes below', ', purple: partly from below'),
             self._diff.marks_from_below) if shown)
+        if self._diff.has_moved:
+            below += ', teal: moved'
         self._frame(DIFF, f'{file_label(self._interface.core, path, self._renames)}  '
                     f'({context_label}{below})'
                     if path else 'Diff')

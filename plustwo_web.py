@@ -64,7 +64,7 @@ def change_summary(core, change, repository):
 
 def half_json(half, colours):
     return {'kind': half.kind, 'number': half.number, 'text': half.text, 'edits': half.edits,
-            'colours': colours}
+            'moved': half.moved, 'colours': colours}
 
 
 class Server:

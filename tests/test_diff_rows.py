@@ -207,6 +207,19 @@ class FixtureTest(Checks, unittest.TestCase):
                          [(None, 0), (0, 1)])
         self.assertEqual(core.paired_lines(['x'], []), [(0, None)])
 
+    def test_moved_lines(self):
+        block = ['def helper(value):', '    return value * 2']
+        old_lines = ['import os'] + block + ['', 'def main():', '    pass']
+        new_lines = ['import os', '', 'def main():', '    pass'] + block
+        edits = [(2, 4, 2, 2), (7, 7, 5, 7)]
+        self.assertEqual(core.moved_lines(old_lines, new_lines, edits), ({2, 3}, {5, 6}))
+        rows = core.side_by_side_rows(old_lines, new_lines, edits)
+        self.assertEqual([half.number for row in rows for half in (row.old, row.new)
+                          if half.moved], [2, 3, 5, 6])
+        # Too few letters and digits to count as moved, like in git
+        self.assertEqual(core.moved_lines(['}', 'a', '}'], ['a', '}', '}'],
+                                          [(1, 2, 1, 1), (4, 4, 3, 4)]), (set(), set()))
+
     def test_intraline(self):
         self.assertEqual(core.intraline_edits('return 1', 'return 2'), ([(7, 8)], [(7, 8)]))
         self.assertEqual(core.intraline_edits('abc', 'xyz'), ([], []))

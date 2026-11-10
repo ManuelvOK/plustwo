@@ -3,7 +3,7 @@
   --bg: #ffffff; --fg: #1f2328; --dim: #656d76; --line: #d0d7de; --panel: #f6f8fa;
   --accent: #0969da; --removed: #ffebe9; --removed-emph: #ffc1bc; --added: #e6ffec;
   --added-emph: #abf2bc; --below: #ddf4ff; --below-emph: #b6e3ff; --partly: #f3e8ff;
-  --partly-emph: #e0c8ff; --thread: #fff8c5; --draft: #fbefff; --cursor: #fff5b1;
+  --partly-emph: #e0c8ff; --moved: #d8f5f2; --moved-emph: #a8e6df; --thread: #fff8c5; --draft: #fbefff; --cursor: #fff5b1;
   --good: #1a7f37; --bad: #cf222e; --warn: #9a6700;
 }
 /* Dark follows the system unless the toggle chose, see theme() in app.js */
@@ -12,7 +12,7 @@
     --bg: #0d1117; --fg: #f0f6fc; --dim: #b1bac4; --line: #555d68; --panel: #1c2128;
     --accent: #58a6ff; --removed: #4b1113; --removed-emph: #a3262a; --added: #1f4d2a;
     --added-emph: #2f7a40; --below: #0c2d6b; --below-emph: #1f4f9e; --partly: #2e1452;
-    --partly-emph: #4f2a85; --thread: #3a3214; --draft: #3b2445; --cursor: #4a4320;
+    --partly-emph: #4f2a85; --moved: #0f3b3a; --moved-emph: #1d6b68; --thread: #3a3214; --draft: #3b2445; --cursor: #4a4320;
     --good: #56d364; --bad: #ff7b72; --warn: #e3b341;
   }
 }
@@ -20,7 +20,7 @@
     --bg: #0d1117; --fg: #f0f6fc; --dim: #b1bac4; --line: #555d68; --panel: #1c2128;
     --accent: #58a6ff; --removed: #4b1113; --removed-emph: #a3262a; --added: #1f4d2a;
     --added-emph: #2f7a40; --below: #0c2d6b; --below-emph: #1f4f9e; --partly: #2e1452;
-    --partly-emph: #4f2a85; --thread: #3a3214; --draft: #3b2445; --cursor: #4a4320;
+    --partly-emph: #4f2a85; --moved: #0f3b3a; --moved-emph: #1d6b68; --thread: #3a3214; --draft: #3b2445; --cursor: #4a4320;
     --good: #56d364; --bad: #ff7b72; --warn: #e3b341;
 }
 * { box-sizing: border-box; }
@@ -77,6 +77,7 @@ td.removed { background: var(--removed); } td.removed .emph { background: var(--
 td.added { background: var(--added); } td.added .emph { background: var(--added-emph); }
 td.below { background: var(--below); } td.below .emph { background: var(--below-emph); }
 td.partly { background: var(--partly); } td.partly .emph { background: var(--partly-emph); }
+td.moved { background: var(--moved); } td.moved .emph { background: var(--moved-emph); }
 td.empty { background: var(--panel); }
 tr.cursor td.side { box-shadow: inset 3px 0 var(--accent); }
 tr.gap td { text-align: center; color: var(--dim); background: var(--panel); cursor: pointer; }

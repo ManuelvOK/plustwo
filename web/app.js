@@ -333,6 +333,7 @@ function diffView(change) {
       if ((kind === 'removed' || kind === 'added') && half.number) {
         if (below[side].has(half.number)) kind = 'below';
         else if (partly[side].has(half.number)) kind = 'partly';
+        else if (half.moved) kind = 'moved';
       }
       const isCursorSide = index === state.cursor && side === state.side;
       tr.append(el('td', {class: `num ${kind}`, title: 'comment',
@@ -622,7 +623,7 @@ function runAction(action, times) {
 const WEB_ACTIONS = new Set(['help', 'reload', 'down', 'up', 'top', 'bottom', 'page-down', 'page-up',
   'open', 'back', 'next-file', 'prev-file', 'next-chunk', 'prev-chunk', 'next-thread',
   'prev-thread', 'side-old', 'side-new', 'comment', 'file-comment', 'send', 'approve', 'reviewed',
-  'more-context', 'less-context', 'whitespace']);
+  'more-context', 'less-context', 'whitespace', 'sidebar']);
 
 // Light or dark: the choice of the toggle, kept in the browser if it lets
 // us, else the system's setting
@@ -648,6 +649,8 @@ function showHelp() {
       (keys) => el('kbd', {}, keys.trim()))), el('td', {}, action.description)));
   document.getElementById('help-keys').replaceChildren(
     el('p', {class: 'dim'}, `Preset ${state.keys.preset}. Click a line number to comment.`),
+    el('p', {class: 'dim'}, 'Colours: red removed, green added, blue from changes below, '
+       + 'purple partly from below, teal moved (like git diff --color-moved).'),
     el('table', {}, el('tbody', {}, rows)));
   document.getElementById('help-dialog').showModal();
 }
