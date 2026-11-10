@@ -80,8 +80,9 @@ ACTIONS = (
      'that line of the new version.'),
     ('page-down', 'Moving', 'half page', 'half a page down'),
     ('page-up', 'Moving', 'half page', 'half a page up'),
-    ('open', 'Moving', 'open', 'open. In the stack (where "(submittable)" marks the changes a '
-     'submit would take now): shows that change. On a file: into the '
+    ('open', 'Moving', 'open', 'open. In the stack (▶ is the change shown, › and the turn '
+     'colour mark those where it is your turn, "(submittable)" those a submit would take '
+     'now): shows that change. On a file: into the '
      'diff. In the comments: unfolds the thread and goes to it in the diff. In the diff: folds '
      'or unfolds the thread.'),
     ('diff', 'Stacks', 'diff', 'the diff of the change in git\'s pager'),
@@ -2354,8 +2355,10 @@ class ChangeView:
         self._stack = []
         # The cursor in the stack pane, counted from its top (the newest)
         self._stack_index = 0
-        # The Change-Ids of the stack that could be submitted now
+        # The Change-Ids of the stack that could be submitted now, and those
+        # where it is the user's turn
         self._submittable = set()
+        self._yours = set()
         self._behind = None
 
     def footer(self):
@@ -2413,6 +2416,10 @@ class ChangeView:
                 if STACK != self._focus:
                     self._stack_index = self._current_in_stack()
                 self._submittable = core.submittable_in(self._stack)
+                # Where it is the user's turn, like the dashboard's "▶ yours"
+                user = core.current_user()
+                self._yours = {other.change_id for other in self._stack
+                               if 'your-turn' in other.sections(user)}
                 self._behind = ('conflicts' if any(other.rebase_requested for other in self._stack)
                                 else 'base moved' if core.needs_rebase(change.topic) else None)
                 self._diff.forget()
@@ -2521,6 +2528,9 @@ class ChangeView:
         for row, other in enumerate(shown[first:first + height]):
             is_current = other.change_id == self._change_id
             attributes = curses.A_BOLD if is_current else curses.A_DIM
+            if other.change_id in self._yours:
+                # In the turn colour of the dashboard
+                attributes = curses.A_BOLD | curses.color_pair(3)
             if first + row == self._stack_index and STACK == self._focus:
                 attributes = curses.A_REVERSE | (curses.A_BOLD if is_current else 0)
                 out(top + row, left, ' ' * width, attributes, left + width)
@@ -2529,8 +2539,8 @@ class ChangeView:
                 # The subject gets shorter, not the marker
                 marker = (' (submittable)' if width >= 30 else ' (sub)' if width >= 16 else ' ✓')
             subject = other.subject[:max(width - 2 - len(marker), 0)]
-            out(top + row, left, ('▶ ' if is_current else '  ') + subject, attributes,
-                left + width)
+            mark = '▶ ' if is_current else '› ' if other.change_id in self._yours else '  '
+            out(top + row, left, mark + subject, attributes, left + width)
             if marker:
                 out(top + row, left + 2 + len(subject), marker,
                     attributes | curses.color_pair(2), left + width)
