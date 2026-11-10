@@ -2703,32 +2703,48 @@ def _paired_lines(removed, added):
     return result
 
 
-def side_by_side_rows(old_lines, new_lines, edits, context=None, whitespace='none'):
+def side_by_side_rows(old_lines, new_lines, edits, context=None, whitespace='none',
+                      shown=((), ())):
     """Lays out two versions of a file side by side, like Gerrit's diff
     view. edits are git's, as edits_of() gives them. Each edit's removed
     and added lines are paired by similarity (see paired_lines()), a line
     without a partner gets an empty half. context is the number of common
     lines kept around each edit, None for the whole file. Longer runs of
     common lines become one gap row. whitespace is the mode of the edits,
-    the intraline edits follow it.
+    the intraline edits follow it. shown are (old lines, new lines) that
+    stay visible with context around them, though no edit is near, like
+    the lines with threads in Gerrit's diff view: a gap splits around them.
     """
     rows = []
     old_moved, new_moved = moved_lines(old_lines, new_lines, edits)
+    old_shown, new_shown = set(shown[0]), set(shown[1])
 
     def common(old_begin, new_begin, count, keep_before, keep_after):
         # Common lines from old_begin and new_begin, counted from 0. Lines
-        # beyond keep_before at the start and keep_after at the end form a gap.
-        if context is None or count <= keep_before + keep_after:
-            keep_before, keep_after = count, 0
+        # beyond keep_before at the start and keep_after at the end form a
+        # gap, except those near a line to show.
+        visible = [context is None or offset < keep_before or offset >= count - keep_after
+                   for offset in range(count)]
         for offset in range(count):
-            if keep_before <= offset < count - keep_after:
-                if keep_before == offset:
-                    rows.append(Row(Half(CONTEXT, old_begin + offset + 1),
-                                    Half(CONTEXT, new_begin + offset + 1),
-                                    skipped=count - keep_before - keep_after))
+            if old_begin + offset + 1 in old_shown or new_begin + offset + 1 in new_shown:
+                for near in range(max(offset - context, 0) if context is not None else 0,
+                                  min(offset + (context or 0) + 1, count)):
+                    visible[near] = True
+        offset = 0
+        while offset < count:
+            if visible[offset]:
+                rows.append(Row(Half(CONTEXT, old_begin + offset + 1,
+                                     old_lines[old_begin + offset]),
+                                Half(CONTEXT, new_begin + offset + 1,
+                                     new_lines[new_begin + offset])))
+                offset += 1
                 continue
-            rows.append(Row(Half(CONTEXT, old_begin + offset + 1, old_lines[old_begin + offset]),
-                            Half(CONTEXT, new_begin + offset + 1, new_lines[new_begin + offset])))
+            end = offset
+            while end < count and not visible[end]:
+                end += 1
+            rows.append(Row(Half(CONTEXT, old_begin + offset + 1),
+                            Half(CONTEXT, new_begin + offset + 1), skipped=end - offset))
+            offset = end
 
     old_at = new_at = 0
     for old_begin, old_end, new_begin, new_end in edits:
@@ -2784,11 +2800,15 @@ def old_path_of(change, first, second, path, repository=None):
 
 
 def file_diff_rows(change, first=None, second=None, path=None, context=None, repository=None,
-                   whitespace='none'):
+                   whitespace='none', shown=None):
     """The side by side rows of one file's diff between two versions of a
     change, None if the file is binary. A renamed file is diffed against its
-    old path. whitespace is one of WHITESPACE_MODES.
+    old path. whitespace is one of WHITESPACE_MODES. The lines with threads
+    stay visible with context, like in Gerrit, see thread_lines(). shown
+    gives them if known.
     """
+    if shown is None:
+        shown = thread_lines(change, first, second, path, repository)
     old, new, paths = diff_endpoints(change, first, second, path, repository)
     old_path = old_path_of(change, first, second, paths[0], repository)
     old_lines = file_lines(old, old_path or paths[0], repository)
@@ -2797,7 +2817,19 @@ def file_diff_rows(change, first=None, second=None, path=None, context=None, rep
         return None
     return side_by_side_rows(old_lines, new_lines,
                              edits_of(old, new, paths[0], repository, old_path, whitespace),
-                             context, whitespace)
+                             context, whitespace, shown)
+
+
+def thread_lines(change, first=None, second=None, path=None, repository=None):
+    """The lines of a file the diff of two versions has threads on, see
+    thread_place(): (old lines, new lines), as frozen sets.
+    """
+    lines = (set(), set())
+    for comment in change.comments:
+        shown = thread_place(change, comment, first, second, repository)
+        if shown.path == path and shown.line is not None:
+            lines[OLD_SIDE == shown.side].add(shown.line)
+    return frozenset(lines[0]), frozenset(lines[1])
 
 
 def ranges_overlap(first_begin, first_end, second_begin, second_end):

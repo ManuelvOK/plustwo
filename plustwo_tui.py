@@ -1712,8 +1712,10 @@ class DiffPane:
         """
         if self._path != path:
             self.expanded_gaps = set()
+        # The lines with threads stay visible, see core.file_diff_rows().
+        threads = core.thread_lines(change, *compare, path)
         key = (path, core.versions_to_compare(change, *compare), width, context,
-               frozenset(self.expanded_gaps), whitespace)
+               frozenset(self.expanded_gaps), whitespace, threads)
         if key == self._key:
             return
         is_other_file = self._path != path
@@ -1721,7 +1723,7 @@ class DiffPane:
         self._path = path
         old, new, paths = core.diff_endpoints(change, *compare, path=path)
         rows = core.file_diff_rows(change, *compare, path=path, context=context,
-                                   whitespace=whitespace)
+                                   whitespace=whitespace, shown=threads)
         old_path = core.old_path_of(change, *compare, paths[0]) or paths[0]
         from_below, partly = core.rebase_lines(change, *compare, path=path)
         marks = ((from_below[0], partly[0]), (from_below[1], partly[1]))

@@ -237,6 +237,17 @@ class FixtureTest(Checks, unittest.TestCase):
                  if half.number]
         self.assertEqual(whole, [(1, False), (1, False), (2, True), (2, True), (3, True)])
 
+    def test_thread_lines_stay_visible(self):
+        # A thread far from the edit keeps its line and context, the gap splits.
+        old_lines = [f'line {number}' for number in range(1, 51)]
+        new_lines = ['line one'] + old_lines[1:]
+        rows = core.side_by_side_rows(old_lines, new_lines, [(1, 2, 1, 2)], 3,
+                                      shown=((), {30}))
+        layout = [(row.skipped, row.new.number) if row.skipped else row.new.number
+                  for row in rows]
+        self.assertEqual(layout, [1, 2, 3, 4, (22, 5), 27, 28, 29, 30, 31, 32, 33, (17, 34)])
+        self.check_context(old_lines, new_lines, [(1, 2, 1, 2)], 3, 'shown lines')
+
     def test_intraline(self):
         self.assertEqual(core.intraline_edits('return 1', 'return 2'), ([(7, 8)], [(7, 8)]))
         self.assertEqual(core.intraline_edits('abc', 'xyz'), ([], []))
