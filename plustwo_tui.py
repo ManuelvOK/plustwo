@@ -95,6 +95,9 @@ ACTIONS = (
     ('rebase', 'Stacks and changes', 'rebase', 'rebase the stack onto the base branch, without '
      'touching any checkout. On a conflict the author is asked to rebase.'),
     ('next-pane', 'Change', 'next pane', 'next pane: stack, files, comments, diff'),
+    ('sidebar', 'Change', 'sidebar', 'hide or show the left column (stack, files, comments), '
+     'so the diff gets the whole width. The setting tui.sidebar (auto, shown, hidden) picks the '
+     'start, auto hides it below 100 columns.'),
     ('next-change', 'Change', 'next change', 'the next change of the stack (above)'),
     ('prev-change', 'Change', 'prev change', 'the previous change of the stack (below)'),
     ('next-file', 'Change', 'file', 'next file'),
@@ -151,6 +154,8 @@ VIM_KEYS = {
     'reply': 'r', 'edit-draft': 'e', 'done': 'y', 'ack': 'Y', 'resolve': 'x', 'send': 's',
     'whitespace': 'W', 'approve': 'A', 'next-turn': 'T', 'reviewed': 'm,Space', 'side-old': '<', 'side-new': '>',
     'section-down': 'J', 'section-up': 'K',
+    # Like vim's C-w o, which keeps only the current window
+    'sidebar': 'C-w o,z s',
 }
 PRESETS = {
     'vim': VIM_KEYS,
@@ -163,7 +168,9 @@ PRESETS = {
               'down': 'C-n,Down', 'up': 'C-p,Up', 'top': 'M-<,Home', 'bottom': 'M->,End',
               'page-down': 'C-v,PageDown', 'page-up': 'M-v,PageUp', 'open': 'Enter,C-f',
               'next-chunk': 'n', 'prev-chunk': 'p', 'next-file': 'N', 'prev-file': 'P',
-              'next-thread': ']', 'prev-thread': '[', 'patch-sets': 'b'},
+              'next-thread': ']', 'prev-thread': '[', 'patch-sets': 'b',
+              # Like delete-other-windows
+              'sidebar': 'C-x 1'},
     # Gerrit's web interface: j and k move, n and p go to the next and
     # previous changes, N and P to the next and previous thread, ] and [ to
     # the next and previous file, u goes up, o opens, c comments, and a
@@ -441,6 +448,11 @@ class Interface:
         self.whitespace = core.setting('diff.whitespace', 'none')
         if self.whitespace not in core.WHITESPACE_MODES:
             self.whitespace = 'none'
+        # The left column of the change screen: auto, shown or hidden. The
+        # sidebar key sets it for the rest of the session.
+        self.sidebar = core.setting('tui.sidebar', 'auto')
+        if self.sidebar not in SIDEBAR_MODES:
+            self.sidebar = 'auto'
 
     # ── state shared by the views ─────────────────────────────────────────
 
@@ -2086,6 +2098,17 @@ def thread_footer(comment):
             (('resolve',), 'resolved')]
 
 
+# The modes of the setting tui.sidebar. auto hides the left column on
+# screens narrower than this.
+SIDEBAR_MODES = ('auto', 'shown', 'hidden')
+SIDEBAR_MIN_WIDTH = 100
+
+
+def sidebar_shown(mode, width):
+    """Whether the change screen shows its left column."""
+    return 'shown' == mode or ('auto' == mode and width >= SIDEBAR_MIN_WIDTH)
+
+
 # What the change screen compares at first: the whole change as of the
 # latest patch set
 DEFAULT_COMPARE = ('base', 'latest')
@@ -2152,7 +2175,7 @@ class ChangeView:
             entries.append((('rebase',), 'rebase'))
         if len(self._stack) > 1:
             entries.append((('next-change', 'prev-change'), 'stack'))
-        return entries + [(('help',), 'all keys')]
+        return entries + [(('sidebar',), 'sidebar'), (('help',), 'all keys')]
 
     def reload(self):
         """Reads the change again. Goes back if it is gone."""
@@ -2198,6 +2221,10 @@ class ChangeView:
         """Positions of the four panes: (top, left, height, width) each,
         the inside without the frame.
         """
+        if not sidebar_shown(self._interface.sidebar, area.width):
+            if DIFF != self._focus:
+                self._focus = DIFF
+            return {DIFF: (3, 1, area.height - 4, area.width - 3)}
         left_width = min(max(area.width * 3 // 10, 28), 50)
         # The stack on top, like Gerrit's relation chain, at most 5 rows
         stack_rows = min(max(len(self._stack), 1), 5)
@@ -2252,11 +2279,17 @@ class ChangeView:
         except core.ChangeError as error:
             comparing = str(error)
         header = f'Patch sets: {patch_sets}   {comparing}'
+        if FILES not in self._layout:
+            # Without the files pane, the header says which file it is.
+            header += (f'   sidebar hidden ({self._interface.keymap.label("sidebar")}), file '
+                       f'{self._file_index + 1}/{len(self._files)}: '
+                       f'{file_label(core, self._selected_file(), self._renames)}')
         out(1, 1, header, curses.A_DIM)
         self._draw_votes(4 + len(header))
-        self._draw_stack()
-        self._draw_files()
-        self._draw_comments()
+        if FILES in self._layout:
+            self._draw_stack()
+            self._draw_files()
+            self._draw_comments()
         self._draw_diff()
 
     def _draw_stack(self):
@@ -2473,7 +2506,8 @@ class ChangeView:
                         f'diff ({self._interface.keymap.label("more-context")} shows more '
                         'context)')
             # Like in Gerrit, a thread on a line goes into its side's half.
-            side = place[0] if place else None
+            # Threads on lines not shown go on top, as wide as the diff.
+            side = place[0] if place and place in self._diff.shown_places() else None
             rows = thread_rows(comment, self._half(side)[1], expanded, core, note, origin)
             if side:
                 rows = [in_half(parts, side, self._half('old')[1]) for parts in rows]
@@ -2597,7 +2631,12 @@ class ChangeView:
             'page-up': lambda: self._diff.scroll_by(-(height // 2), height),
         }
         if 'next-pane' == action:
-            self._focus_pane(PANES[(PANES.index(self._focus) + 1) % len(PANES)])
+            # Only the panes shown
+            panes = [pane for pane in PANES if not self._layout or pane in self._layout]
+            self._focus_pane(panes[(panes.index(self._focus) + 1) % len(panes)]
+                             if self._focus in panes else DIFF)
+        elif 'sidebar' == action:
+            interface.sidebar = 'hidden' if self._layout and FILES in self._layout else 'shown'
         elif action in ('next-change', 'prev-change'):
             ids = [other.change_id for other in self._stack]
             index = ids.index(self._change_id) + (1 if 'next-change' == action else -1) * (count or 1)
@@ -2698,7 +2737,8 @@ class ChangeView:
         """
         if DIFF != self._focus:
             return False
-        self._focus = self._left_pane
+        if self._layout and self._left_pane in self._layout:
+            self._focus = self._left_pane
         return True
 
     def _open(self):

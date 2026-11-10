@@ -16,6 +16,28 @@ const state = {
   diff: null, cursor: 0, side: 'new', editor: null, listIndex: 0, listIds: [],
 };
 
+// The file list beside the diff: 'shown' or 'hidden' as chosen in this
+// browser, else hidden on narrow windows, like the TUI's tui.sidebar auto.
+const SIDEBAR_MIN_WIDTH = 900;
+let sidebarChoice = null;
+try { sidebarChoice = localStorage.getItem('plustwo-sidebar'); } catch (error) { /* none kept */ }
+
+function sidebarShown() {
+  return sidebarChoice ? sidebarChoice === 'shown' : window.innerWidth >= SIDEBAR_MIN_WIDTH;
+}
+
+function toggleSidebar() {
+  sidebarChoice = sidebarShown() ? 'hidden' : 'shown';
+  try { localStorage.setItem('plustwo-sidebar', sidebarChoice); } catch (error) { /* this page only */ }
+  render();
+}
+
+let sidebarWasShown = null;
+window.addEventListener('resize', () => {
+  if (!state.change || sidebarChoice || sidebarShown() === sidebarWasShown) return;
+  render();
+});
+
 // ── talking to the server ─────────────────────────────────────────────────
 
 async function api(path, params = {}) {
@@ -169,8 +191,15 @@ async function renderChange(id, file) {
                                   context: state.context, whitespace: state.whitespace,
                                   theme: theme()});
   const view = document.getElementById('view');
-  view.replaceChildren(changeHeader(change), changeLevelThreads(change), toolbar(change),
-                       el('div', {class: 'layout'}, fileList(change), diffView(change)));
+  sidebarWasShown = sidebarShown();
+  // Without the file list, the toolbar says which file it is.
+  const hiddenNote = sidebarWasShown ? null : el('p', {class: 'dim'},
+    `File ${change.files.findIndex((entry) => entry.path === state.file) + 1}/${change.files.length}: `,
+    state.file === COMMIT_MSG ? 'Commit message' : state.file);
+  view.replaceChildren(...[changeHeader(change), changeLevelThreads(change), toolbar(change),
+                          hiddenNote,
+                          el('div', {class: 'layout'}, sidebarWasShown ? fileList(change) : null,
+                             diffView(change))].filter(Boolean));
   const cursorRow = document.querySelector('tr.cursor');
   if (cursorRow && state.scrollToCursor) {
     cursorRow.scrollIntoView({block: 'center'});
@@ -206,6 +235,8 @@ function toolbar(change) {
                                       labels[index])));
   const b = state.b === 'latest' ? String(change.patch_set) : state.b;
   return el('div', {class: 'toolbar'},
+    el('button', {onclick: toggleSidebar, title: 'Hide or show the file list'},
+       sidebarShown() ? 'Hide files' : 'Show files'),
     el('button', {class: 'primary', onclick: openReply}, 'Reply'),
     el('button', {onclick: quickApprove, title: 'Code-Review+2'}, '+2'),
     el('span', {class: 'dim'}, 'compare'),
@@ -569,6 +600,7 @@ function runAction(action, times) {
     case 'prev-chunk': jump(-1, chunkStart); return true;
     case 'next-thread': jump(1, (i) => hasThread(rows[i])); return true;
     case 'prev-thread': jump(-1, (i) => hasThread(rows[i])); return true;
+    case 'sidebar': toggleSidebar(); return true;
     case 'side-old': state.side = 'old'; render(); return true;
     case 'side-new': state.side = 'new'; render(); return true;
     case 'comment':

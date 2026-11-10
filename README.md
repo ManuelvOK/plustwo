@@ -94,6 +94,7 @@ repository (it wins).
 | 4   | `diff.whitespace` | `none`, `trailing`, `changed` or `all`, `W` cycles them  |
 | 5   | `checks.command`  | a check run after every upload, votes Verified           |
 | 6   | `checks.setup`    | run before the check, e.g. a submodule update            |
+| 7   | `tui.sidebar`     | `auto` (hidden below 100 columns), `shown` or `hidden`   |
 
 A check runs in its own worktree (`.git/plustwo/check`) at the stack's top
 change, so no checkout is touched. A newer upload stops a running one.

@@ -152,6 +152,11 @@ plustwo config changes them, git config --file works too. Settings:
     keys.ACTION                         keys of one action of the
                                         interface, like keys.reply = R or
                                         C-r,R. Its help (?) lists the actions.
+    tui.sidebar                         the left column of the change
+                                        screen: auto (the default, hidden
+                                        below 100 columns), shown or hidden.
+                                        The web page hides it on narrow
+                                        windows.
 """
 
 import argparse
