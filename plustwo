@@ -2968,13 +2968,14 @@ def path_in(old, new, path, repository=None):
 def ported_line(line, edits):
     """Moves a line through the edits of a diff, like Gerrit's
     GitPositionTransformer: lines outside the edits shift by the lines the
-    edits before them added or removed. Returns (line, state).
+    edits before them added or removed. Returns (line, state). For a
+    removed line, line is the one before where it was, 0 at the top.
     """
     shift = 0
     for old_begin, old_end, new_begin, new_end in edits:
         if old_begin <= line < old_end:
             if new_begin == new_end:
-                return None, REMOVED
+                return new_begin - 1, REMOVED
             # Gerrit drops the line here and keeps the file. The line at
             # the same offset in the new lines is a better place to show.
             return new_begin + min(line - old_begin, new_end - new_begin - 1), EDITED
@@ -3144,8 +3145,30 @@ def thread_place(change, comment, first=None, second=None, repository=None):
     origin = f'PS{comment.patch_set}'
     if FILE_GONE == state:
         return ShownThread(PATCHSET_LEVEL, None, NEW_SIDE, origin, f'file gone: {comment.place}')
-    note = {REMOVED: 'line removed', EDITED: 'line edited'}.get(state, '')
+    # The line the thread was written on, when it isn't the one shown
+    note = ''
+    if REMOVED == state:
+        # Below the line before, where the line was, 0 is the top
+        note = f'line {line}, removed: {version_line(version, line, repository)}'
+        number = number or None
+    elif EDITED == state:
+        note = f'in {origin}: {version_line(version, line, repository)}'
     return ShownThread(split_place(place)[0], number, side, origin, note)
+
+
+def version_line(version, line, repository=None):
+    """A line of a thread's version (see thread_version()), stripped, ''
+    if there is none.
+    """
+    source, path = version
+    if line is None:
+        return ''
+    if COMMIT_MSG == path:
+        lines = (commit_message_text(source, repository).split('\n')
+                 if not source.endswith('^') else [])
+    else:
+        lines = file_lines(source, path, repository) or []
+    return lines[line - 1].strip() if 1 <= line <= len(lines) else ''
 
 # ── the patch set history ─────────────────────────────────────────────────
 

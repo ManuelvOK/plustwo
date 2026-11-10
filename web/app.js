@@ -500,7 +500,7 @@ function threadView(comment) {
   return el('div', {class: `thread ${comment.status}`, id: `thread-${number}`},
     el('div', {}, el('span', {class: `chip ${status === 'unresolved' ? 'warn' : ''}`},
                      `#${number} ${status}${pending}`), ' ',
-       el('span', {class: 'dim'}, comment.place + (comment.side === 'old' ? ' (old)' : '')
+       el('span', {class: 'dim thread-place'}, comment.place + (comment.side === 'old' ? ' (old)' : '')
           + (origin ? ` (${origin}${note ? ', ' + note : ''})` : ''))),
     messages,
     editing ? editorFor(null, null, comment) : el('div', {class: 'actions'},

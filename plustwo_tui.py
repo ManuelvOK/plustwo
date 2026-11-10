@@ -2103,7 +2103,9 @@ def thread_rows(comment, width, expanded, core, note='', origin=''):
         return [[pad, ('▸', colour, tint, curses.A_BOLD), (title, colour, tint, curses.A_BOLD),
                  (rest.ljust(inner + 1 - len(title)), -1, tint, curses.A_DIM)]]
     border = (colour, -1, curses.A_BOLD)
-    extra = f' {note} ' if note else ''
+    # A long note, like the line the thread was on, is cut to one row.
+    room = max(inner - len(title) - 3, 0)
+    extra = f' {note[:room - 1] + "…" if len(note) > room else note} ' if note and room else ''
     top = '─' * max(inner - len(title) - len(extra), 0)
     rows = [[pad, ('┌─', *border), (title, colour, -1, curses.A_BOLD),
              (extra, -1, -1, curses.A_DIM), (top + '┐', *border)]]
