@@ -167,5 +167,39 @@ class TextBoxTest(unittest.TestCase):
         self.assertEqual(3, box.position)
 
 
+
+class CursorTest(unittest.TestCase):
+    """A thread in the diff is one cursor stop."""
+
+    def pane(self):
+        diff = tui.DiffPane(None)
+        # Two diff rows, a thread of 30 rows, two diff rows
+        diff.rows = ([('diff', 0), ('diff', 1)] + [('thread', 7, row) for row in range(30)]
+                     + [('diff', 2), ('diff', 3)])
+        return diff
+
+    def test_steps_over_a_thread(self):
+        diff = self.pane()
+        diff.move_cursor(2, 10)
+        self.assertEqual((2, 7), (diff.cursor, diff.thread_at(diff.cursor)))
+        self.assertTrue(diff.is_on_cursor(31) and not diff.is_on_cursor(32))
+        diff.move_cursor(1, 10)
+        self.assertEqual(32, diff.cursor)
+        diff.move_cursor(-1, 10)
+        self.assertEqual(2, diff.cursor)
+        diff.move_cursor(3, 10)
+        self.assertEqual(33, diff.cursor)
+
+    def test_scrolling_reads_a_tall_thread(self):
+        diff = self.pane()
+        diff.move_cursor(2, 10)
+        seen = set()
+        # The cursor stays on the thread until all of it was shown.
+        while 2 == diff.cursor:
+            seen.update(range(diff.scroll, diff.scroll + 10))
+            diff.scroll_by(5, 10)
+        self.assertTrue(set(range(2, 32)) <= seen)
+        self.assertEqual(32, diff.cursor)
+
 if __name__ == '__main__':
     unittest.main()

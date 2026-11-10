@@ -1792,7 +1792,7 @@ class DiffPane:
         thread's first row, else the diff line it was below.
         """
         if not self._keep:
-            self.cursor = min(self.cursor, max(len(self.rows) - 1, 0))
+            self.cursor = self.stop_of(min(self.cursor, max(len(self.rows) - 1, 0)))
             return
         row, anchor = self._keep
         self._keep = None
@@ -1801,7 +1801,7 @@ class DiffPane:
             candidates.insert(1, ('thread', row[1], 0))
         index = next((self.rows.index(candidate) for candidate in candidates
                       if candidate in self.rows), 0)
-        self.cursor = index
+        self.cursor = index = self.stop_of(index)
         self.scroll = 0 if self._from_top else max(0, index - max(offset, 0))
         self._from_top = False
 
@@ -1829,9 +1829,13 @@ class DiffPane:
         parts = self.lines[index]
         separator = next((number for number, part in enumerate(parts)
                           if HALF_SEPARATOR == part[0]), None)
+        is_thread = index < len(self.rows) and 'thread' == self.rows[index][0]
         for number, (text, foreground, background, styles) in enumerate(parts):
             on_side = separator is None or (number < separator if 'old' == self.side
                                             else number > separator)
+            if is_thread and not text.strip(HALF_SEPARATOR + ' '):
+                # A thread is highlighted, not the blanks around it.
+                on_side = False
             if highlighted and on_side:
                 background = (CURSOR_SIDE_GREY if background < 0 else lighter(lighter(background))) \
                     if curses.COLORS >= 256 else background
@@ -1851,19 +1855,76 @@ class DiffPane:
         """
         index = next((index for index, (_, new) in enumerate(self.numbers)
                       if new is not None and new >= line), len(self.rows) - 1)
-        self.move_cursor(index - self.cursor, height)
+        self.set_cursor(index, height)
 
-    def move_cursor(self, steps, height):
-        """Moves the cursor and scrolls so it stays visible."""
-        self.cursor = max(0, min(self.cursor + steps, len(self.rows) - 1))
+    def stop_of(self, index):
+        """The cursor stop of a row: a thread is one stop, at its first
+        row. Every other row is a stop of its own.
+        """
+        while 0 < index < len(self.rows) and 'thread' == self.rows[index][0] \
+                and self.rows[index][2] > 0:
+            index -= 1
+        return index
+
+    def stop_end(self, index):
+        """The last row of the stop at row index."""
+        row = self.rows[index] if index < len(self.rows) else ('diff', 0)
+        if 'thread' != row[0]:
+            return index
+        while index + 1 < len(self.rows) and self.rows[index + 1][:2] == row[:2]:
+            index += 1
+        return index
+
+    def _stops(self):
+        """The rows the cursor stops on."""
+        return [index for index, row in enumerate(self.rows) if 'thread' != row[0] or 0 == row[2]]
+
+    def set_cursor(self, index, height):
+        """Puts the cursor on the stop of a row and scrolls it into view,
+        all of it if it fits.
+        """
+        self.cursor = self.stop_of(max(0, min(index, len(self.rows) - 1)))
+        end = self.stop_end(self.cursor)
         if self.cursor < self.scroll:
             self.scroll = self.cursor
-        elif self.cursor >= self.scroll + height:
-            self.scroll = self.cursor - height + 1
+        elif end >= self.scroll + height:
+            self.scroll = max(min(self.cursor, end - height + 1), 0)
+
+    def move_cursor(self, steps, height):
+        """Moves the cursor by stops, a whole thread being one, and
+        scrolls so it stays visible.
+        """
+        if not self.rows:
+            self.cursor = 0
+            return
+        stops = self._stops()
+        current = self.stop_of(min(self.cursor, len(self.rows) - 1))
+        position = stops.index(current) if current in stops else 0
+        self.set_cursor(stops[max(0, min(position + steps, len(stops) - 1))], height)
+
+    def scroll_by(self, rows, height):
+        """Scrolls the view by rows, the cursor along at the same place of
+        the pane (^d, ^u, the wheel). A thread taller than the pane is read
+        this way, the cursor stays on it while any of it is shown.
+        """
+        if not self.rows:
+            return
+        offset = max(self.cursor - self.scroll, 0)
+        scroll = max(0, min(self.scroll + rows, max(len(self.rows) - height, 0)))
+        if scroll == self.scroll:
+            # At the end: the cursor moves instead.
+            self.move_cursor(1 if rows > 0 else -1, height)
+            return
+        self.scroll = scroll
+        self.cursor = self.stop_of(max(0, min(scroll + offset, len(self.rows) - 1)))
+
+    def is_on_cursor(self, index):
+        """Whether a row belongs to the cursor's stop."""
+        return self.cursor <= index <= self.stop_end(self.cursor)
 
     def _jump(self, index, height):
         """Puts the cursor on a row, a third down the pane."""
-        self.move_cursor(index - self.cursor, height)
+        self.set_cursor(index, height)
         self.scroll = max(0, min(self.cursor - height // 3, len(self.rows) - height))
 
     def go_to_line(self, line, side, height):
@@ -1916,7 +1977,7 @@ class DiffPane:
         if index - self.scroll > height - room - 1:
             self.scroll = max(0, index - max(height - room - 1, height // 3))
         if not self.scroll <= self.cursor < self.scroll + height:
-            self.cursor = index
+            self.cursor = self.stop_of(index)
 
     def line_end(self, index):
         """The last row of the line at row index, after the rows it wrapped
@@ -2354,7 +2415,8 @@ class ChangeView:
             has_thread = False
         # The cursor line is highlighted in every pane, the > only shows
         # while the diff has the focus.
-        is_cursor = index == self._diff.cursor
+        # A whole thread is the cursor when the cursor is on it.
+        is_cursor = self._diff.is_on_cursor(index)
         gutter = ('◀' if 'old' == self._diff.side else '▶') if is_cursor and DIFF == self._focus \
             else ' '
         out(top + row, left, gutter, curses.A_BOLD | curses.color_pair(3))
@@ -2531,8 +2593,8 @@ class ChangeView:
                             else self._diff.move_cursor(-self._diff.cursor, height)),
             'bottom': lambda: (self._diff.go_to_new_line(count, height) if count
                                else self._diff.move_cursor(len(self._diff.rows), height)),
-            'page-down': lambda: self._diff.move_cursor(height // 2, height),
-            'page-up': lambda: self._diff.move_cursor(-(height // 2), height),
+            'page-down': lambda: self._diff.scroll_by(height // 2, height),
+            'page-up': lambda: self._diff.scroll_by(-(height // 2), height),
         }
         if 'next-pane' == action:
             self._focus_pane(PANES[(PANES.index(self._focus) + 1) % len(PANES)])
@@ -2678,8 +2740,10 @@ class ChangeView:
             if top <= row < top + height and left <= column < left + width:
                 self._focus_pane(pane)
                 if wheel_action(kind):
-                    steps = 3 if DIFF == pane else 1
-                    for _ in range(steps):
+                    if DIFF == pane:
+                        # The wheel scrolls, so a tall thread can be read.
+                        self._diff.scroll_by(3 if 'down' == wheel_action(kind) else -3, height)
+                    else:
                         self.action(wheel_action(kind))
                     return
                 offset = row - top
@@ -2691,8 +2755,8 @@ class ChangeView:
                     self._comment_index = offset
                     self._show_comment_in_diff(self._selected_comment())
                 elif DIFF == pane:
-                    self._diff.cursor = min(self._diff.scroll + offset,
-                                            max(len(self._diff.rows) - 1, 0))
+                    self._diff.cursor = self._diff.stop_of(min(self._diff.scroll + offset,
+                                                               max(len(self._diff.rows) - 1, 0)))
                     # A click picks the half of the diff, too.
                     self._diff.side = 'old' if column < left + 2 + (width - 2) // 2 else 'new'
                 if DOUBLE_CLICK == kind:
