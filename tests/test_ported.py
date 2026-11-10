@@ -244,6 +244,36 @@ class InboxTest(unittest.TestCase):
             shutil.rmtree(directory)
 
 
+class SubmittableTest(unittest.TestCase):
+
+    def test_submittable_in_stack(self):
+        directory = tempfile.mkdtemp(prefix='plustwo-submittable-')
+        try:
+            repo = test_stacks.Repository(directory)
+            repo.git('switch', '--quiet', '-c', 'feature')
+            repo.commit('a.txt', 'a\n', 'Add a')
+            repo.commit('b.txt', 'b\n', 'Add b')
+            repo.change('upload')
+
+            def submittable():
+                stack = core.changes_in_stack(directory)
+                return [change.subject for change in stack
+                        if change.change_id in core.submittable_in(stack, directory)]
+
+            self.assertEqual([], submittable())
+            # The upper one alone isn't, the one below lacks its +2.
+            repo.approve('2')
+            self.assertEqual([], submittable())
+            repo.approve('1')
+            self.assertEqual(['Add a', 'Add b'], submittable())
+            # Not after the base moved on
+            repo.git('switch', '--quiet', 'main')
+            repo.commit('c.txt', 'c\n', 'Other work')
+            self.assertEqual([], submittable())
+        finally:
+            shutil.rmtree(directory)
+
+
 class HistoryTest(unittest.TestCase):
     """A line kept as the same or moved has its text where it moved to."""
 

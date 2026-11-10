@@ -1542,6 +1542,21 @@ def changes_submitted_with(change, repository=None):
     return stack[:[other.change_id for other in stack].index(change.change_id) + 1]
 
 
+def submittable_in(stack, repository=None):
+    """The Change-Ids of a stack's changes (oldest first) that submit()
+    would submit now without force: they and the changes below them have
+    their votes and nothing unresolved, and the base branch didn't move.
+    """
+    base = base_branch(repository)
+    result = set()
+    for change in stack:
+        if change.submit_problems() or change.unfinished_comments():
+            break
+        if is_ancestor(base, change.commit, repository):
+            result.add(change.change_id)
+    return result
+
+
 def worktrees_with(branch, repository=None):
     """Paths of the worktrees that have a branch checked out."""
     output = git('worktree', 'list', '--porcelain', repository=repository)
