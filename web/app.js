@@ -14,6 +14,8 @@ const state = {
   // the change page
   change: null, file: null, a: 'base', b: 'latest', context: '10', whitespace: 'none',
   diff: null, cursor: 0, side: 'new', editor: null, listIndex: 0, listIds: [],
+  // the patch set list: unfolded rows, whether it is open, a thread to show
+  psExpanded: new Set(), psOpen: false, jumpThread: null,
 };
 
 // The file list beside the diff: 'shown' or 'hidden' as chosen in this
@@ -179,7 +181,7 @@ async function renderList() {
 // ── the change page ───────────────────────────────────────────────────────
 
 async function renderChange(id, file) {
-  const change = await api('change', {id});
+  const change = await api('change', {id, b: state.b});
   if (!state.change || state.change.id !== change.id) {
     state.a = 'base'; state.b = 'latest'; state.cursor = 0; state.editor = null;
   }
@@ -196,7 +198,8 @@ async function renderChange(id, file) {
   const hiddenNote = sidebarWasShown ? null : el('p', {class: 'dim'},
     `File ${change.files.findIndex((entry) => entry.path === state.file) + 1}/${change.files.length}: `,
     state.file === COMMIT_MSG ? 'Commit message' : state.file);
-  view.replaceChildren(...[changeHeader(change), changeLevelThreads(change), toolbar(change),
+  view.replaceChildren(...[changeHeader(change), patchSetsView(change), changeLevelThreads(change),
+                          toolbar(change),
                           hiddenNote,
                           el('div', {class: 'layout'}, sidebarWasShown ? fileList(change) : null,
                              diffView(change))].filter(Boolean));
@@ -206,6 +209,66 @@ async function renderChange(id, file) {
     state.scrollToCursor = false;
   }
   if (state.editor) document.querySelector('.editor textarea')?.focus();
+  if (state.jumpThread) {
+    document.getElementById(`thread-${state.jumpThread}`)?.scrollIntoView({block: 'center'});
+    state.jumpThread = null;
+  }
+}
+
+// The patch sets like the terminal's patch set view: when, by whom, the
+// type against the one before, votes and comments. A row unfolds into
+// what happened on it, a click on a thread shows it in the diff.
+function patchSetsView(change) {
+  const when = (time, long = true) => time
+    ? new Date(time * 1000).toLocaleString([], long ? {dateStyle: 'short', timeStyle: 'short'}
+                                               : {month: '2-digit', day: '2-digit',
+                                                  hour: '2-digit', minute: '2-digit'}) : '-';
+  const b = state.b === 'latest' ? String(change.patch_set) : state.b;
+  const body = el('tbody', {}, el('tr', {}, el('td', {}, state.a === 'base' ? '●' : ''),
+                                  el('td'), el('td', {colspan: 7, class: 'dim'}, 'base')));
+  for (const entry of change.history) {
+    const open = state.psExpanded.has(entry.number);
+    body.append(el('tr', {class: 'ps-row', onclick: () => {
+      if (open) state.psExpanded.delete(entry.number); else state.psExpanded.add(entry.number);
+      render();
+    }},
+      el('td', {}, state.a === String(entry.number) ? '●' : ''),
+      el('td', {}, b === String(entry.number) ? '●' : ''),
+      el('td', {}, `${open ? '▾' : '▸'} PS${entry.number}`), el('td', {}, when(entry.uploaded)),
+      el('td', {}, entry.uploader), el('td', {}, entry.kind), el('td', {}, entry.code_review),
+      el('td', {}, entry.verified),
+      el('td', {class: entry.open ? 'open-threads' : 'dim'}, entry.comments)));
+    if (!open) continue;
+    for (const event of entry.events) {
+      const who = event.author === 'reviewer' ? 'Reviewer'
+        : event.author === 'author' ? 'Author' : event.author;
+      const text = event.kind === 'vote' ? `${who}: ${event.text}`
+        : `${event.kind === 'reply' ? 'reply on' : 'thread'} #${event.number} `
+          + `[${event.draft ? 'draft' : event.status}] ${event.place}  ${who}: ${event.text}`;
+      body.append(el('tr', {class: `ps-event${event.open ? ' open-threads' : ''}`
+                                   + (event.number ? ' link' : ''),
+                            onclick: () => event.number && showThread(change, entry.number, event)},
+        el('td', {colspan: 2}), el('td', {class: 'dim'}, when(event.time, false)),
+        el('td', {colspan: 6}, text)));
+    }
+  }
+  return el('details', {class: 'patch-sets', open: state.psOpen ? '' : null,
+                        ontoggle: (event) => { state.psOpen = event.target.open; }},
+    el('summary', {}, `Patch sets (${change.history.length})`),
+    el('table', {}, el('thead', {}, el('tr', {}, ['A', 'B', 'PS', 'Uploaded', 'By', 'Type', 'CR',
+                                                  'V', 'Comments'].map((title) => el('th', {}, title)))),
+       body));
+}
+
+// Shows a thread in the diff, with its patch set on the right.
+function showThread(change, patchSet, event) {
+  const comment = change.comments.find((other) => other.number === event.number);
+  if (!comment) return;
+  state.b = String(patchSet);
+  if (state.a !== 'base' && Number(state.a) >= patchSet) state.a = 'base';
+  state.jumpThread = event.number;
+  const path = comment.path === PATCHSET_LEVEL ? state.file : comment.path;
+  if (path === state.file) render(); else openFile(path);
 }
 
 function changeHeader(change) {
@@ -228,6 +291,14 @@ function changeLevelThreads(change) {
   return el('div', {}, el('h2', {}, 'On the whole change'), threads.map(threadView));
 }
 
+// "PS3 · trivial rebase · 1 new" for the version choices
+function psLabel(number) {
+  const entry = state.change.history.find((other) => other.number === number);
+  if (!entry) return `PS${number}`;
+  return [`PS${number}`, entry.kind !== '-' ? entry.kind : null, entry.comments || null]
+    .filter(Boolean).join(' · ');
+}
+
 function toolbar(change) {
   const versions = ['base', ...change.patch_sets.map(String)];
   const select = (value, options, onchange, labels = options) => el('select', {onchange},
@@ -243,10 +314,10 @@ function toolbar(change) {
        state.confirmApprove ? 'Confirm +2' : '+2'),
     el('span', {class: 'dim'}, 'compare'),
     select(state.a, versions, (event) => { state.a = event.target.value; render(); },
-           versions.map((version) => version === 'base' ? 'Base' : `PS${version}`)),
+           versions.map((version) => version === 'base' ? 'Base' : psLabel(Number(version)))),
     el('span', {}, '→'),
     select(b, change.patch_sets.map(String), (event) => { state.b = event.target.value; render(); },
-           change.patch_sets.map((number) => `PS${number}`)),
+           change.patch_sets.map(psLabel)),
     el('span', {class: 'dim'}, 'context'),
     select(state.context, CONTEXTS, (event) => { state.context = event.target.value; render(); }),
     el('span', {class: 'dim'}, 'whitespace'),
@@ -417,7 +488,7 @@ function threadView(comment) {
   });
   const number = comment.number;
   const {origin, note} = shownPlace(comment);
-  return el('div', {class: `thread ${comment.status}`},
+  return el('div', {class: `thread ${comment.status}`, id: `thread-${number}`},
     el('div', {}, el('span', {class: `chip ${status === 'unresolved' ? 'warn' : ''}`},
                      `#${number} ${status}${pending}`), ' ',
        el('span', {class: 'dim'}, comment.place + (comment.side === 'old' ? ' (old)' : '')

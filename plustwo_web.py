@@ -46,6 +46,18 @@ def comment_json(comment):
             'messages': [message_json(message) for message in comment.messages]}
 
 
+def history_json(core, entry):
+    """One patch set of core.patch_set_history() for the page."""
+    return {'number': entry.number, 'uploaded': entry.uploaded, 'uploader': entry.uploader,
+            'kind': entry.kind, 'code_review': entry.vote_label(core.CODE_REVIEW),
+            'verified': entry.vote_label(core.VERIFIED), 'comments': entry.comments_label(),
+            'open': len(entry.open_threads()),
+            'events': [{'kind': event.kind, 'time': event.time, 'author': event.author,
+                        'text': event.text, 'number': event.number, 'place': event.place,
+                        'status': event.status, 'draft': event.draft, 'open': event.is_open()}
+                       for event in entry.events]}
+
+
 def vote_json(vote):
     return {'label': vote.label, 'value': vote.value, 'by': vote.by,
             'patch_set': vote.patch_set, 'message': vote.message,
@@ -159,6 +171,10 @@ class Server:
                 'problems': change.submit_problems(),
                 'files': files,
                 'comments': [comment_json(comment) for comment in change.comments],
+                # Drafts go with the patch set shown on the right
+                'history': [history_json(core, entry) for entry in core.patch_set_history(
+                    change, int(query['b']) if query.get('b', '').isdigit() else None,
+                    repository)],
                 'votes': [vote_json(vote) for vote in change.votes]}
 
     def diff(self, query):

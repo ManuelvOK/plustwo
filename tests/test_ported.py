@@ -211,6 +211,55 @@ class PortTest(unittest.TestCase):
                               self.base)
         self.assertEqual(core.NO_CODE_CHANGE, core.patch_set_kind(first, message, self.directory))
 
+    def test_patch_set_history(self):
+        first = self.commit({'a.txt': LINES.replace('line 10\n', 'line ten\n')}, 'PS1', self.base)
+        second = self.commit({'a.txt': LINES.replace('line 10\n', 'line ten\n')}, 'PS2 msg',
+                             self.base)
+        third = self.commit({'a.txt': LINES.replace('line 10\n', 'line TEN\n')}, 'PS3',
+                            self.base)
+        message = core.Message
+
+        def thread(number, patch_set, *messages, status_place='a.txt:10'):
+            return core.Comment(number=number, place=status_place, patch_set=patch_set,
+                                messages=list(messages))
+
+        comments = [
+            # Started on PS1, answered while PS2 was the newest, resolved
+            thread(1, 1, message('reviewer', 'Rename it', time=110),
+                   message('author', 'Done', time=250, unresolved=False)),
+            # Started on PS1, still open, a reply sent while PS3 was the newest
+            thread(2, 1, message('reviewer', 'Why?\nSecond line', time=120),
+                   message('author', 'Because', time=310)),
+            # A draft thread on PS3, a draft reply that goes to the shown patch set
+            thread(3, 3, message('reviewer', 'Draft', sent=False)),
+            thread(4, 2, message('reviewer', 'On PS2', time=210),
+                   message('reviewer', 'More', sent=False)),
+        ]
+        votes = [core.Vote('Code-Review', 1, 'reviewer', 1, time=150),
+                 core.Vote('Code-Review', 1, 'reviewer', 2, copied_from=1, time=150),
+                 core.Vote('Verified', 1, 'ci', 3, time=320)]
+        change = core.Change(change_id='I' + '0' * 40, commit=third, subject='', topic='t',
+                             comments=comments, votes=votes,
+                             patch_sets={1: first, 2: second, 3: third},
+                             uploads={1: 100, 2: 200, 3: 300}, uploaders={1: 'a', 2: 'a', 3: 'b'})
+        history = core.patch_set_history(change, repository=self.directory)
+        self.assertEqual([entry.kind for entry in history],
+                         ['-', core.NO_CODE_CHANGE, core.REWORK])
+        self.assertEqual([entry.comments_label() for entry in history],
+                         ['2 new (1 open)', '1 new (1 open), 1 reply', '1 new, 2 replies'])
+        self.assertEqual([(event.kind, event.number) for event in history[0].events],
+                         [('thread', 1), ('thread', 2), ('vote', None)])
+        self.assertEqual(history[0].events[1].text, 'Why?')
+        self.assertEqual([(event.kind, event.number, event.draft) for event in history[2].events],
+                         [('reply', 2, False), ('vote', None, False), ('thread', 3, True),
+                          ('reply', 4, True)])
+        self.assertEqual([entry.vote_label('Code-Review') for entry in history], ['+1', '(+1)', ''])
+        self.assertEqual(history[2].vote_label('Verified'), '+1')
+        # Draft replies follow the patch set shown, a draft thread stays on its own.
+        shown = core.patch_set_history(change, shown=2, repository=self.directory)
+        self.assertEqual([4], [event.number for event in shown[1].events if event.draft])
+        self.assertEqual([3], [event.number for event in shown[2].events if event.draft])
+
     def test_labels(self):
         ported = core.PortedPlace('a.txt:50', 50, core.MOVED, 4)
         self.assertEqual(ported.label('a.txt:44'), 'now :50')

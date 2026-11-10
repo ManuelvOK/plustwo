@@ -1410,6 +1410,7 @@ def rebased_tree(commit, parent, repository=None):
     return result.stdout.split('\n')[0].strip() or None
 
 
+@cached_for_objects(0, 1)
 def patch_set_kind(old, new, repository=None):
     """How a new patch set differs from the one before, like Gerrit's
     change kinds: no code change (the same files, e.g. a new message),
@@ -3091,6 +3092,144 @@ def thread_place(change, comment, first=None, second=None, repository=None):
         return ShownThread(PATCHSET_LEVEL, None, NEW_SIDE, origin, f'file gone: {comment.place}')
     note = {REMOVED: 'line removed', EDITED: 'line edited'}.get(state, '')
     return ShownThread(split_place(place)[0], number, side, origin, note)
+
+# ── the patch set history ─────────────────────────────────────────────────
+
+@dataclass
+class PatchSetEvent:
+    """Something that happened on a patch set: a thread started on it
+    (THREAD), a reply while it was the newest (REPLY) or a vote on it
+    (VOTE). number and place are the thread's, text the first line of the
+    message, or the vote like Code-Review+2. status is the thread's now.
+    """
+    kind: str
+    time: int
+    author: str
+    text: str
+    number: int | None = None
+    place: str = ''
+    status: str = ''
+    draft: bool = False
+
+    def is_open(self):
+        """Whether the event's thread is still unresolved."""
+        return THREAD == self.kind and UNRESOLVED == self.status and not self.draft
+
+
+THREAD = 'thread'
+REPLY = 'reply'
+VOTE = 'vote'
+
+
+@dataclass
+class PatchSetEntry:
+    """One patch set in a change's history, see patch_set_history()."""
+    number: int
+    commit: str
+    uploaded: int
+    uploader: str
+    # Its kind against the patch set before, see patch_set_kind(), '-' for
+    # the first
+    kind: str
+    votes: list[Vote]
+    events: list[PatchSetEvent]
+
+    def new_threads(self):
+        """The threads started on this patch set."""
+        return [event for event in self.events if THREAD == event.kind]
+
+    def replies(self):
+        """The replies sent while it was the newest patch set."""
+        return [event for event in self.events if REPLY == event.kind]
+
+    def open_threads(self):
+        """The threads started on it that are still unresolved."""
+        return [event for event in self.events if event.is_open()]
+
+    def comments_label(self):
+        """Like "3 new (1 open), 1 reply", empty without any."""
+        parts = []
+        new, open_ = len(self.new_threads()), len(self.open_threads())
+        if new:
+            parts.append(f'{new} new' + (f' ({open_} open)' if open_ else ''))
+        replies = len(self.replies())
+        if replies:
+            parts.append(f'{replies} repl{"y" if 1 == replies else "ies"}')
+        return ', '.join(parts)
+
+    def vote_label(self, label):
+        """The vote of a label on it for display, like +2, in parentheses
+        when only copied from an earlier one. Empty without a vote. Like
+        Gerrit, the lowest counts if negative, else the highest.
+        """
+        votes = [vote for vote in self.votes if label == vote.label]
+        if not votes:
+            return ''
+        values = [vote.value for vote in votes]
+        value = min(values) if min(values) < 0 else max(values)
+        text = f'{value:+d}' if value else '0'
+        return f'({text})' if all(vote.copied_from for vote in votes) else text
+
+
+def patch_set_history(change, shown=None, repository=None):
+    """The change's patch sets, oldest first, as PatchSetEntry: when and by
+    whom each was uploaded, its kind against the one before (computed, so
+    older notes work), the votes on it and what happened on it. A thread
+    belongs to the patch set it was started on. A reply belongs to the
+    patch set that was the newest when it was sent, by the upload times,
+    like Gerrit's comments per patch set. Draft replies belong to shown,
+    the patch set the reviewer looks at, the newest without one. A draft
+    thread belongs to the patch set it is on, like a sent one.
+    """
+    numbers = sorted(change.patch_sets)
+    if not numbers:
+        return []
+    shown = shown if shown in change.patch_sets else numbers[-1]
+
+    def newest_at(when):
+        # The patch set that was the newest at a time, the thread's own for
+        # messages of older notes without one
+        uploaded = [number for number in numbers if change.uploads.get(number, 0) <= when]
+        return uploaded[-1] if uploaded else numbers[0]
+
+    events = {number: [] for number in numbers}
+    for comment in change.comments:
+        for index, message in enumerate(comment.messages):
+            text = message_text(message).split('\n')[0]
+            if 0 == index:
+                number = (comment.patch_set if comment.patch_set in events
+                          else shown if not message.sent else numbers[-1])
+                events[number].append(PatchSetEvent(
+                    THREAD, message.time, message.author, text, comment.number, comment.place,
+                    comment.status, comment.is_draft()))
+                continue
+            if not message.sent:
+                number = shown
+            elif message.time:
+                number = newest_at(message.time)
+            else:
+                number = comment.patch_set if comment.patch_set in events else numbers[-1]
+            events[number].append(PatchSetEvent(REPLY, message.time, message.author, text,
+                                                comment.number, comment.place, comment.status,
+                                                not message.sent))
+    for vote in change.votes:
+        if vote.patch_set in events and not vote.copied_from:
+            events[vote.patch_set].append(PatchSetEvent(
+                VOTE, vote.time, vote.by, f'{vote.label}{vote.value:+d}'
+                + (f': {vote.message.split(chr(10))[0]}' if vote.message else '')))
+    history = []
+    for index, number in enumerate(numbers):
+        commit = change.patch_sets[number]
+        kind = (patch_set_kind(change.patch_sets[numbers[index - 1]], commit, repository)
+                if index else '-')
+        # Drafts have no time yet: they come last.
+        ordered = sorted(events[number], key=lambda event: (event.draft, event.time))
+        history.append(PatchSetEntry(number, commit, change.uploads.get(number, 0),
+                                     change.uploaders.get(number, ''), kind,
+                                     [vote for vote in change.votes if number == vote.patch_set],
+                                     ordered))
+    return history
+
 
 def range_diff_command(change, first=None, second=None):
     """The git command showing the range-diff between two versions."""

@@ -79,6 +79,13 @@ td.removed { background: var(--removed); } td.removed .emph { background: var(--
 td.added { background: var(--added); } td.added .emph { background: var(--added-emph); }
 td.below { background: var(--below); } td.below .emph { background: var(--below-emph); }
 td.partly { background: var(--partly); } td.partly .emph { background: var(--partly-emph); }
+details.patch-sets { margin: 8px 0; }
+details.patch-sets table { border-collapse: collapse; font-size: 13px; }
+details.patch-sets th { text-align: left; color: var(--dim); font-weight: normal; padding: 2px 8px; }
+details.patch-sets td { padding: 2px 8px; }
+tr.ps-row { cursor: pointer; } tr.ps-row:hover td { background: var(--panel); }
+tr.ps-event.link { cursor: pointer; }
+.open-threads { color: var(--warn); font-weight: 600; }
 td.moved { background: var(--moved); } td.moved .emph { background: var(--moved-emph); }
 td.text.removed.whole { background: var(--removed-emph); }
 td.text.added.whole { background: var(--added-emph); }

@@ -95,6 +95,8 @@ class WebTest(unittest.TestCase):
         _, change = self.request(f'/api/change?id={change_id}')
         self.assertEqual('Change two', change['subject'])
         self.assertEqual(['/COMMIT_MSG', 'base.txt'], [file['path'] for file in change['files']])
+        self.assertEqual([(1, '-')], [(entry['number'], entry['kind'])
+                                      for entry in change['history']])
         _, diff = self.request(f'/api/diff?id={change_id}&path=base.txt&context=all')
         kinds = [(row['old']['kind'], row['new']['kind']) for row in diff['rows']]
         # two and TWO share no character, so they don't pair

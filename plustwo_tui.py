@@ -25,6 +25,7 @@ import re
 import subprocess
 import tempfile
 import textwrap
+import time
 
 # How often the screen checks for new commits or notes, in milliseconds
 RELOAD_INTERVAL_MS = 700
@@ -119,9 +120,15 @@ ACTIONS = (
      'file'),
     ('less-context', 'Change', 'context', 'less context around the changes'),
     ('vimdiff', 'Change', 'vimdiff', 'the file\'s diff in vimdiff'),
-    ('patch-sets', 'Change', 'patch sets', 'choose the versions to compare: "1 3", "2 '
-     'current" or "base 2" (the whole change as of PS2). Empty: the whole change, latest '
-     'patch set.'),
+    ('patch-sets', 'Change', 'patch sets', 'the patch sets: when, by whom, their type, votes '
+     'and comments, to choose the versions to compare. l unfolds a patch set, Enter shows the '
+     'diff (on a thread: at the thread).'),
+    ('set-a', 'Patch sets', 'A', 'in the patch sets: the row\'s version on the left side (A), '
+     '< too'),
+    ('set-b', 'Patch sets', 'B', 'in the patch sets: the row\'s patch set on the right side (B), '
+     '> too'),
+    ('compare-prompt', 'Patch sets', 'type', 'in the patch sets: type the versions to compare: '
+     '"1 3", "2 current" or "base 2". Empty: the whole change, latest patch set.'),
     ('fold-all', 'Change', 'fold all', 'fold all threads, or unfold all if all are folded'),
     ('unfold-every', 'Change', 'unfold all', 'unfold all threads'),
     ('fold-every', 'Change', 'fold all', 'fold all threads'),
@@ -161,6 +168,7 @@ VIM_KEYS = {
     'section-down': 'J', 'section-up': 'K',
     # Like vim's C-w o, which keeps only the current window
     'sidebar': 'C-w o,z s',
+    'set-a': 'a', 'set-b': 'b', 'compare-prompt': ':',
 }
 PRESETS = {
     'vim': VIM_KEYS,
@@ -175,7 +183,7 @@ PRESETS = {
               'next-chunk': 'n', 'prev-chunk': 'p', 'next-file': 'N', 'prev-file': 'P',
               'next-thread': ']', 'prev-thread': '[', 'patch-sets': 'b',
               # Like delete-other-windows
-              'sidebar': 'C-x 1'},
+              'sidebar': 'C-x 1', 'set-b': 'M-b'},
     # Gerrit's web interface: j and k move, n and p go to the next and
     # previous changes, N and P to the next and previous thread, ] and [ to
     # the next and previous file, u goes up, o opens, c comments, and a
@@ -188,7 +196,9 @@ PRESETS = {
                'reviewed': 'r,m,Space', 'reply': 'R', 'reload': 'C-r',
                'next-change': 'M-n', 'prev-change': 'M-p',
                # e and E unfold and fold all threads, so drafts are edited with w
-               'unfold-every': 'e', 'fold-every': 'E', 'edit-draft': 'w'},
+               'unfold-every': 'e', 'fold-every': 'E', 'edit-draft': 'w',
+               # a sends and b chooses patch sets here
+               'set-a': '{', 'set-b': '}'},
 }
 # Presets whose counts start with a key, like Emacs' C-u 15 C-n. The
 # others take digits right away, like vim's 15j.
@@ -249,6 +259,7 @@ class Keymap:
 
     def __init__(self, preset='vim', overrides=None):
         self.errors = []
+        self.last = ()
         if preset not in PRESETS:
             self.errors.append(f'unknown keys.preset "{preset}", using vim')
             preset = 'vim'
@@ -338,6 +349,8 @@ class Keymap:
         self._pending = ()
         count = int(self._count) if self._count else None
         self._count = ''
+        # Which keys gave the action, e.g. Enter or l for open
+        self.last = sequence
         return self._sequences.get(sequence), count
 
     def footer(self, entries):
@@ -2138,6 +2151,178 @@ def sidebar_shown(mode, width):
     return 'shown' == mode or ('auto' == mode and width >= SIDEBAR_MIN_WIDTH)
 
 
+class PatchSetView:
+    """The patch sets of a change, like Gerrit's patch set list: when, by
+    whom, their type, votes and comments. A row unfolds into what happened
+    on it. Chooses the versions the change screen compares. The history
+    comes from core.patch_set_history().
+    """
+
+    TOP = 3
+
+    def __init__(self, interface, change_view):
+        self._interface = interface
+        self._view = change_view
+        core = interface.core
+        (first, _), (second, _) = core.versions_to_compare(change_view.change,
+                                                           *change_view.compare)
+        # The chosen sides: base or a patch set number, CURRENT on the right
+        self._a, self._b = first, second
+        self._expanded = set()
+        self._history = []
+        # ('base',), ('patch set', entry) or ('event', entry, event)
+        self._rows = []
+        self._selected = 0
+        self._scroll = 0
+
+    def reload(self):
+        """Reads the change again and lays out the rows."""
+        self._view.reload()
+        change = self._view.change
+        if change is None:
+            return
+        shown = int(self._b) if self._b.isdigit() else None
+        self._history = self._interface.core.patch_set_history(change, shown)
+        self._rows = [('base',)]
+        for entry in self._history:
+            self._rows.append(('patch set', entry))
+            if entry.number in self._expanded:
+                self._rows += [('event', entry, event) for event in entry.events]
+        if not self._selected and len(self._rows) > 1:
+            # On the right side's patch set at first
+            self._selected = next((index for index, row in enumerate(self._rows)
+                                   if 'patch set' == row[0] and str(row[1].number) == self._b),
+                                  len(self._rows) - 1)
+        self._selected = min(self._selected, len(self._rows) - 1)
+
+    def footer(self):
+        """The keys of this view."""
+        row = self._rows[self._selected] if self._rows else ('base',)
+        entries = [(('down', 'up'), 'move')]
+        if 'patch set' == row[0]:
+            entries.append((('open',), 'fold' if row[1].number in self._expanded else 'unfold'))
+        entries += [(('set-a',), 'A'), (('set-b',), 'B'), (('compare-prompt',), 'type versions'),
+                    (('back',), 'back'), (('help',), 'all keys')]
+        return entries
+
+    def draw(self, area):
+        """The header, the column titles and a row per patch set."""
+        out = self._interface.text
+        core = self._interface.core
+        change = self._view.change
+        bar = self._interface.colour_pairs.attribute(15, tone(HEADER_BACKGROUND))
+        out(0, 0, ' ' * area.width, bar)
+        title = f'Patch sets {change.short_id()} {change.subject}'
+        out(0, 1, title, bar | curses.A_BOLD)
+        sides = f'A: {self._side_label(self._a)}  B: {self._side_label(self._b)} '
+        out(0, max(area.width - len(sides), len(title) + 3), sides, bar | curses.A_BOLD)
+        out(2, 1, f'{"A":<2}{"B":<2} {"PS":<6} {"Uploaded":<17} {"By":<12} {"Type":<15} '
+            f'{"CR":<6} {"V":<6} Comments', curses.A_DIM | curses.A_UNDERLINE)
+        height = area.height - self.TOP
+        self._scroll = min(self._scroll, self._selected)
+        if self._selected >= self._scroll + height:
+            self._scroll = self._selected - height + 1
+        for offset, content in enumerate(self._rows[self._scroll:self._scroll + height]):
+            index = self._scroll + offset
+            row = self.TOP + offset
+            attributes = curses.A_REVERSE if index == self._selected else 0
+            out(row, 1, ' ' * (area.width - 2), attributes)
+            if 'event' == content[0]:
+                self._draw_event(row, content[2], attributes, area.width)
+                continue
+            version = 'base' if 'base' == content[0] else str(content[1].number)
+            marks = ('●' if version == self._a else ' ') + ' ' \
+                + ('●' if version == self._b else ' ') + ' '
+            out(row, 1, marks, attributes | curses.A_BOLD | curses.color_pair(3))
+            if 'base' == content[0]:
+                out(row, 6, 'base', attributes | curses.A_DIM)
+                continue
+            entry = content[1]
+            when = time.strftime('%Y-%m-%d %H:%M', time.localtime(entry.uploaded)) \
+                if entry.uploaded else '-'
+            fold = '▾' if entry.number in self._expanded else '▸'
+            out(row, 6, f'{fold} PS{entry.number:<3} {when:<17} {entry.uploader:<12.12} '
+                f'{entry.kind:<15} {entry.vote_label(core.CODE_REVIEW):<6} '
+                f'{entry.vote_label(core.VERIFIED):<6} ', attributes)
+            comments = entry.comments_label()
+            out(row, 71, comments, attributes | (status_attribute('unresolved') | curses.A_BOLD
+                                                 if entry.open_threads() else curses.A_DIM))
+
+    def _draw_event(self, row, event, attributes, width):
+        """An unfolded row: a thread, a reply or a vote."""
+        when = time.strftime('%m-%d %H:%M', time.localtime(event.time)) if event.time else ''
+        who = 'Reviewer' if self._interface.core.REVIEWER == event.author else (
+            'Author' if self._interface.core.AUTHOR == event.author else event.author)
+        if 'vote' == event.kind:
+            text = f'{when:<11} {who}: {event.text}'
+            out_attributes = attributes | curses.A_DIM
+        else:
+            label = ('draft' if event.draft else event.status)
+            what = 'reply on' if 'reply' == event.kind else 'thread'
+            text = (f'{when:<11} {what} #{event.number} [{label}] {event.place}  {who}: '
+                    f'{event.text}')
+            out_attributes = attributes | (status_attribute('unresolved') | curses.A_BOLD
+                                           if event.is_open() else
+                                           status_attribute('draft') if event.draft else 0)
+        self._interface.text(row, 10, text, out_attributes, width - 1)
+
+    @staticmethod
+    def _side_label(version):
+        return version if version in ('base', 'current') else f'PS{version}'
+
+    def mouse(self, row, _column, kind):
+        """A click selects a row, a double click unfolds it."""
+        if wheel_action(kind):
+            self.action(wheel_action(kind))
+            return
+        index = self._scroll + row - self.TOP
+        if 0 <= index < len(self._rows):
+            self._selected = index
+            if DOUBLE_CLICK == kind:
+                self._open(enter=False)
+
+    def action(self, action, count=None):
+        """Handles an action of the patch set view."""
+        if action in LIST_ACTIONS:
+            self._selected = move(self._selected, action, len(self._rows), count)
+            return
+        row = self._rows[self._selected] if self._rows else ('base',)
+        version = 'base' if 'base' == row[0] else str(row[1].number)
+        if action in ('set-a', 'side-old'):
+            self._a = version
+        elif action in ('set-b', 'side-new'):
+            if 'base' == version:
+                self._interface.say('base can only be A, the left side.')
+            else:
+                self._b = version
+                self.reload()
+        elif 'open' == action:
+            self._open(enter=self._interface.keymap.last in key_sequences('Enter'))
+        elif action in ('compare-prompt', 'patch-sets'):
+            self._interface.back()
+            self._view.action('compare-prompt')
+
+    def _open(self, enter):
+        """l unfolds a patch set's row, Enter shows the diff of A and B, on
+        a thread at that thread with its patch set as B.
+        """
+        row = self._rows[self._selected] if self._rows else ('base',)
+        if 'event' == row[0] and row[2].number is not None:
+            entry, event = row[1], row[2]
+            first = self._a if self._a.isdigit() and int(self._a) < entry.number else 'base'
+            self._view.compare = (first, str(entry.number))
+            self._interface.back()
+            self._view.show_thread(event.number)
+            return
+        if enter:
+            self._view.compare = (self._a, self._b)
+            self._interface.back()
+            return
+        if 'patch set' == row[0]:
+            self._expanded ^= {row[1].number}
+            self.reload()
+
+
 # What the change screen compares at first: the whole change as of the
 # latest patch set
 DEFAULT_COMPARE = ('base', 'latest')
@@ -2715,6 +2900,8 @@ class ChangeView:
             interface.run_outside(core.diff_command(change, *self._compare, tool=True,
                                                     path=self._selected_file()))
         elif 'patch-sets' == action:
+            interface.open(PatchSetView(interface, self))
+        elif 'compare-prompt' == action:
             self._choose_patch_sets()
         elif action in ('unfold-every', 'fold-every'):
             expand = 'unfold-every' == action
@@ -2844,6 +3031,32 @@ class ChangeView:
                 if DOUBLE_CLICK == kind:
                     self._open()
                 return
+
+    @property
+    def change(self):
+        """The change shown, None before the first reload."""
+        return self._change
+
+    @property
+    def compare(self):
+        """The two versions compared, see core.versions_to_compare()."""
+        return self._compare
+
+    @compare.setter
+    def compare(self, versions):
+        # Checked here: a wrong choice must not break drawing the diff.
+        self._interface.core.versions_to_compare(self._change, *versions)
+        self._compare = versions
+
+    def show_thread(self, number):
+        """Goes to a thread in the diff, unfolded."""
+        comment = self._change.comment(number)
+        if comment is None:
+            return
+        self._expanded[number] = True
+        self._show_comment_in_diff(comment)
+        if self._diff.thread_at(self._diff.cursor) == number:
+            self._focus_pane(DIFF)
 
     def _choose_patch_sets(self):
         """Asks which two versions to compare."""
