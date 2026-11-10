@@ -7,6 +7,7 @@ import curses
 import importlib.machinery
 import importlib.util
 import sys
+import types
 import unittest
 from pathlib import Path
 
@@ -256,6 +257,40 @@ class SearchTest(unittest.TestCase):
         self.assertFalse(diff.go_to_match(core, 'x', False, 10))
         self.assertEqual((0, 'new'), (diff.cursor, diff.side))
         self.assertIsNone(diff.go_to_match(core, 'nowhere', True, 10))
+
+    def test_gaps_and_comments(self):
+        old = ['a', 'b', 'needle', 'c']
+        new = ['a', 'b', 'c', 'Needle']
+        # Gaps start at old line 1 and new line 3, two lines each
+        self.assertEqual({1}, core.gaps_with_matches([(1, 1, 3), (4, 3, 1)], old, new, 'needle'))
+        self.assertEqual({4}, core.gaps_with_matches([(1, 1, 2), (4, 4, 1)], old, new, 'Needle'))
+        message = types.SimpleNamespace(text='Why a Default?')
+        self.assertTrue(core.comment_matches(types.SimpleNamespace(messages=[message]), 'default'))
+        self.assertFalse(core.comment_matches(types.SimpleNamespace(messages=[message]), 'x'))
+
+    def test_comments_mode_finds_threads_only(self):
+        diff = tui.DiffPane(None)
+        diff._texts = [('x', 'x'), ('a', 'b')]
+        diff._continues = [False, False]
+        diff.rows = [('diff', 0), ('thread', 4, 0), ('thread', 4, 1), ('diff', 1)]
+        diff.lines = [[], [('#4 x', -1, -1, 0)], [('more x', -1, -1, 0)], []]
+        self.assertFalse(diff.go_to_match(core, 'x', True, 10, 'comments'))
+        self.assertEqual(1, diff.cursor)
+        # Both rows belong to one thread: the next match is the same one.
+        self.assertTrue(diff.go_to_match(core, 'x', True, 10, 'comments'))
+        # All: after the thread, the diff line above it, from the top
+        self.assertTrue(diff.go_to_match(core, 'x', True, 10, 'all'))
+        self.assertEqual((0, 'old'), (diff.cursor, diff.side))
+        self.assertFalse(diff.go_to_match(core, 'x', True, 10, 'all'))
+        self.assertFalse(diff.go_to_match(core, 'x', True, 10, 'all'))
+        self.assertEqual(1, diff.cursor)
+
+    def test_marked_segments(self):
+        segments = [('ab', 1, -1, 0), ('cd', 2, -1, 0)]
+        self.assertEqual([('a', 1, -1, 0), ('b', 1, -1, curses.A_REVERSE),
+                          ('c', 2, -1, curses.A_REVERSE), ('d', 2, -1, 0)],
+                         tui.marked_segments(core, segments, 'bc'))
+        self.assertIs(segments, tui.marked_segments(core, segments, 'x'))
 
 
 class BackgroundReplyTest(unittest.TestCase):

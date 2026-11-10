@@ -139,11 +139,17 @@ ACTIONS = (
      '> too'),
     ('compare-prompt', 'Patch sets', 'type', 'in the patch sets: type the versions to compare: '
      '"1 3", "2 current" or "base 2". Empty: the whole change, latest patch set.'),
-    ('search', 'Change', 'search', 'in the diff: search the lines shown of the file for a '
-     'text, from the cursor on, on both sides. Lower case finds any case. Empty searches the '
-     'last text again, Esc ends the search and its marks.'),
-    ('search-next', 'Change', 'match', 'in the diff: to the next match of the search'),
+    ('search', 'Change', 'search', 'in the diff: search the file for a text, from the cursor '
+     'on, on both sides. Lower case finds any case. Up and Down in the prompt go through the '
+     'texts searched before, empty searches the last one again. Tab in the prompt changes '
+     'where it looks: the lines shown, the whole file (opens the gaps with matches), the file '
+     'and the comments, only the comments. The setting tui.search (shown, file, all, '
+     'comments) picks the start.'),
+    ('search-next', 'Change', 'match', 'in the diff: to the next match of the search, also '
+     'after its marks were removed'),
     ('search-prev', 'Change', 'match', 'in the diff: to the previous match of the search'),
+    ('search-clear', 'Change', 'unmark', 'remove the marks of the search. The next match key '
+     'brings them back.'),
     ('fold-all', 'Change', 'fold all', 'fold all threads, or unfold all if all are folded'),
     ('unfold-every', 'Change', 'unfold all', 'unfold all threads'),
     ('fold-every', 'Change', 'fold all', 'fold all threads'),
@@ -186,6 +192,8 @@ VIM_KEYS = {
     'sidebar': 'C-w o,z s',
     'set-a': 'a', 'set-b': 'b', 'compare-prompt': ':', 'thread-patch-set': 'g p',
     'search': '/', 'search-next': 'n', 'search-prev': 'N',
+    # Like the usual vim mapping of C-l to :nohlsearch
+    'search-clear': 'C-l',
 }
 PRESETS = {
     'vim': VIM_KEYS,
@@ -202,7 +210,9 @@ PRESETS = {
               # Like delete-other-windows
               'sidebar': 'C-x 1', 'set-b': 'M-b', 'thread-patch-set': 'C-c p',
               # Emacs' M-s holds its search commands
-              'search': 'C-s', 'search-next': 'M-s n', 'search-prev': 'M-s p'},
+              'search': 'C-s', 'search-next': 'M-s n', 'search-prev': 'M-s p',
+              # Like Emacs' unhighlight-regexp
+              'search-clear': 'M-s h u'},
     # Gerrit's web interface: j and k move, n and p go to the next and
     # previous changes, N and P to the next and previous thread, ] and [ to
     # the next and previous file, u goes up, o opens, c comments, and a
@@ -613,8 +623,15 @@ class Interface:
         self.whitespace = core.setting('diff.whitespace', 'none')
         if self.whitespace not in core.WHITESPACE_MODES:
             self.whitespace = 'none'
-        # The text searched last in the diff, its matches are marked
+        # The text searched last in the diff, whether its matches are
+        # marked, the texts searched before (the latest last) and where it
+        # looks, one of core.SEARCH_MODES
         self.search = ''
+        self.marking = False
+        self.search_history = []
+        self.search_mode = core.setting('tui.search', 'shown')
+        if self.search_mode not in core.SEARCH_MODES:
+            self.search_mode = 'shown'
         # The left column of the change screen: auto, shown or hidden. The
         # sidebar key sets it for the rest of the session.
         self.sidebar = core.setting('tui.sidebar', 'auto')
@@ -989,10 +1006,16 @@ class Interface:
         except curses.error:
             pass
 
-    def ask(self, question):
-        """Asks for one line in the bottom line. Returns None on Esc."""
+    def ask(self, question, history=(), on_tab=None):
+        """Asks for one line in the bottom line. Returns None on Esc. Up and
+        Down go through history, the earlier answers, the latest last. Tab
+        calls on_tab, which returns the new question.
+        """
         height, width = self._screen.getmaxyx()
         answer = ''
+        # Where in the history Up and Down are, len(history) is the answer typed
+        position = len(history)
+        typed = ''
         curses.curs_set(1)
         self._screen.timeout(-1)
         try:
@@ -1005,7 +1028,15 @@ class Interface:
                     return answer.strip()
                 if key in ('\x1b', '\x07'):
                     return None
-                if key in ('\x7f', '\b', curses.KEY_BACKSPACE):
+                if key in (curses.KEY_UP, curses.KEY_DOWN) and history:
+                    if len(history) == position:
+                        typed = answer
+                    step = -1 if curses.KEY_UP == key else 1
+                    position = max(0, min(position + step, len(history)))
+                    answer = history[position] if position < len(history) else typed
+                elif '\t' == key and on_tab:
+                    question = on_tab()
+                elif key in ('\x7f', '\b', curses.KEY_BACKSPACE):
                     answer = answer[:-1]
                 elif isinstance(key, str) and key.isprintable():
                     answer += key
@@ -1870,6 +1901,33 @@ def grouped(cells):
     return segments
 
 
+# Where a search looks, for the prompt and the messages, by core.SEARCH_MODES
+SEARCH_PLACES = {'shown': 'the lines shown', 'file': 'the whole file',
+                 'all': 'the file and its comments', 'comments': 'the comments'}
+
+
+def search_question(mode):
+    """The search prompt, with where it looks."""
+    return f'Search {SEARCH_PLACES[mode]} (Tab: elsewhere):'
+
+
+def marked_segments(core, segments, search):
+    """Segments (text, foreground, background, styles) of a row with the
+    matches of a search reversed.
+    """
+    text = ''.join(segment[0] for segment in segments)
+    found = set()
+    for begin, end in core.search_matches(text, search):
+        found.update(range(begin, end))
+    if not found:
+        return segments
+    cells = [(character, foreground, background, styles | (curses.A_REVERSE if index in found
+                                                            else 0))
+             for index, (character, foreground, background, styles) in enumerate(
+                 (character, *rest) for part, *rest in segments for character in part)]
+    return grouped(cells)
+
+
 def rendered_rows(core, rows, width, colours, marks, search=''):
     """Draws side by side rows into screen rows like Gerrit's diff: old
     number, old text, new number, new text. A long line wraps onto more
@@ -1949,8 +2007,11 @@ class DiffPane:
         # Gaps of common lines the reviewer opened, by their first old line
         self.expanded_gaps = set()
         self._gaps = []
-        # The (old, new) text of each diff line on its first row, for search
+        # The (old, new) text of each diff line on its first row, and the
+        # gaps left (first old line, first new line, lines), for search
         self._texts = []
+        self._closed_gaps = []
+        self._sources = None
         # The side of the diff the cursor is on, comments go there
         self.side = 'new'
         # The row to keep the cursor on when the rows are laid out again,
@@ -2006,6 +2067,9 @@ class DiffPane:
                                         core.file_lines(new, paths[0]))
             colours = [self._colours(core, old, old_path), self._colours(core, new, paths[0])]
             rendered = rendered_rows(core, rows, width, colours, marks, search)
+        self._closed_gaps = [(row.old.number, row.new.number, row.skipped)
+                             for row in rows or () if row.skipped]
+        self._sources = (old, old_path, new, paths[0])
         self._gaps = [entry[4] for entry in rendered]
         self._texts = [entry[5] for entry in rendered]
         self._diff_lines = [segments for segments, *_ in rendered]
@@ -2318,26 +2382,48 @@ class DiffPane:
                   and not (row[1] and self._changed[row[1] - 1])]
         return self._jump_to_one_of(starts, forward, height)
 
-    def go_to_match(self, core, search, forward, height):
+    def open_gaps_with(self, core, search):
+        """Opens the gaps of common lines with a match of a search. show()
+        renders them next time.
+        """
+        if not self._closed_gaps:
+            return
+        old, old_path, new, path = self._sources
+        self.expanded_gaps |= core.gaps_with_matches(
+            self._closed_gaps, core.file_lines(old, old_path) or [],
+            core.file_lines(new, path) or [], search)
+
+    def go_to_match(self, core, search, forward, height, mode='shown'):
         """Puts the cursor on the next (or previous) line with a match of
         a search, on the side of the match, after the cursor's side of its
-        line. Goes on from the other end. Returns None if nothing matches,
-        else whether it went on from the other end.
+        line. Searches the diff lines, the threads or both, by mode (see
+        core.SEARCH_MODES), a thread is one place. Goes on from the other
+        end. Returns None if nothing matches, else whether it went on from
+        the other end.
         """
         line = self.cursor
         while 0 < line and 'diff' == self.rows[line][0] and self._continues[self.rows[line][1]]:
             line -= 1
         here = (line, 'old' != self.side)
-        places = [(index, side) for index, row in enumerate(self.rows)
-                  if 'diff' == row[0] and self._texts[row[1]]
-                  for side in (0, 1) if core.search_matches(self._texts[row[1]][side], search)]
+        places = []
+        if 'comments' != mode:
+            places += [(index, side) for index, row in enumerate(self.rows)
+                       if 'diff' == row[0] and self._texts[row[1]]
+                       for side in (0, 1)
+                       if core.search_matches(self._texts[row[1]][side], search)]
+        if mode in ('all', 'comments'):
+            places += sorted({(self.stop_of(index), 1) for index, row in enumerate(self.rows)
+                              if 'thread' == row[0] and core.search_matches(
+                                  ''.join(part[0] for part in self.lines[index]), search)})
+            places.sort()
         if not places:
             return None
         after = ([place for place in places if place > here] if forward
                  else [place for place in places if place < here][::-1])
         index, side = after[0] if after else places[0 if forward else -1]
         self._jump(index, height)
-        self.side = ('old', 'new')[side]
+        if 'diff' == self.rows[index][0]:
+            self.side = ('old', 'new')[side]
         return not after
 
     def go_to_next_thread(self, forward, height):
@@ -2768,8 +2854,8 @@ class ChangeView:
         else:
             entries = [(('comment',), 'comment'), (('side-old', 'side-new'), 'side'),
                        (('next-chunk', 'prev-chunk'), 'chunk')]
-            if self._interface.search:
-                entries.append((('search-next', 'search-prev'), 'match'))
+            if self._interface.marking:
+                entries += [(('search-next', 'search-prev'), 'match'), (('search-clear',), 'unmark')]
             if self._threads_at_cursor():
                 entries.append((('open',), 'unfold'))
         if any(not message.sent for comment in change.comments for message in comment.messages):
@@ -3173,9 +3259,11 @@ class ChangeView:
         core = self._interface.core
         self._diff.show(core, self._change, self._compare, path, width,
                         CONTEXT_STEPS[self._interface.context_step], self._interface.whitespace,
-                        self._interface.search)
+                        self._marked_search('comments' != self._interface.search_mode))
+        # The matches in threads are marked when the search looks there.
+        thread_search = self._marked_search(self._interface.search_mode in ('all', 'comments'))
         blocks = {}
-        signature = [path, width]
+        signature = [path, width, thread_search]
         for comment in self._change.comments:
             shown = self._place_of(comment)
             if shown.path != path:
@@ -3196,6 +3284,8 @@ class ChangeView:
                                patch_sets)
             if side:
                 rows = [in_half(parts, side, self._half('old')[1]) for parts in rows]
+            if thread_search:
+                rows = [marked_segments(core, parts, thread_search) for parts in rows]
             blocks.setdefault(place, []).append((comment.number, rows))
             signature.append((comment.number, comment.status, place, expanded, tuple(patch_sets),
                               tuple((message.author, message.text, message.sent, message.unresolved)
@@ -3405,7 +3495,7 @@ class ChangeView:
             if not moved:
                 interface.say('No more changes in this direction.' if action.endswith('chunk')
                               else 'No more threads in this direction.')
-        elif action in ('search', 'search-next', 'search-prev'):
+        elif action in ('search', 'search-next', 'search-prev', 'search-clear'):
             self._search(action)
         elif 'open' == action:
             self._open()
@@ -3467,26 +3557,57 @@ class ChangeView:
         else:
             thread_action(interface, change, self._target_thread(), action)
 
+    def _marked_search(self, here):
+        """The search whose matches to mark, if they are marked and here is
+        a place the search looks, else ''.
+        """
+        return self._interface.search if self._interface.marking and here else ''
+
     def _search(self, action):
         """Searches the diff for a text typed in the bottom line, or for the
-        last one again, and goes to the next (or previous) match.
+        last one again, and goes to the next (or previous) match. Opens the
+        gaps and unfolds the threads with matches where the mode looks.
         """
         interface = self._interface
+        core = interface.core
+        if 'search-clear' == action:
+            interface.marking = False
+            return
         if 'search' == action:
-            text = interface.ask('Search:')
+            def next_mode():
+                modes = core.SEARCH_MODES
+                interface.search_mode = modes[(modes.index(interface.search_mode) + 1)
+                                              % len(modes)]
+                return search_question(interface.search_mode)
+
+            text = interface.ask(search_question(interface.search_mode),
+                                 interface.search_history, next_mode)
             if text is None:
-                interface.search = ''
                 return
-            interface.search = text or interface.search
+            if text:
+                interface.search = text
+                if text in interface.search_history:
+                    interface.search_history.remove(text)
+                interface.search_history.append(text)
         if not interface.search:
             interface.say('Nothing searched yet.')
             return
+        interface.marking = True
+        mode = interface.search_mode
         self._focus_pane(DIFF)
         self._prepare_diff()
-        wrapped = self._diff.go_to_match(interface.core, interface.search,
-                                         'search-prev' != action, self._diff_height())
+        if mode in ('file', 'all'):
+            self._diff.open_gaps_with(core, interface.search)
+        if mode in ('all', 'comments'):
+            for comment in self._change.comments:
+                if self._place_of(comment).path == self._selected_file() and \
+                        core.comment_matches(comment, interface.search):
+                    self._expanded[comment.number] = True
+        self._prepare_diff()
+        wrapped = self._diff.go_to_match(core, interface.search, 'search-prev' != action,
+                                         self._diff_height(), mode)
         if wrapped is None:
-            interface.say(f'"{interface.search}" is not in the lines shown.', ERROR)
+            interface.say(f'"{interface.search}" is not in {SEARCH_PLACES[mode]}.', ERROR)
         elif wrapped:
             interface.say('Went on from the ' + ('bottom.' if 'search-prev' == action
                                                  else 'top.'))
