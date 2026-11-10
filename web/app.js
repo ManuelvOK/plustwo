@@ -312,13 +312,17 @@ function diffView(change) {
                    halfText(half)));
     }
     body.append(tr);
-    const threads = [...(places.get(`old:${row.old.number}`) || []),
-                     ...(places.get(`new:${row.new.number}`) || [])];
-    const editors = ['old', 'new'].map((side) => row[side].number
-      && state.editor && state.editor.side === side && state.editor.line === row[side].number
-      ? editorFor(row[side].number, side) : null).filter(Boolean);
-    if (threads.length || editors.length) {
-      body.append(el('tr', {}, el('td', {colspan: 4}, threads.map(threadView), editors)));
+    // Like in Gerrit, a line's threads and comment box go into its side's
+    // half, the other half stays empty.
+    const halves = ['old', 'new'].map((side) => {
+      const threads = row[side].number ? places.get(`${side}:${row[side].number}`) || [] : [];
+      const editor = row[side].number && state.editor && state.editor.side === side
+        && state.editor.line === row[side].number ? editorFor(row[side].number, side) : null;
+      return {threads, editor};
+    });
+    if (halves.some((half) => half.threads.length || half.editor)) {
+      body.append(el('tr', {class: 'threads'}, halves.map((half) =>
+        el('td', {colspan: 2, class: 'half'}, half.threads.map(threadView), half.editor))));
     }
   });
   if (!diff.rows.length) body.append(el('tr', {}, el('td', {colspan: 4, class: 'dim'},

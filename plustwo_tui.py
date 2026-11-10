@@ -1950,6 +1950,19 @@ class DiffPane:
 THREAD_INDENT = 3
 
 
+def in_half(parts, side, left_width):
+    """The parts of a thread's row moved into one half of the diff: the
+    other half blank, the halves' separator between them. left_width is
+    the width of the old half.
+    """
+    # The separator is joined to the blanks, so the row counts as one whole
+    # for the cursor's side.
+    if 'old' == side:
+        used = sum(len(part[0]) for part in parts)
+        return parts + [(' ' * max(left_width - used, 0) + HALF_SEPARATOR, -1, -1, curses.A_DIM)]
+    return [(' ' * left_width + HALF_SEPARATOR, -1, -1, curses.A_DIM)] + parts
+
+
 def thread_rows(comment, width, expanded, core, note='', origin=''):
     """A thread as rows of the diff, each a list of (text, foreground,
     background, styles): a box with a border in the status' colour and a
@@ -2397,8 +2410,12 @@ class ChangeView:
                         + f'on {"old " if "old" == shown.side else ""}line {shown.line}, not in the '
                         f'diff ({self._interface.keymap.label("more-context")} shows more '
                         'context)')
-            blocks.setdefault(place, []).append(
-                (comment.number, thread_rows(comment, width, expanded, core, note, origin)))
+            # Like in Gerrit, a thread on a line goes into its side's half.
+            side = place[0] if place else None
+            rows = thread_rows(comment, self._half(side)[1], expanded, core, note, origin)
+            if side:
+                rows = [in_half(parts, side, self._half('old')[1]) for parts in rows]
+            blocks.setdefault(place, []).append((comment.number, rows))
             signature.append((comment.number, comment.status, place, expanded,
                               tuple((message.author, message.text, message.sent, message.unresolved)
                                     for message in comment.messages)))
@@ -2444,7 +2461,30 @@ class ChangeView:
         end = self._diff.thread_end(comment.number)
         if end is None:
             return None
-        return DiffGap(self._diff, self._layout[DIFF], end)
+        shown = self._place_of(comment)
+        return self._gap(end, shown.side if shown.line is not None else None)
+
+    def _half(self, side):
+        """The columns of one half of the diff's text: (offset, width).
+        side None is the whole width.
+        """
+        width = self._layout[DIFF][3] - 2
+        half = (width - len(HALF_SEPARATOR)) // 2
+        if side is None:
+            return 0, width
+        if 'old' == side:
+            return 0, half
+        return half + len(HALF_SEPARATOR), width - half - len(HALF_SEPARATOR)
+
+    def _gap(self, index, side):
+        """The comment box's room below row index, in the half of side
+        like the threads there, the whole width for side None.
+        """
+        if side is None:
+            return DiffGap(self._diff, self._layout[DIFF], index)
+        top, left, height, _width = self._layout[DIFF]
+        offset, width = self._half(side)
+        return DiffGap(self._diff, (top, left + 2 + offset, height, width), index)
 
     def _target_thread(self):
         """The thread keys like y or r act on: the selected one in the
@@ -2696,7 +2736,8 @@ class ChangeView:
             shown = self._place_of(on_thread)
             place = (shown.line, shown.side) if shown.line is not None else None
             end = self._diff.thread_end(on_thread.number)
-            anchor = DiffGap(self._diff, self._layout[DIFF], end) if end is not None else None
+            anchor = (self._gap(end, place[1] if place else None) if end is not None
+                      else None)
             if place is None:
                 whole_file = True
         if on_thread is not None and place is not None:
@@ -2711,7 +2752,7 @@ class ChangeView:
             # The box opens right below the commented line, the diff scrolls
             # if needed.
             self._diff.move_cursor(0, self._layout[DIFF][2])
-            anchor = DiffGap(self._diff, self._layout[DIFF], self._diff.line_end(self._diff.cursor))
+            anchor = self._gap(self._diff.line_end(self._diff.cursor), side)
         name = file_label(interface.core, path).rsplit('/', 1)[-1]
         text = interface.write_text(f'Comment on {name}' + (f':{line}' if line else
                                                             ' (whole file)'), anchor=anchor)

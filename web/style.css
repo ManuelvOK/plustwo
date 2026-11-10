@@ -72,6 +72,7 @@ table.diff td { vertical-align: top; padding: 0 4px; }
 table.diff td.num { color: var(--dim); text-align: right; cursor: pointer; user-select: none; }
 table.diff td.num:hover { color: var(--accent); }
 table.diff td.text { white-space: pre-wrap; word-break: break-all; tab-size: 4; }
+table.diff td.half { padding: 0; overflow-wrap: anywhere; }
 td.removed { background: var(--removed); } td.removed .emph { background: var(--removed-emph); }
 td.added { background: var(--added); } td.added .emph { background: var(--added-emph); }
 td.below { background: var(--below); } td.below .emph { background: var(--below-emph); }
