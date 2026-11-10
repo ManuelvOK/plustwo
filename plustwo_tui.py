@@ -76,8 +76,9 @@ ACTIONS = (
      'that line of the new version.'),
     ('page-down', 'Moving', 'half page', 'half a page down'),
     ('page-up', 'Moving', 'half page', 'half a page up'),
-    ('open', 'Moving', 'open', 'open. On a file: into the diff. In the comments: unfolds the '
-     'thread and goes to it in the diff. In the diff: folds or unfolds the thread.'),
+    ('open', 'Moving', 'open', 'open. In the stack: shows that change. On a file: into the '
+     'diff. In the comments: unfolds the thread and goes to it in the diff. In the diff: folds '
+     'or unfolds the thread.'),
     ('diff', 'Stacks', 'diff', 'the diff of the change in git\'s pager'),
     ('vote', 'Stacks and changes', 'vote', 'vote Code-Review (-2..+2) on the latest patch set'),
     ('verified', 'Stacks and changes', 'needs Verified', 'whether the change needs Verified+1 '
@@ -93,7 +94,7 @@ ACTIONS = (
     ('section-up', 'Stacks', 'move section', 'on a section heading: move the section up'),
     ('rebase', 'Stacks and changes', 'rebase', 'rebase the stack onto the base branch, without '
      'touching any checkout. On a conflict the author is asked to rebase.'),
-    ('next-pane', 'Change', 'next pane', 'next pane: files, comments, diff'),
+    ('next-pane', 'Change', 'next pane', 'next pane: stack, files, comments, diff'),
     ('next-change', 'Change', 'next change', 'the next change of the stack (above)'),
     ('prev-change', 'Change', 'prev change', 'the previous change of the stack (below)'),
     ('next-file', 'Change', 'file', 'next file'),
@@ -1993,10 +1994,11 @@ def thread_rows(comment, width, expanded, core, note='', origin=''):
 
 # ── the change screen ─────────────────────────────────────────────────────
 
+STACK = 'stack'
 FILES = 'files'
 COMMENTS = 'comments'
 DIFF = 'diff'
-PANES = (FILES, COMMENTS, DIFF)
+PANES = (STACK, FILES, COMMENTS, DIFF)
 
 def thread_footer(comment):
     """The footer's actions on a thread: reply or edit the draft, Done,
@@ -2039,8 +2041,9 @@ class ChangeView:
         # The changes of the stack, oldest first, and whether it needs a
         # rebase: None, 'base moved' or 'conflicts'
         self._stack = []
+        # The cursor in the stack pane, counted from its top (the newest)
+        self._stack_index = 0
         self._behind = None
-        self._stack_area = None
 
     def footer(self):
         """Only the actions that work right now: those of the focused pane
@@ -2048,7 +2051,9 @@ class ChangeView:
         """
         change = self._change
         core = self._interface.core
-        if FILES == self._focus:
+        if STACK == self._focus:
+            entries = [(('down', 'up'), 'move'), (('open',), 'show change')]
+        elif FILES == self._focus:
             entries = [(('open',), 'diff'), (('reviewed',), 'reviewed'),
                        (('file-comment',), 'comment')]
         elif COMMENTS == self._focus:
@@ -2092,6 +2097,8 @@ class ChangeView:
                 self._comment_index = min(self._comment_index, max(len(change.comments) - 1, 0))
                 self._stack = [other for other in core.changes_in_stack()
                                if other.topic == change.topic]
+                if STACK != self._focus:
+                    self._stack_index = self._current_in_stack()
                 self._behind = ('conflicts' if any(other.rebase_requested for other in self._stack)
                                 else 'base moved' if core.needs_rebase(change.topic) else None)
                 self._diff.forget()
@@ -2101,18 +2108,30 @@ class ChangeView:
 
     # ── layout and drawing ────────────────────────────────────────────────
 
+    def _current_in_stack(self):
+        """The row of the shown change in the stack pane, newest on top."""
+        shown = list(reversed(self._stack))
+        return next((index for index, other in enumerate(shown)
+                     if other.change_id == self._change_id), 0)
+
+    def _stack_first(self, height):
+        """The first row of the stack the pane shows: the cursor stays
+        visible, in the middle if it can.
+        """
+        return max(0, min(self._stack_index - height // 2, len(self._stack) - height))
+
     def _compute_layout(self, area):
-        """Positions of the three panes: (top, left, height, width) each,
+        """Positions of the four panes: (top, left, height, width) each,
         the inside without the frame.
         """
         left_width = min(max(area.width * 3 // 10, 28), 50)
         # The stack on top, like Gerrit's relation chain, at most 5 rows
         stack_rows = min(max(len(self._stack), 1), 5)
-        self._stack_area = (3, 1, stack_rows, left_width - 2)
         files_top = 3 + stack_rows + 2
         files_height = max((area.height - files_top - 2) // 2, 2)
         comments_top = files_top + files_height + 2
-        return {FILES: (files_top, 1, files_height, left_width - 2),
+        return {STACK: (3, 1, stack_rows, left_width - 2),
+                FILES: (files_top, 1, files_height, left_width - 2),
                 COMMENTS: (comments_top, 1, max(area.height - comments_top - 1, 1),
                            left_width - 2),
                 DIFF: (3, left_width + 1, area.height - 4, area.width - left_width - 3)}
@@ -2168,23 +2187,19 @@ class ChangeView:
 
     def _draw_stack(self):
         """The changes of the stack, newest on top like Gerrit's relation
-        chain, this one marked.
+        chain, this one marked, the cursor row highlighted while focused.
         """
         out = self._interface.text
-        top, left, height, width = self._stack_area
-        out(top - 1, left - 1, '┌' + '─' * width + '┐', curses.A_DIM)
-        out(top - 1, left + 1, f' Stack ({len(self._stack)}) ', curses.A_DIM)
-        for row in range(top, top + height):
-            out(row, left - 1, '│', curses.A_DIM)
-            out(row, left + width, '│', curses.A_DIM)
-        out(top + height, left - 1, '└' + '─' * width + '┘', curses.A_DIM)
+        self._frame(STACK, f'Stack ({len(self._stack)})')
+        top, left, height, width = self._layout[STACK]
         shown = list(reversed(self._stack))
-        current = next((index for index, other in enumerate(shown)
-                        if other.change_id == self._change_id), 0)
-        first = max(0, min(current - height // 2, len(shown) - height))
+        first = self._stack_first(height)
         for row, other in enumerate(shown[first:first + height]):
             is_current = other.change_id == self._change_id
             attributes = curses.A_BOLD if is_current else curses.A_DIM
+            if first + row == self._stack_index and STACK == self._focus:
+                attributes = curses.A_REVERSE | (curses.A_BOLD if is_current else 0)
+                out(top + row, left, ' ' * width, attributes, left + width)
             out(top + row, left, ('▶ ' if is_current else '  ') + other.subject, attributes,
                 left + width)
 
@@ -2193,9 +2208,12 @@ class ChangeView:
         self._change_id = change_id
         self._file_index = self._comment_index = 0
         self._expanded = {}
-        self._focus = self._left_pane = FILES
+        # From the stack pane, the focus stays there to go on.
+        if STACK != self._focus:
+            self._focus = self._left_pane = FILES
         self._diff = DiffPane(self._interface.colour_pairs)
         self.reload()
+        self._stack_index = self._current_in_stack()
 
     def _draw_votes(self, column):
         """Draws the votes on the latest patch set after the header, like
@@ -2485,6 +2503,8 @@ class ChangeView:
                 self._switch_to(ids[index])
             else:
                 interface.say('No more changes in this direction.')
+        elif STACK == self._focus and action in LIST_ACTIONS:
+            self._stack_index = move(self._stack_index, action, len(self._stack), count)
         elif FILES == self._focus and action in LIST_ACTIONS:
             self._file_index = move(self._file_index, action, len(self._files), count)
         elif COMMENTS == self._focus and action in LIST_ACTIONS:
@@ -2580,12 +2600,17 @@ class ChangeView:
         return True
 
     def _open(self):
-        """l: in the files, shows the diff. In the comments, unfolds the
-        thread and goes to it in the diff. In the diff, folds or unfolds
-        the thread at the cursor.
+        """l: in the stack, shows the change under the cursor. In the files,
+        shows the diff. In the comments, unfolds the thread and goes to it
+        in the diff. In the diff, folds or unfolds the thread at the
+        cursor.
         """
         comment = self._selected_comment()
-        if FILES == self._focus:
+        if STACK == self._focus:
+            shown = list(reversed(self._stack))
+            if self._stack_index < len(shown):
+                self._switch_to(shown[self._stack_index].change_id)
+        elif FILES == self._focus:
             self._focus_pane(DIFF)
         elif COMMENTS == self._focus and comment:
             self._expanded[comment.number] = True
@@ -2609,16 +2634,6 @@ class ChangeView:
         """
         if not self._layout:
             return
-        if self._stack_area and kind in (CLICK, DOUBLE_CLICK):
-            top, left, height, width = self._stack_area
-            if top <= row < top + height and left <= column < left + width:
-                shown = list(reversed(self._stack))
-                current = next((index for index, other in enumerate(shown)
-                                if other.change_id == self._change_id), 0)
-                first = max(0, min(current - height // 2, len(shown) - height))
-                if first + row - top < len(shown):
-                    self._switch_to(shown[first + row - top].change_id)
-                return
         for pane, (top, left, height, width) in self._layout.items():
             if top <= row < top + height and left <= column < left + width:
                 self._focus_pane(pane)
@@ -2628,7 +2643,9 @@ class ChangeView:
                         self.action(wheel_action(kind))
                     return
                 offset = row - top
-                if FILES == pane and offset < len(self._files):
+                if STACK == pane and self._stack_first(height) + offset < len(self._stack):
+                    self._stack_index = self._stack_first(height) + offset
+                elif FILES == pane and offset < len(self._files):
                     self._file_index = offset
                 elif COMMENTS == pane and offset < len(self._change.comments):
                     self._comment_index = offset
