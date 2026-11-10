@@ -2510,7 +2510,7 @@ class ChangeView:
             self._expanded = {comment.number: expand for comment in self._change.comments}
         elif 'fold-all' == action:
             self._toggle_all_threads()
-        elif action in ('comment', 'open') and DIFF == self._focus and self._diff.gap_at(
+        elif 'comment' == action and DIFF == self._focus and self._diff.gap_at(
                 self._diff.cursor) is not None:
             # Like in Gerrit, a gap of common lines opens.
             self._diff.expanded_gaps.add(self._diff.gap_at(self._diff.cursor))
@@ -2586,6 +2586,8 @@ class ChangeView:
                 self._focus_pane(DIFF)
             else:
                 self._interface.say(f'#{comment.number} is on a file this version doesn\'t have.')
+        elif DIFF == self._focus and self._diff.gap_at(self._diff.cursor) is not None:
+            self._diff.expanded_gaps.add(self._diff.gap_at(self._diff.cursor))
         elif DIFF == self._focus:
             self._toggle_threads()
 
