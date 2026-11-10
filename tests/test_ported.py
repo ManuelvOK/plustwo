@@ -58,7 +58,12 @@ class PortTest(unittest.TestCase):
         return self.git('commit-tree', tree, *(['-p', parent] if parent else []), '-m', subject)
 
     def port(self, old, new, place, side=core.NEW_SIDE):
-        return core._ported(old, new, place, side, self.directory)
+        """A place moved like port_thread() moves a thread."""
+        if core.OLD_SIDE == side:
+            old, new = f'{old}^', f'{new}^'
+        path, line = core.split_place(place)
+        path, number, state = core.moved_place(old, new, path, line, self.directory)
+        return core.join_place(path, number), number, state
 
     def edited(self, text, *changes):
         lines = text.split('\n')
@@ -74,7 +79,7 @@ class PortTest(unittest.TestCase):
         second = self.commit({'a.txt': text}, 'PS2', self.base)
         self.assertEqual(self.port(first, second, 'a.txt:5'), ('a.txt:7', 7, core.MOVED))
         self.assertEqual(self.port(first, second, 'a.txt:10'), ('a.txt:12', 12, core.EDITED))
-        self.assertEqual(self.port(first, second, 'a.txt:12'), ('a.txt:12', None, core.REMOVED))
+        self.assertEqual(self.port(first, second, 'a.txt:12'), ('a.txt', None, core.REMOVED))
         self.assertEqual(self.port(first, second, 'a.txt:15'), ('a.txt:16', 16, core.MOVED))
         self.assertEqual(self.port(first, second, 'b.txt:3'), ('b.txt:3', 3, core.SAME))
         self.assertEqual(self.port(first, second, 'a.txt'), ('a.txt', None, core.SAME))
@@ -85,7 +90,7 @@ class PortTest(unittest.TestCase):
                              'PS2', self.base)
         self.assertEqual(self.port(first, second, 'a.txt:3'), ('c.txt:4', 4, core.MOVED))
         self.assertEqual(self.port(first, second, 'a.txt'), ('c.txt', None, core.MOVED))
-        self.assertEqual(self.port(first, second, 'b.txt:3'), ('b.txt:3', None, core.FILE_GONE))
+        self.assertEqual(self.port(first, second, 'b.txt:3'), ('b.txt', None, core.FILE_GONE))
         self.assertEqual(self.port(first, second, core.PATCHSET_LEVEL),
                          (core.PATCHSET_LEVEL, None, core.SAME))
 
@@ -115,6 +120,54 @@ class PortTest(unittest.TestCase):
         self.assertEqual(state, core.MOVED)
         self.assertEqual(core.commit_message_text(second, self.directory).split('\n')[line - 1],
                          'Two')
+
+    def test_panes_of_two_patch_sets(self):
+        # Each pane gets the threads moved into the version it shows
+        first = self.commit({'a.txt': LINES.replace('line 5\n', '')}, 'PS1', self.base)
+        newer_base = self.commit({'a.txt': 'x\ny\n' + LINES}, 'Newer base', self.base)
+        second = self.commit({'a.txt': 'x\ny\n' + LINES.replace('line 5\n', '')
+                              .replace('line 9', 'line nine')}, 'PS2', newer_base)
+        third = self.commit({'a.txt': 'x\ny\nz\n' + LINES.replace('line 5\n', '')}, 'PS3',
+                            newer_base)
+
+        def thread(number, place, patch_set, side=core.NEW_SIDE):
+            return core.Comment(number=number, place=place, patch_set=patch_set, side=side)
+
+        threads = [thread(1, 'a.txt:3', 1), thread(2, 'a.txt:9', 2),
+                   thread(3, 'a.txt:9', 2, core.OLD_SIDE), thread(4, 'a.txt:12', 3)]
+        change = core.Change(change_id='I' + '0' * 40, commit=third, subject='', topic='t',
+                             comments=threads, patch_sets={1: first, 2: second, 3: third})
+
+        def shown(number, *versions):
+            return core.thread_place(change, threads[number - 1], *versions, self.directory)
+
+        old, new = core.OLD_SIDE, core.NEW_SIDE
+        # PS1 against PS2: PS1's thread stays on the left
+        self.assertEqual(shown(1, '1', '2'), core.ShownThread('a.txt', 3, old))
+        self.assertEqual(shown(2, '1', '2'), core.ShownThread('a.txt', 9, new))
+        # PS2's parent line 9 is line 6 of PS1 (two lines less on top, one removed)
+        self.assertEqual(shown(3, '1', '2'), core.ShownThread('a.txt', 6, old, 'PS2'))
+        # PS2 against PS3: the edited line of PS2 is on the right, ported
+        self.assertEqual(shown(2, '2', '3'), core.ShownThread('a.txt', 9, old))
+        self.assertEqual(shown(1, '2', '3'), core.ShownThread('a.txt', 6, new, 'PS1'))
+        # base against PS3: old side threads move into PS3's parent
+        self.assertEqual(shown(3, 'base', '3'), core.ShownThread('a.txt', 9, old, 'PS2'))
+        self.assertEqual(shown(4, 'base', '3'), core.ShownThread('a.txt', 12, new))
+        # A newer thread shown on an older patch set moves back
+        self.assertEqual(shown(4, 'base', '2'), core.ShownThread('a.txt', 11, new, 'PS3'))
+
+    def test_new_thread_in_left_pane(self):
+        first = self.commit({'a.txt': LINES + 'x\n'}, 'PS1', self.base)
+        second = self.commit({'a.txt': LINES + 'y\n'}, 'PS2', self.base)
+        change = core.Change(change_id='I' + '0' * 40, commit=second, subject='', topic='t',
+                             comments=[], patch_sets={1: first, 2: second})
+        # On PS1 itself when it is shown on the left, on PS2's parent against base
+        self.assertEqual(core.comment_place(change, 'a.txt', 3, core.OLD_SIDE, '1', '2',
+                                            self.directory), ('a.txt:3', core.NEW_SIDE, 1))
+        self.assertEqual(core.comment_place(change, 'a.txt', 3, core.OLD_SIDE, 'base', '2',
+                                            self.directory), ('a.txt:3', core.OLD_SIDE, 2))
+        self.assertEqual(core.comment_place(change, 'a.txt', None, core.NEW_SIDE, '1', '2',
+                                            self.directory), ('a.txt', core.NEW_SIDE, 2))
 
     def test_labels(self):
         ported = core.PortedPlace('a.txt:50', 50, core.MOVED, 4)
@@ -153,16 +206,21 @@ class InboxTest(unittest.TestCase):
             # as made on the first
             change = core.find_change(inbox.split()[1], directory)
             first, removed = core.comment_of(change, 1), core.comment_of(change, 3)
-            self.assertEqual(core.thread_place(change, first, repository=directory),
-                             ('a.txt', 4, 'PS1', ''))
-            self.assertEqual(core.thread_place(change, removed, repository=directory),
-                             ('a.txt', None, 'PS1', 'line removed'))
+            new = core.NEW_SIDE
+            self.assertEqual(core.thread_place(change, first, 'base', 'latest', directory),
+                             core.ShownThread('a.txt', 4, new, 'PS1', ''))
+            self.assertEqual(core.thread_place(change, removed, 'base', 'latest', directory),
+                             core.ShownThread('a.txt', None, new, 'PS1', 'line removed'))
             self.assertEqual(core.thread_place(change, removed, 'base', '1', directory),
-                             ('a.txt', 7, '', ''))
+                             core.ShownThread('a.txt', 7, new))
+            # PS1 against PS2: PS1's threads are on the left, as they were
+            self.assertEqual(core.thread_place(change, first, '1', '2', directory),
+                             core.ShownThread('a.txt', 3, core.OLD_SIDE))
             # Like in Gerrit, on the whole change when the file is gone
-            self.assertEqual(core.thread_place(change, core.comment_of(change, 4),
-                                               repository=directory),
-                             (core.PATCHSET_LEVEL, None, 'PS1', 'file gone: b.txt:2'))
+            gone = core.comment_of(change, 4)
+            self.assertEqual(core.thread_place(change, gone, 'base', 'latest', directory),
+                             core.ShownThread(core.PATCHSET_LEVEL, None, new, 'PS1',
+                                              'file gone: b.txt:2'))
             # Answered by the heads of inbox lines
             heads = [line.split(') ')[0] + ') done' for line in inbox.split('\n')
                      if '(PS1' in line]

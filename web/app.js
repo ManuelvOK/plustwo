@@ -251,7 +251,7 @@ function openFile(path) {
 // thread's, the place it was ported to, with the older patch set as origin.
 function shownPlace(comment) {
   const place = state.diff && state.diff.threads && state.diff.threads[comment.number];
-  return place || {path: comment.path, line: comment.line, origin: '', note: ''};
+  return place || {path: comment.path, line: comment.line, side: comment.side, origin: '', note: ''};
 }
 
 // The threads of the shown file, by where they go: 'file' for the whole
@@ -266,7 +266,7 @@ function threadsByPlace(change, rows) {
   for (const comment of change.comments) {
     const place = shownPlace(comment);
     if (place.path !== state.file) continue;
-    let key = place.line ? `${comment.side}:${place.line}` : 'file';
+    let key = place.line ? `${place.side}:${place.line}` : 'file';
     if (!shown.has(key)) key = 'file';
     if (!places.has(key)) places.set(key, []);
     places.get(key).push(comment);
@@ -422,7 +422,7 @@ function editorFor(line, side, comment = null) {
       else render();
     } else if (text) {
       const place = line === null ? state.file : `${state.file}:${line}`;
-      await act('comment', {place, side, text});
+      await act('comment', {place, side, text, a: state.a, b: state.b});
     } else render();
   };
   textarea.addEventListener('keydown', (event) => {
@@ -536,8 +536,8 @@ function runAction(action, times) {
   const hasThread = (row) => !row.skipped && change.comments.some((comment) => {
     const place = shownPlace(comment);
     return place.path === state.file
-      && ((comment.side === 'old' && place.line === row.old.number)
-          || (comment.side !== 'old' && place.line === row.new.number));
+      && ((place.side === 'old' && place.line === row.old.number)
+          || (place.side !== 'old' && place.line === row.new.number));
   });
   const fileIndex = change ? change.files.findIndex((file) => file.path === state.file) : -1;
   const list = !change;

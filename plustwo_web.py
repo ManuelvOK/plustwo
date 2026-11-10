@@ -189,10 +189,9 @@ class Server:
         # thread's, its place there
         threads = {}
         for comment in change.comments:
-            thread_path, line, origin, note = core.thread_place(change, comment, first, second,
-                                                                repository)
-            threads[comment.number] = {'path': thread_path, 'line': line, 'origin': origin,
-                                       'note': note}
+            shown = core.thread_place(change, comment, first, second, repository)
+            threads[comment.number] = {'path': shown.path, 'line': shown.line, 'side': shown.side,
+                                       'origin': shown.origin, 'note': shown.note}
         return {'binary': False, 'renamed_from': None if old_path == paths[0] else old_path,
                 'threads': threads,
                 'from_below': [sorted(lines) for lines in from_below],
@@ -232,9 +231,13 @@ class Server:
         action = body['action']
         number = body.get('number')
         if 'comment' == action:
-            return {'number': core.add_comment(change_id, body['place'], body['text'],
-                                               sent=False, side=body.get('side', core.NEW_SIDE),
-                                               repository=repository)}
+            path, line = core.split_place(body['place'])
+            place, side, patch_set = core.comment_place(
+                change, path, line, body.get('side', core.NEW_SIDE), body.get('a') or 'base',
+                body.get('b') or 'latest', repository)
+            return {'number': core.add_comment(change_id, place, body['text'], sent=False,
+                                               side=side, repository=repository,
+                                               patch_set=patch_set)}
         if 'reply' == action:
             core.add_message(change_id, number, core.REVIEWER, body['text'], sent=False,
                              repository=repository)

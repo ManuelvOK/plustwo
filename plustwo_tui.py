@@ -2260,12 +2260,12 @@ class ChangeView:
                 attributes | status_attribute('draft' if comment.is_draft() else comment.status),
                 left + width)
             core = self._interface.core
-            shown_path, _line, origin, note = self._place_of(comment)
+            shown = self._place_of(comment)
             place = ('Change' if core.PATCHSET_LEVEL == comment.place
                      else comment.place_label().rsplit('/', 1)[-1])
-            if core.PATCHSET_LEVEL == shown_path != comment.place:
+            if core.PATCHSET_LEVEL == shown.path != comment.place:
                 # Like in Gerrit, a thread on a gone file is on the whole change.
-                place = f'Change ({origin}, {note})'
+                place = f'Change ({shown.origin}, {shown.note})'
             out(top + index, left + 6 + len(label), f' {place}', attributes, left + width)
 
     def _markers(self):
@@ -2273,9 +2273,9 @@ class ChangeView:
         path = self._selected_file()
         markers = {}
         for comment in self._change.comments:
-            file_path, line, _origin, _note = self._place_of(comment)
-            if file_path == path and line is not None:
-                markers.setdefault((comment.side, line), []).append(comment.number)
+            shown = self._place_of(comment)
+            if shown.path == path and shown.line is not None:
+                markers.setdefault((shown.side, shown.line), []).append(comment.number)
         return markers
 
     def _place_of(self, comment):
@@ -2368,14 +2368,15 @@ class ChangeView:
         blocks = {}
         signature = [path, width]
         for comment in self._change.comments:
-            file_path, line, origin, note = self._place_of(comment)
-            if file_path != path:
+            shown = self._place_of(comment)
+            if shown.path != path:
                 continue
             expanded = self._is_expanded(comment)
-            place = (comment.side, line) if line is not None else None
+            place = (shown.side, shown.line) if shown.line is not None else None
+            note, origin = shown.note, shown.origin
             if place and place not in self._diff.shown_places():
                 note = ((f'{note}, ' if note else '')
-                        + f'on {"old " if "old" == comment.side else ""}line {line}, not in the '
+                        + f'on {"old " if "old" == shown.side else ""}line {shown.line}, not in the '
                         f'diff ({self._interface.keymap.label("more-context")} shows more '
                         'context)')
             blocks.setdefault(place, []).append(
@@ -2390,13 +2391,13 @@ class ChangeView:
         """Selects the thread's file and puts the diff cursor on the thread,
         or on its line if the thread isn't in the diff.
         """
-        path, line, _origin, _note = self._place_of(comment)
-        if path in self._files:
-            self._file_index = self._files.index(path)
+        shown = self._place_of(comment)
+        if shown.path in self._files:
+            self._file_index = self._files.index(shown.path)
             if self._prepare_diff():
                 height = self._diff_height()
-                if not self._diff.go_to_thread(comment.number, height) and line is not None:
-                    self._diff.go_to_line(line, comment.side, height)
+                if not self._diff.go_to_thread(comment.number, height) and shown.line is not None:
+                    self._diff.go_to_line(shown.line, shown.side, height)
 
     def _threads_at_cursor(self):
         """Numbers of the threads on the diff's cursor row: the thread the
@@ -2592,10 +2593,10 @@ class ChangeView:
             if self._diff.thread_at(self._diff.cursor) == comment.number:
                 self._focus_pane(DIFF)
             else:
-                shown_path, _line, origin, note = self._place_of(comment)
+                shown = self._place_of(comment)
                 self._interface.say(
-                    f'#{comment.number} is on the whole change ({origin}, {note}).'
-                    if self._interface.core.PATCHSET_LEVEL == shown_path != comment.place
+                    f'#{comment.number} is on the whole change ({shown.origin}, {shown.note}).'
+                    if self._interface.core.PATCHSET_LEVEL == shown.path != comment.place
                     else f'#{comment.number} is on a file this version doesn\'t have.')
         elif DIFF == self._focus and self._diff.gap_at(self._diff.cursor) is not None:
             self._diff.expanded_gaps.add(self._diff.gap_at(self._diff.cursor))
@@ -2675,8 +2676,8 @@ class ChangeView:
         place = self._diff.cursor_place() if DIFF == self._focus and not whole_file else None
         if on_thread is not None:
             # A new thread on the same place, its box below the thread
-            _path, thread_line, _origin, _note = self._place_of(on_thread)
-            place = (thread_line, on_thread.side) if thread_line is not None else None
+            shown = self._place_of(on_thread)
+            place = (shown.line, shown.side) if shown.line is not None else None
             end = self._diff.thread_end(on_thread.number)
             anchor = DiffGap(self._diff, self._layout[DIFF], end) if end is not None else None
             if place is None:
@@ -2700,8 +2701,10 @@ class ChangeView:
         if not text:
             interface.say('Nothing saved.' if text is None else 'Empty comment, nothing saved.')
             return
-        place = f'{path}:{line}' if line else path
-        interface.core.add_comment(self._change_id, place, text, sent=False, side=side)
+        place, side, patch_set = interface.core.comment_place(
+            self._change, path, int(line) if line else None, side, *self._compare)
+        interface.core.add_comment(self._change_id, place, text, sent=False, side=side,
+                                   patch_set=patch_set)
         interface.after_write()
         interface.say(f'Draft saved. {interface.keymap.label("send")} sends all drafts.', OK)
 
