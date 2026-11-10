@@ -200,6 +200,14 @@ class FixtureTest(Checks, unittest.TestCase):
     def test_intraline(self):
         self.assertEqual(core.intraline_edits('return 1', 'return 2'), ([(7, 8)], [(7, 8)]))
         self.assertEqual(core.intraline_edits('abc', 'xyz'), ([], []))
+        # Whole words, not scattered letters
+        self.assertEqual(core.intraline_edits('total = count + 1', 'total = counter + 1'),
+                         ([], [(8, 15)]))
+        self.assertEqual(core.intraline_edits('value = compute(alpha)', 'value = compete(alpha)'),
+                         ([(8, 15)], [(8, 15)]))
+        # Edits a few characters apart become one, like in Gerrit
+        self.assertEqual(core.intraline_edits('f(a, b, c)', 'f(x, b, y)'),
+                         ([(2, 9)], [(2, 9)]))
 
 
 class HistoryTest(Checks, unittest.TestCase):
