@@ -220,6 +220,15 @@ class FixtureTest(Checks, unittest.TestCase):
         self.assertEqual(core.moved_lines(['}', 'a', '}'], ['a', '}', '}'],
                                           [(1, 2, 1, 1), (4, 4, 3, 4)]), (set(), set()))
 
+    def test_intraline_whitespace(self):
+        # What the whitespace mode ignores isn't marked
+        self.assertEqual(core.intraline_edits('a = b  ', 'a = c'), ([(4, 7)], [(4, 5)]))
+        self.assertEqual(core.intraline_edits('a = b  ', 'a = c', 'trailing'), ([(4, 5)], [(4, 5)]))
+        self.assertEqual(core.intraline_edits('if  (x) y', 'if (x) z', 'changed'),
+                         ([(8, 9)], [(7, 8)]))
+        self.assertEqual(core.intraline_edits('f(a,b) + 1', 'f(a, b) + 2', 'all'),
+                         ([(9, 10)], [(10, 11)]))
+
     def test_intraline(self):
         self.assertEqual(core.intraline_edits('return 1', 'return 2'), ([(7, 8)], [(7, 8)]))
         self.assertEqual(core.intraline_edits('abc', 'xyz'), ([], []))

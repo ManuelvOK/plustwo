@@ -2423,9 +2423,38 @@ def merged_ranges(ranges):
     return result
 
 
-def intraline_edits(old, new):
+def whitespace_spans(text, whitespace):
+    """A line as the whitespace mode compares it: (text, spans), spans
+    giving each compared character's (begin, end) in the line. trailing
+    drops the whitespace at the end, changed also makes each run of
+    whitespace one space, all drops every whitespace.
+    """
+    spans = []
+    compared = []
+    end = len(text.rstrip()) if whitespace in ('trailing', 'changed', 'all') else len(text)
+    index = 0
+    while index < end:
+        if text[index].isspace() and whitespace in ('changed', 'all'):
+            run = index
+            while run < end and text[run].isspace():
+                run += 1
+            if 'changed' == whitespace:
+                compared.append(' ')
+                spans.append((index, run))
+            index = run
+            continue
+        compared.append(text[index])
+        spans.append((index, index + 1))
+        index += 1
+    return ''.join(compared), spans
+
+
+def intraline_edits(old, new, whitespace='none'):
     """The character ranges that differ between two lines, for each line,
     or two empty lists when the lines are too different to compare.
+    whitespace is one of WHITESPACE_MODES: whitespace that mode ignores
+    isn't marked either. Gerrit's intraline diff doesn't look at the mode,
+    here it follows it, so ignoring whitespace hides it everywhere.
 
     Like Gerrit's IntraLineLoader: a diff of the characters, whose edits
     are joined when at most INTRALINE_COALESCE characters lie between them,
@@ -2433,9 +2462,16 @@ def intraline_edits(old, new):
     stops there. Here an edit also grows to the whole words it cuts into,
     so a changed name is marked whole, not as scattered letters.
     """
-    matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
+    (old_compared, old_spans), (new_compared, new_spans) = (
+        whitespace_spans(old, whitespace), whitespace_spans(new, whitespace))
+    matcher = difflib.SequenceMatcher(None, old_compared, new_compared, autojunk=False)
     if matcher.ratio() < INTRALINE_MIN_RATIO:
         return [], []
+
+    def in_line(begin, end, spans):
+        # A range of compared characters as one of the line
+        return spans[begin][0], spans[end - 1][1]
+
     edits = []
     for tag, old_begin, old_end, new_begin, new_end in matcher.get_opcodes():
         if 'equal' == tag:
@@ -2445,10 +2481,10 @@ def intraline_edits(old, new):
             edits[-1] = (edits[-1][0], old_end, edits[-1][2], new_end)
         else:
             edits.append((old_begin, old_end, new_begin, new_end))
-    old_edits = merged_ranges(widened(begin, end, old) for begin, end, _, _ in edits
-                              if end > begin)
-    new_edits = merged_ranges(widened(begin, end, new) for _, _, begin, end in edits
-                              if end > begin)
+    old_edits = merged_ranges(widened(*in_line(begin, end, old_spans), old)
+                              for begin, end, _, _ in edits if end > begin)
+    new_edits = merged_ranges(widened(*in_line(begin, end, new_spans), new)
+                              for _, _, begin, end in edits if end > begin)
     return old_edits, new_edits
 
 
@@ -2551,13 +2587,14 @@ def _paired_lines(removed, added):
     return result
 
 
-def side_by_side_rows(old_lines, new_lines, edits, context=None):
+def side_by_side_rows(old_lines, new_lines, edits, context=None, whitespace='none'):
     """Lays out two versions of a file side by side, like Gerrit's diff
     view. edits are git's, as edits_of() gives them. Each edit's removed
     and added lines are paired by similarity (see paired_lines()), a line
     without a partner gets an empty half. context is the number of common
     lines kept around each edit, None for the whole file. Longer runs of
-    common lines become one gap row.
+    common lines become one gap row. whitespace is the mode of the edits,
+    the intraline edits follow it.
     """
     rows = []
     old_moved, new_moved = moved_lines(old_lines, new_lines, edits)
@@ -2591,7 +2628,7 @@ def side_by_side_rows(old_lines, new_lines, edits, context=None):
                    if new_index is not None else Half(EMPTY))
             old.moved, new.moved = old.number in old_moved, new.number in new_moved
             if old.number and new.number:
-                old.edits, new.edits = intraline_edits(old.text, new.text)
+                old.edits, new.edits = intraline_edits(old.text, new.text, whitespace)
             rows.append(Row(old, new))
         old_at, new_at = old_end - 1, new_end - 1
     common(old_at, new_at, len(old_lines) - old_at, 0 if context is None else context, 0)
@@ -2640,7 +2677,7 @@ def file_diff_rows(change, first=None, second=None, path=None, context=None, rep
         return None
     return side_by_side_rows(old_lines, new_lines,
                              edits_of(old, new, paths[0], repository, old_path, whitespace),
-                             context)
+                             context, whitespace)
 
 
 def ranges_overlap(first_begin, first_end, second_begin, second_end):
