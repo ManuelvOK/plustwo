@@ -531,6 +531,42 @@ def git(*arguments, input_text=None, check=True, repository=None):
     return result.stdout.rstrip('\n')
 
 
+# Object names that never change: a full hash, or the parent of one. What
+# git says about them can be kept. Names like main or HEAD can't.
+IMMUTABLE_NAME = re.compile(r'^[0-9a-f]{40}(\^|~[0-9]*)*$')
+# How many results each cached function keeps
+CACHE_SIZE = 2048
+
+
+def cached_for_objects(*positions):
+    """Keeps a function's results, the CACHE_SIZE latest, when the
+    arguments at these positions are names of objects that never change
+    (see IMMUTABLE_NAME). Commits and blobs don't change, so neither do
+    their diffs. The repository a call acts on is part of the key.
+    Callers must not change what they get.
+    """
+    def decorate(function):
+        @functools.lru_cache(maxsize=CACHE_SIZE)
+        def cached(repository, arguments, keywords):
+            return function(*arguments, **dict(keywords))
+
+        @functools.wraps(function)
+        def wrapper(*arguments, **keywords):
+            if all(position < len(arguments) and IMMUTABLE_NAME.match(str(arguments[position]))
+                   for position in positions):
+                try:
+                    return cached(current_repository(keywords.get('repository')), arguments,
+                                  tuple(sorted(keywords.items())))
+                except TypeError:
+                    # An argument that can't be a key
+                    pass
+            return function(*arguments, **keywords)
+
+        wrapper.cache_clear = cached.cache_clear
+        return wrapper
+    return decorate
+
+
 # ── settings ──────────────────────────────────────────────────────────────
 
 # Settings that lived in git config before, read from there as a fallback
@@ -942,6 +978,7 @@ def patch_sets_of(change_id, repository=None):
     return patch_sets
 
 
+@cached_for_objects(0)
 def renames_of(commit, repository=None):
     """Files a commit renamed: new path -> old path."""
     output = git('diff-tree', '--no-commit-id', '-M', '-r', '--root', '--name-status', '-z',
@@ -959,6 +996,7 @@ def renames_of(commit, repository=None):
     return renames
 
 
+@cached_for_objects(0)
 def files_of(commit, repository=None):
     """Files a commit changes, with added and removed line counts.
 
@@ -1015,6 +1053,7 @@ def commit_message_text(commit, repository=None):
     return '\n'.join(lines) + '\n' + message.rstrip('\n') + '\n'
 
 
+@cached_for_objects(0)
 def commit_message_tree(commit, repository=None):
     """A tree with only the file COMMIT_MSG, holding commit_message_text().
     Without a commit, the empty tree. Two of these diff like two versions
@@ -1327,6 +1366,7 @@ def comment_of(change, number):
     return comment
 
 
+@cached_for_objects(0)
 def tree_of(commit, repository=None):
     """The tree of a commit."""
     return git('rev-parse', f'{commit}^{{tree}}', repository=repository)
@@ -2153,6 +2193,7 @@ WHITESPACE_OPTIONS = {'none': (), 'trailing': ('--ignore-space-at-eol',),
 WHITESPACE_MODES = tuple(WHITESPACE_OPTIONS)
 
 
+@cached_for_objects(0, 1)
 def edits_of(old, new, path, repository=None, old_path=None, whitespace='none'):
     """The edits of a file's diff: [(old begin, old end, new begin, new
     end)], line ranges counted from 1, the end not included. An insertion
@@ -2218,6 +2259,7 @@ class Row:
     skipped: int = 0
 
 
+@cached_for_objects(0)
 def file_lines(version, path, repository=None):
     """The lines of a file in a commit or tree, without line ends. Empty if
     the file isn't there. None for a binary file. Bytes that aren't UTF-8
@@ -2316,10 +2358,19 @@ def syntax_segments(lines, path, theme=None):
     """Syntax colours of a file's lines, from bat: for each line a list of
     (text, colour, styles), see sgr_segments(). None without bat, or if
     its output doesn't fit the lines. Both interfaces draw these. theme is
-    a bat theme, None for bat's own choice.
+    a bat theme, None for bat's own choice. Kept by the text, so the same
+    file isn't coloured twice.
     """
+    if not lines:
+        return None
+    return _syntax_segments(tuple(lines), path, theme)
+
+
+@functools.lru_cache(maxsize=64)
+def _syntax_segments(lines, path, theme):
+    """syntax_segments() of lines as a tuple."""
     program = highlighter()
-    if not program or not lines:
+    if not program:
         return None
     result = subprocess.run([program, '--color=always', '--style=plain', '--paging=never',
                              '--wrap=never', f'--file-name={path}',
@@ -2556,6 +2607,7 @@ class PortedPlace:
         return '' if self.place == place else f'now {moved}'
 
 
+@cached_for_objects(0, 1)
 def path_in(old, new, path, repository=None):
     """The path a file of commit old has in commit new: the same if new
     has it, else where git's rename detection finds it, None if it is gone.
@@ -2594,7 +2646,7 @@ def ported_line(line, edits):
     return line + shift, SAME if 0 == shift else MOVED
 
 
-@functools.lru_cache(maxsize=4096)
+@cached_for_objects(0, 1)
 def moved_place(source, target, path, line, repository=None):
     """Moves a file's line from one version into another: (path, line,
     state), see ported_line(). source and target are commits, or parents

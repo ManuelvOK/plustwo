@@ -169,6 +169,18 @@ class PortTest(unittest.TestCase):
         self.assertEqual(core.comment_place(change, 'a.txt', None, core.NEW_SIDE, '1', '2',
                                             self.directory), ('a.txt', core.NEW_SIDE, 2))
 
+    def test_cache_only_for_hashes(self):
+        # Results for hashes are kept, those for names that move are not.
+        first = self.commit({'a.txt': 'one\n'}, 'PS1', self.base)
+        self.assertIs(core.file_lines(first, 'a.txt', self.directory),
+                      core.file_lines(first, 'a.txt', self.directory))
+        self.assertTrue(core.IMMUTABLE_NAME.match(f'{first}^'))
+        self.git('update-ref', 'refs/heads/moving', first)
+        self.assertEqual(['one'], core.file_lines('moving', 'a.txt', self.directory))
+        second = self.commit({'a.txt': 'two\n'}, 'PS2', self.base)
+        self.git('update-ref', 'refs/heads/moving', second)
+        self.assertEqual(['two'], core.file_lines('moving', 'a.txt', self.directory))
+
     def test_labels(self):
         ported = core.PortedPlace('a.txt:50', 50, core.MOVED, 4)
         self.assertEqual(ported.label('a.txt:44'), 'now :50')
