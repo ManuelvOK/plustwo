@@ -1949,14 +1949,15 @@ class DiffPane:
 THREAD_INDENT = 3
 
 
-def thread_rows(comment, width, expanded, core, note=''):
+def thread_rows(comment, width, expanded, core, note='', origin=''):
     """A thread as rows of the diff, each a list of (text, foreground,
     background, styles): a box with a border in the status' colour and a
     tinted inside, the reviewer's and the author's names in two colours.
     Folded it is one row with the start of the first message. note goes
-    into the title, e.g. that its line isn't shown.
+    into the title, e.g. that its line isn't shown. origin is the older
+    patch set the thread was made on, like PS2, also in the folded title.
     """
-    label = comment_label(comment)
+    label = comment_label(comment) + (f' {origin}' if origin else '')
     colour = STATUS_COLOURS['draft' if comment.is_draft() else comment.status]
     tint = THREAD_TINT if curses.COLORS >= 256 else -1
     pad = (' ' * THREAD_INDENT, -1, -1, 0)
@@ -2267,10 +2268,14 @@ class ChangeView:
         path = self._selected_file()
         markers = {}
         for comment in self._change.comments:
-            file_path, _, line = comment.place.rpartition(':')
-            if file_path == path and line.isdigit():
-                markers.setdefault((comment.side, int(line)), []).append(comment.number)
+            file_path, line, _origin, _note = self._place_of(comment)
+            if file_path == path and line is not None:
+                markers.setdefault((comment.side, line), []).append(comment.number)
         return markers
+
+    def _place_of(self, comment):
+        """Where the shown diff has a thread, see core.thread_place()."""
+        return self._interface.core.thread_place(self._change, comment, *self._compare)
 
     def _draw_diff(self):
         """Draws the diff of the selected file, with cursor and thread marks."""
@@ -2358,20 +2363,18 @@ class ChangeView:
         blocks = {}
         signature = [path, width]
         for comment in self._change.comments:
-            file_path, _, line = comment.place.rpartition(':')
-            if not line.isdigit():
-                file_path, line = comment.place, ''
+            file_path, line, origin, note = self._place_of(comment)
             if file_path != path:
                 continue
             expanded = self._is_expanded(comment)
-            place = (comment.side, int(line)) if line else None
-            note = ''
+            place = (comment.side, line) if line is not None else None
             if place and place not in self._diff.shown_places():
-                note = (f'on {"old " if "old" == comment.side else ""}line {line}, not in the '
+                note = ((f'{note}, ' if note else '')
+                        + f'on {"old " if "old" == comment.side else ""}line {line}, not in the '
                         f'diff ({self._interface.keymap.label("more-context")} shows more '
                         'context)')
             blocks.setdefault(place, []).append(
-                (comment.number, thread_rows(comment, width, expanded, core, note)))
+                (comment.number, thread_rows(comment, width, expanded, core, note, origin)))
             signature.append((comment.number, comment.status, place, expanded,
                               tuple((message.author, message.text, message.sent, message.unresolved)
                                     for message in comment.messages)))
@@ -2382,14 +2385,13 @@ class ChangeView:
         """Selects the thread's file and puts the diff cursor on the thread,
         or on its line if the thread isn't in the diff.
         """
-        path, _, line = comment.place.rpartition(':')
-        path = path if line.isdigit() else comment.place
+        path, line, _origin, _note = self._place_of(comment)
         if path in self._files:
             self._file_index = self._files.index(path)
             if self._prepare_diff():
                 height = self._diff_height()
-                if not self._diff.go_to_thread(comment.number, height) and line.isdigit():
-                    self._diff.go_to_line(int(line), comment.side, height)
+                if not self._diff.go_to_thread(comment.number, height) and line is not None:
+                    self._diff.go_to_line(line, comment.side, height)
 
     def _threads_at_cursor(self):
         """Numbers of the threads on the diff's cursor row: the thread the
@@ -2664,9 +2666,8 @@ class ChangeView:
         place = self._diff.cursor_place() if DIFF == self._focus and not whole_file else None
         if on_thread is not None:
             # A new thread on the same place, its box below the thread
-            thread_path, _, thread_line = on_thread.place.rpartition(':')
-            place = ((int(thread_line), on_thread.side)
-                     if thread_path and thread_line.isdigit() else None)
+            _path, thread_line, _origin, _note = self._place_of(on_thread)
+            place = (thread_line, on_thread.side) if thread_line is not None else None
             end = self._diff.thread_end(on_thread.number)
             anchor = DiffGap(self._diff, self._layout[DIFF], end) if end is not None else None
             if place is None:

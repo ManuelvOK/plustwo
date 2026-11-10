@@ -247,6 +247,13 @@ function openFile(path) {
   go(`#/c/${state.repo}/${state.change.id}/${encodeURIComponent(path)}`);
 }
 
+// Where the shown diff has a thread: on a newer patch set than the
+// thread's, the place it was ported to, with the older patch set as origin.
+function shownPlace(comment) {
+  const place = state.diff && state.diff.threads && state.diff.threads[comment.number];
+  return place || {path: comment.path, line: comment.line, origin: '', note: ''};
+}
+
 // The threads of the shown file, by where they go: 'file' for the whole
 // file and threads on lines the diff doesn't show, else 'old:12' or 'new:12'.
 function threadsByPlace(change, rows) {
@@ -257,8 +264,9 @@ function threadsByPlace(change, rows) {
   }
   const places = new Map();
   for (const comment of change.comments) {
-    if (comment.path !== state.file) continue;
-    let key = comment.line ? `${comment.side}:${comment.line}` : 'file';
+    const place = shownPlace(comment);
+    if (place.path !== state.file) continue;
+    let key = place.line ? `${comment.side}:${place.line}` : 'file';
     if (!shown.has(key)) key = 'file';
     if (!places.has(key)) places.set(key, []);
     places.get(key).push(comment);
@@ -368,10 +376,12 @@ function threadView(comment) {
       message.text || (message.unresolved ? '(unresolved)' : '(resolved)'));
   });
   const number = comment.number;
+  const {origin, note} = shownPlace(comment);
   return el('div', {class: `thread ${comment.status}`},
     el('div', {}, el('span', {class: `chip ${status === 'unresolved' ? 'warn' : ''}`},
                      `#${number} ${status}${pending}`), ' ',
-       el('span', {class: 'dim'}, comment.place + (comment.side === 'old' ? ' (old)' : ''))),
+       el('span', {class: 'dim'}, comment.place + (comment.side === 'old' ? ' (old)' : '')
+          + (origin ? ` (${origin}${note ? ', ' + note : ''})` : ''))),
     messages,
     editing ? editorFor(null, null, comment) : el('div', {class: 'actions'},
       comment.has_draft
@@ -523,9 +533,12 @@ function runAction(action, times) {
   const chunkStart = (i) => changed(rows[i]) && !changed(rows[i - 1]);
   const changed = (row) => row && !row.skipped
     && (row.old.kind !== 'context' || row.new.kind !== 'context');
-  const hasThread = (row) => !row.skipped && change.comments.some((comment) => comment.path === state.file
-    && ((comment.side === 'old' && comment.line === row.old.number)
-        || (comment.side !== 'old' && comment.line === row.new.number)));
+  const hasThread = (row) => !row.skipped && change.comments.some((comment) => {
+    const place = shownPlace(comment);
+    return place.path === state.file
+      && ((comment.side === 'old' && place.line === row.old.number)
+          || (comment.side !== 'old' && place.line === row.new.number));
+  });
   const fileIndex = change ? change.files.findIndex((file) => file.path === state.file) : -1;
   const list = !change;
   switch (action) {

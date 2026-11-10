@@ -98,6 +98,7 @@ class WebTest(unittest.TestCase):
         _, diff = self.request(f'/api/diff?id={change_id}&path=base.txt&context=all')
         kinds = [(row['old']['kind'], row['new']['kind']) for row in diff['rows']]
         self.assertIn(('removed', 'added'), kinds)
+        self.assertIsInstance(diff['threads'], dict)
         self.assertEqual(200, self.request('/api/version')[0])
         _, keys = self.request('/api/keys')
         self.assertIn('send', keys['keys'])

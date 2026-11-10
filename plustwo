@@ -2657,6 +2657,28 @@ def port_thread(change, comment, target=None, repository=None):
     return PortedPlace(place, line, state, target)
 
 
+
+def thread_place(change, comment, first=None, second=None, repository=None):
+    """Where the diff of two versions shows a thread: (path, line, origin,
+    note). On a newer version than the thread's patch set, the thread is
+    ported there, see port_thread(). line is None for a thread at the top
+    of the file: one on the whole file, or whose line is gone. origin is
+    like "PS2" for a ported thread, else empty. note says what became of
+    the line, like "line removed", else empty.
+    """
+    (_first, _old), (label, _new) = versions_to_compare(change, first, second)
+    target = CURRENT if CURRENT == label else int(label)
+    ported = port_thread(change, comment, target, repository)
+    place = ported.place if ported else comment.place
+    path, _, line = place.rpartition(':')
+    if not path or not line.isdigit():
+        path, line = place, ''
+    if ported is None:
+        return path, int(line) if line else None, '', ''
+    note = {REMOVED: 'line removed', FILE_GONE: 'file gone', EDITED: 'line edited'}.get(
+        ported.state, '')
+    return path, ported.line, f'PS{comment.patch_set}', note
+
 def range_diff_command(change, first=None, second=None):
     """The git command showing the range-diff between two versions."""
     if BASE in (first, second):

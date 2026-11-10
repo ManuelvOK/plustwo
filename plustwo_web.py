@@ -185,7 +185,16 @@ class Server:
                 return None
             return colours[half.number - 1]
 
+        # Where this diff shows each thread: on a newer patch set than the
+        # thread's, its place there
+        threads = {}
+        for comment in change.comments:
+            thread_path, line, origin, note = core.thread_place(change, comment, first, second,
+                                                                repository)
+            threads[comment.number] = {'path': thread_path, 'line': line, 'origin': origin,
+                                       'note': note}
         return {'binary': False, 'renamed_from': None if old_path == paths[0] else old_path,
+                'threads': threads,
                 'from_below': [sorted(lines) for lines in from_below],
                 'partly': [sorted(lines) for lines in partly],
                 'rows': [{'old': half_json(row.old, colours_of(row.old, old_colours)),

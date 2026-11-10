@@ -145,6 +145,16 @@ class InboxTest(unittest.TestCase):
             self.assertIn('#1 (PS1, now :4) a.txt:3  | line 3', inbox)
             self.assertIn('#3 (PS1, line removed) a.txt:7  | line 7', inbox)
             self.assertIn('#4 a.txt:1  | top', inbox)
+            # Where the interfaces draw them: ported on the latest patch set,
+            # as made on the first
+            change = core.find_change(inbox.split()[1], directory)
+            first, removed = core.comment_of(change, 1), core.comment_of(change, 3)
+            self.assertEqual(core.thread_place(change, first, repository=directory),
+                             ('a.txt', 4, 'PS1', ''))
+            self.assertEqual(core.thread_place(change, removed, repository=directory),
+                             ('a.txt', None, 'PS1', 'line removed'))
+            self.assertEqual(core.thread_place(change, removed, 'base', '1', directory),
+                             ('a.txt', 7, '', ''))
             # Answered by the heads of inbox lines
             heads = [line.split(') ')[0] + ') done' for line in inbox.split('\n')
                      if '(PS1' in line]
