@@ -105,9 +105,8 @@ tr.gap td { text-align: center; color: var(--dim); background: var(--panel); cur
           border-radius: 6px; background: var(--thread); font: 13px/1.4 system-ui, sans-serif;
           white-space: normal; word-break: normal; }
 .thread .msg { margin: 4px 0; white-space: pre-wrap; }
-/* One line, like the line the thread was on, cut to the half's width */
-.thread .thread-place { white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-                        display: inline-block; max-width: 85%; vertical-align: bottom; }
+/* Like the line the thread was on: whole, wrapped in the thread's width */
+.thread .thread-place { overflow-wrap: anywhere; }
 .thread .msg.draft { background: var(--draft); border-radius: 4px; padding: 2px 4px; }
 .thread .who { font-weight: 600; }
 .thread .actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }

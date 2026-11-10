@@ -2146,12 +2146,22 @@ def thread_rows(comment, width, expanded, core, note='', origin=''):
         return [[pad, ('▸', colour, tint, curses.A_BOLD), (title, colour, tint, curses.A_BOLD),
                  (rest.ljust(inner + 1 - len(title)), -1, tint, curses.A_DIM)]]
     border = (colour, -1, curses.A_BOLD)
-    # A long note, like the line the thread was on, is cut to one row.
+    # A long note, like the line the thread was on, goes on below the
+    # title, so it can always be read whole.
     room = max(inner - len(title) - 3, 0)
-    extra = f' {note[:room - 1] + "…" if len(note) > room else note} ' if note and room else ''
+    note_rows = []
+    if note and len(note) > room:
+        # What fits goes into the title row, the rest onto rows of its own.
+        first = (textwrap.wrap(note, room) or [''])[0] if room >= 10 else ''
+        note_rows = textwrap.wrap(note[len(first):].strip(), inner)
+        note = first
+    extra = f' {note} ' if note else ''
     top = '─' * max(inner - len(title) - len(extra), 0)
     rows = [[pad, ('┌─', *border), (title, colour, -1, curses.A_BOLD),
              (extra, -1, -1, curses.A_DIM), (top + '┐', *border)]]
+    for line in note_rows:
+        rows.append([pad, ('│', *border), (' ' + line.ljust(inner), -1, -1, curses.A_DIM),
+                     ('│', *border)])
     for message in comment.messages:
         reviewer = core.REVIEWER == message.author
         name = ('Reviewer' if reviewer else 'Author') + (' (draft)' if not message.sent else '')
@@ -2858,7 +2868,7 @@ class ChangeView:
                         'context)')
             # Like in Gerrit, a thread on a line goes into its side's half.
             # Threads on lines not shown go on top, as wide as the diff.
-            side = place[0] if place and place in self._diff.shown_places() else None
+            side = self._thread_half(comment)
             rows = thread_rows(comment, self._half(side)[1], expanded, core, note, origin)
             if side:
                 rows = [in_half(parts, side, self._half('old')[1]) for parts in rows]
@@ -2908,8 +2918,17 @@ class ChangeView:
         end = self._diff.thread_end(comment.number)
         if end is None:
             return None
+        return self._gap(end, self._thread_half(comment))
+
+    def _thread_half(self, comment):
+        """The side whose half a thread is drawn in, None when it is as
+        wide as the diff: on the whole file, or on a line the diff doesn't
+        show, which go on top. Its boxes take the same width.
+        """
         shown = self._place_of(comment)
-        return self._gap(end, shown.side if shown.line is not None else None)
+        place = (shown.side, shown.line)
+        return shown.side if shown.line is not None and place in self._diff.shown_places() \
+            else None
 
     def _half(self, side):
         """The columns of one half of the diff's text: (offset, width).
@@ -3272,8 +3291,7 @@ class ChangeView:
             shown = self._place_of(on_thread)
             place = (shown.line, shown.side) if shown.line is not None else None
             end = self._diff.thread_end(on_thread.number)
-            anchor = (self._gap(end, place[1] if place else None) if end is not None
-                      else None)
+            anchor = self._gap(end, self._thread_half(on_thread)) if end is not None else None
             if place is None:
                 whole_file = True
         if on_thread is not None and place is not None:
