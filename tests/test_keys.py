@@ -180,15 +180,35 @@ class CursorTest(unittest.TestCase):
 
     def test_steps_over_a_thread(self):
         diff = self.pane()
-        diff.move_cursor(2, 10)
+        diff.move_cursor(2, 40)
         self.assertEqual((2, 7), (diff.cursor, diff.thread_at(diff.cursor)))
         self.assertTrue(diff.is_on_cursor(31) and not diff.is_on_cursor(32))
+        diff.move_cursor(1, 40)
+        self.assertEqual(32, diff.cursor)
+        diff.move_cursor(-1, 40)
+        self.assertEqual(2, diff.cursor)
+        diff.move_cursor(3, 40)
+        self.assertEqual(33, diff.cursor)
+
+    def test_reads_a_tall_thread_row_by_row(self):
+        # Taller than the pane: j scrolls through it before going on.
+        diff = self.pane()
+        diff.move_cursor(2, 10)
+        self.assertEqual((2, 2), (diff.cursor, diff.scroll))
+        diff.move_cursor(5, 10)
+        self.assertEqual((2, 7), (diff.cursor, diff.scroll))
+        diff.move_cursor(15, 10)
+        self.assertEqual((2, 22), (diff.cursor, diff.scroll))
         diff.move_cursor(1, 10)
         self.assertEqual(32, diff.cursor)
+        # Back up: its end shows first, k scrolls up through it.
         diff.move_cursor(-1, 10)
-        self.assertEqual(2, diff.cursor)
-        diff.move_cursor(3, 10)
-        self.assertEqual(33, diff.cursor)
+        self.assertEqual((2, 22), (diff.cursor, diff.scroll))
+        diff.move_cursor(-3, 10)
+        self.assertEqual((2, 19), (diff.cursor, diff.scroll))
+        # C-e and C-y scroll without moving the cursor
+        diff.scroll_rows(-1, 10)
+        self.assertEqual((2, 18), (diff.cursor, diff.scroll))
 
     def test_scrolling_reads_a_tall_thread(self):
         diff = self.pane()

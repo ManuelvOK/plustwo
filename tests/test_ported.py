@@ -80,7 +80,7 @@ class PortTest(unittest.TestCase):
         second = self.commit({'a.txt': text}, 'PS2', self.base)
         self.assertEqual(self.port(first, second, 'a.txt:5'), ('a.txt:7', 7, core.MOVED))
         self.assertEqual(self.port(first, second, 'a.txt:10'), ('a.txt:12', 12, core.EDITED))
-        self.assertEqual(self.port(first, second, 'a.txt:12'), ('a.txt', None, core.REMOVED))
+        self.assertEqual(self.port(first, second, 'a.txt:12'), ('a.txt:13', 13, core.REMOVED))
         self.assertEqual(self.port(first, second, 'a.txt:15'), ('a.txt:16', 16, core.MOVED))
         self.assertEqual(self.port(first, second, 'b.txt:3'), ('b.txt:3', 3, core.SAME))
         self.assertEqual(self.port(first, second, 'a.txt'), ('a.txt', None, core.SAME))
@@ -313,7 +313,7 @@ class InboxTest(unittest.TestCase):
             self.assertEqual(core.thread_place(change, first, 'base', 'latest', directory),
                              core.ShownThread('a.txt', 4, new, 'PS1', ''))
             self.assertEqual(core.thread_place(change, removed, 'base', 'latest', directory),
-                             core.ShownThread('a.txt', None, new, 'PS1', 'line removed'))
+                             core.ShownThread('a.txt', 7, new, 'PS1', 'line 7, removed: line 7'))
             self.assertEqual(core.thread_place(change, removed, 'base', '1', directory),
                              core.ShownThread('a.txt', 7, new))
             # PS1 against PS2: PS1's threads are on the left, as they were
