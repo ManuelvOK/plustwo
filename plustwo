@@ -212,6 +212,16 @@ OLD_STATUSES = {'open': UNRESOLVED, 'agreed': UNRESOLVED, 'dropped': RESOLVED, '
 # The replies Gerrit offers with one click. Both resolve the thread.
 DONE = 'Done'
 ACK = 'Ack'
+# Replies that only acknowledge, compared without case and end punctuation.
+# A reviewer's reply like this resolves its thread, as the Ack key does.
+ACKNOWLEDGEMENTS = {'ack', 'acked', 'acknowledged', 'ok', 'okay', 'k', 'thanks', 'thank you',
+                    'thx', 'ty', 'done', 'lgtm', 'fine', 'good', 'great', 'perfect', 'sure',
+                    'got it', 'makes sense', 'ok thanks', 'ok, thanks', 'sounds good'}
+
+
+def is_acknowledgement(text):
+    """Whether a message only acknowledges, like "Ack." or "OK, thanks!"."""
+    return text.strip().rstrip('.!').strip().lower() in ACKNOWLEDGEMENTS
 REVIEWER = 'reviewer'
 AUTHOR = 'author'
 NEW_SIDE = 'new'
@@ -331,6 +341,10 @@ class Comment:
     def has_draft(self):
         """Whether the thread ends with an unsent reviewer message."""
         return bool(self.messages) and not self.messages[-1].sent
+
+    def last_sent(self):
+        """The last sent message, None if nothing is sent yet."""
+        return next((message for message in reversed(self.messages) if message.sent), None)
 
     def is_unanswered(self):
         """Whether the last sent message is the reviewer's."""
@@ -1980,6 +1994,8 @@ def add_message(change_id, number, author, text, sent=True, status=None, reposit
     it as it is. Like Gerrit's Reply, a reviewer has one draft per thread.
     """
     unresolved = None if status is None else UNRESOLVED == status_name(status)
+    if unresolved is None and REVIEWER == author and is_acknowledgement(text):
+        unresolved = False
 
     def edit(change):
         comment = comment_of(change, number)
@@ -2072,6 +2088,8 @@ def edit_draft(change_id, number, text, repository=None):
         if not comment.has_draft():
             raise ChangeError(f'comment {number} has no draft')
         comment.messages[-1].text = text
+        if comment.messages[-1].unresolved is None and is_acknowledgement(text):
+            comment.messages[-1].unresolved = False
 
     update_change(change_id, edit, repository)
 
@@ -3427,9 +3445,11 @@ def inbox_lines(repositories, topic=None):
                         lines += [f'    {line}' for line in vote.message.split('\n')[-10:]
                                   if vote.message]
             for comment in change.comments:
-                # A message on the whole change is resolved, but still news.
-                if not comment.is_unanswered() or not (comment.is_unresolved()
-                                                       or PATCHSET_LEVEL == comment.place):
+                # A message on the whole change is resolved, but still news,
+                # unless it only acknowledges.
+                if not comment.is_unanswered() or not (
+                        comment.is_unresolved() or PATCHSET_LEVEL == comment.place
+                        and not is_acknowledgement(comment.last_sent().text)):
                     continue
                 commit = change.patch_sets.get(comment.patch_set, change.commit)
                 quoted = line_at(commit, comment.place, repository, comment.side)

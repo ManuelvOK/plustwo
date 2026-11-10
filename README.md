@@ -58,7 +58,8 @@ every other registered repository (`plustwo register PATH`,
 3. `c` comments on the cursor line, `<` and `>` choose the old or new side.
    `m` marks a file reviewed.
 4. On a thread: `r` replies, `y` answers Done, `Y` Ack, `x` toggles
-   resolved. Everything stays a draft.
+   resolved. A reply that only acknowledges, like "Ack." or "OK, thanks",
+   resolves too. Everything stays a draft.
 5. `s` sends all drafts, with an optional message on the whole change.
    That tells the author to start.
 6. `A` votes Code-Review+2, `S` submits: the base branch moves forward to

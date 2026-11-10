@@ -139,6 +139,32 @@ class WebTest(unittest.TestCase):
                                                          'action': 'nonsense'})
         self.assertEqual(400, status)
 
+    def test_typed_ack_resolves(self):
+        # A reply that only acknowledges resolves like the Ack key, and
+        # leaves the author's inbox, also as a message on the whole change.
+        change_id = self.change_id()
+
+        def act(action, **fields):
+            status, data = self.request('/api/action',
+                                        body={'repo': 0, 'id': change_id, 'action': action,
+                                              **fields})
+            self.assertEqual(200, status, data)
+            return data
+
+        number = act('comment', place='base.txt:3', text='Three?')['number']
+        act('send')
+        self.repository.change('reply', change_id[:8], str(number), 'Kept it, see above.')
+        act('reply', number=number, text='Ack.')
+        act('send', message='OK, thanks!')
+        _, change = self.request(f'/api/change?id={change_id}')
+        thread = next(comment for comment in change['comments'] if comment['number'] == number)
+        self.assertEqual('resolved', thread['status'])
+        inbox = self.repository.change('inbox')
+        self.assertNotIn(f'#{number} ', inbox)
+        self.assertNotIn('OK, thanks!', inbox)
+        self.assertTrue(core.is_acknowledgement(' Thanks! '))
+        self.assertFalse(core.is_acknowledgement('Ack, but rename it'))
+
 
 if __name__ == '__main__':
     unittest.main()
