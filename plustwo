@@ -45,7 +45,8 @@ Usage:
                                         Work in progress, Outgoing, Incoming
     plustwo abandon [REPO:]TOPIC        abandons a stack, restore brings it
     plustwo restore [REPO:]TOPIC        back
-    plustwo show CHANGE                 comment threads of a change
+    plustwo show CHANGE                 comment threads of a change, also
+                                        of a submitted one
     plustwo diff CHANGE [A [B]]         diff between patch sets, shown by
                                         git's pager. --tool opens vimdiff.
     plustwo rdiff CHANGE [A [B]]        range-diff between patch sets
@@ -95,11 +96,13 @@ Usage:
                                         to be submitted
     plustwo inbox [REPO...] [--all]     what the author has to answer, in
                                         this repository (all registered ones
-                                        outside of one or with --all)
+                                        outside of one or with --all), and
+                                        new replies on resolved threads (fyi)
     plustwo watch [REPO...]             prints one line per change with new
                                         sent messages, per vote, and per stack
-                                        submitted, rebased or to rebase, until
-                                        stopped
+                                        submitted, rebased or to rebase, and
+                                        the text of replies on resolved
+                                        threads (fyi), until stopped
     plustwo serve [--port N] [REPO...]  web interface for the reviewer, on
                                         127.0.0.1 only (port 8022)
     plustwo check [TOPIC]               runs the check (checks.command) of a
@@ -393,6 +396,8 @@ class Change:
     reviewed: dict[str, str] = field(default_factory=dict)
     # Who uploaded the patch sets: number -> name, see current_user()
     uploaders: dict[int, str] = field(default_factory=dict)
+    # Only for a change found on the base branch by submitted_change()
+    submitted: bool = False
     # Work in progress, like Gerrit's WIP: shown, but not to be reviewed
     wip: bool = False
     # The repository's working tree and its name, for showing several
@@ -468,7 +473,27 @@ class Change:
         Submitted. Changes in a stack are never submitted, they leave the
         stack when they are.
         """
+        if self.submitted:
+            return 'Submitted'
         return 'In-Review' if self.patch_sets else 'New'
+
+    def last_author_action(self):
+        """When the author last uploaded or answered, 0 if never."""
+        return max([message.time for comment in self.comments for message in comment.messages
+                    if message.sent and AUTHOR == message.author]
+                   + list(self.uploads.values()), default=0)
+
+    def news(self):
+        """Resolved threads whose last message is the reviewer's, newer than
+        the author's last upload or answer, and more than an acknowledgement.
+        Nothing to answer, but to read once.
+        """
+        since = self.last_author_action()
+        return [comment for comment in self.comments
+                if comment.is_unanswered() and not comment.is_unresolved()
+                and PATCHSET_LEVEL != comment.place
+                and comment.last_sent().time > since
+                and not is_acknowledgement(comment.last_sent().text)]
 
     def unfinished_comments(self):
         """Sent threads that are still unresolved."""
@@ -1386,6 +1411,42 @@ def find_change(reference, repository=None):
     if repository is None:
         use_repository(change.repository)
     return change
+
+
+def submitted_change(reference, repository=None):
+    """A submitted change by a Change-Id prefix (or repo:prefix), found by
+    its patch sets, whose newest one is on the base branch. Its review is
+    the note of that commit. Raises ChangeError if there is none.
+    """
+    name, colon, prefix = reference.rpartition(':')
+    if repository is not None:
+        repositories = [repository]
+    else:
+        registered = registered_repositories()
+        repositories = [path for path in review_repositories()
+                        if not colon or name in (Path(path).name, next(
+                            (key for key, value in registered.items() if value == path), None))]
+    found = []
+    for path in repositories:
+        output = git('for-each-ref', '--format=%(refname)', PATCH_SET_PREFIX, check=False,
+                     repository=path)
+        ids = {ref[len(PATCH_SET_PREFIX):].rsplit('/', 1)[0]
+               for ref in filter(None, output.split('\n'))}
+        found += [(path, change_id) for change_id in ids if change_id.startswith(prefix)]
+    if len(found) > 1:
+        raise ChangeError(f'"{reference}" fits several changes, give more of the Change-Id')
+    if found:
+        path, change_id = found[0]
+        patch_sets = patch_sets_of(change_id, path)
+        commit = patch_sets[max(patch_sets)]
+        if is_ancestor(commit, base_branch(path), path):
+            change = change_from(commit, '', read_note(commit, path), path, change_id,
+                                 patch_sets=patch_sets)
+            change.submitted = True
+            change.repository = toplevel(path)
+            change.repo = Path(change.repository).name
+            return change
+    raise ChangeError(f'no change with a Change-Id starting with "{prefix}"')
 
 
 def _find_in(changes, reference):
@@ -3458,6 +3519,19 @@ def inbox_lines(repositories, topic=None):
                              + comment.place_label() + (f'  | {quoted}' if quoted else ''))
                 sent = [message for message in comment.messages if message.sent]
                 lines.append(f'    {message_text(sent[-1])}')
+            lines += news_lines(name, change)
+    return lines
+
+
+def news_lines(name, change):
+    """'fyi' lines of a change's news(): replies on resolved threads,
+    to read, not to answer.
+    """
+    lines = []
+    for comment in change.news():
+        lines.append(f'fyi {name} {change.short_id()} #{comment.number} (resolved) '
+                     + comment.place_label())
+        lines += [f'    {line}' for line in message_text(comment.last_sent()).split('\n')]
     return lines
 
 
@@ -3472,12 +3546,16 @@ def patch_set_note(change, comment, repository=None):
     return f'(PS{comment.patch_set}' + (f', {label}' if label else '') + ') '
 
 
-def events_of(repository, topic=None):
-    """Everything sent, voted or rebased in a repository, as event keys."""
+def events_of(repository, topic=None, changes=None, submitted=()):
+    """Everything sent, voted or rebased in a repository, as event keys.
+    changes are the stacks' changes if read already, submitted more changes
+    to count in, which left the stacks.
+    """
     events = set()
-    changes = [change for change in changes_in_stack(repository)
-               if not topic or topic == change.topic]
-    for change in changes:
+    if changes is None:
+        changes = changes_in_stack(repository)
+    changes = [change for change in changes if not topic or topic == change.topic]
+    for change in changes + list(submitted):
         for comment in change.comments:
             for index, message in enumerate(comment.messages):
                 if message.sent and REVIEWER == message.author:
@@ -3488,7 +3566,7 @@ def events_of(repository, topic=None):
                 events.add(('vote', change.change_id, vote.label, vote.value, vote.patch_set,
                             vote.by))
     # Rebases are told per stack, by its top change
-    tops = {change.topic: change for change in changes}
+    tops = {change.topic: change for change in changes if not change.submitted}
     for topic, top in tops.items():
         if top.rebase_requested:
             events.add(('rebase', topic, top.change_id))
@@ -3525,9 +3603,7 @@ def watch(repositories, output=sys.stdout, topic=None):
             if version == versions[repository]:
                 continue
             versions[repository] = version
-            events = events_of(repository, topic)
-            new = events - known[repository]
-            known[repository] = events
+            current = changes_in_stack(repository)
             name = repository_name(repository)
 
             def say(line):
@@ -3535,24 +3611,50 @@ def watch(repositories, output=sys.stdout, topic=None):
 
             # Changes that left a stack and are on the base branch now
             now = stacks_of(repository, topic)
+            stacks_before = stacks[repository]
             base = base_branch(repository)
-            for topic, before in stacks[repository].items():
+            for stack_topic, before in stacks_before.items():
                 left = [commit for change_id, commit in before.items()
-                        if change_id not in now.get(topic, {})]
+                        if change_id not in now.get(stack_topic, {})]
                 gone = [commit for commit in left if is_ancestor(commit, base, repository)]
                 if left and not gone and git('rev-parse', '--verify', '--quiet',
-                                             f'{ABANDONED_PREFIX}{topic}', check=False,
+                                             f'{ABANDONED_PREFIX}{stack_topic}', check=False,
                                              repository=repository):
-                    say(f'abandoned {name} {topic}')
+                    say(f'abandoned {name} {stack_topic}')
                 if gone:
-                    say(f'submitted {name} {topic}: {len(gone)} change'
+                    say(f'submitted {name} {stack_topic}: {len(gone)} change'
                         + ('s' if len(gone) > 1 else ''))
             stacks[repository] = now
+            # The submitted changes' last messages and votes, e.g. a reply
+            # sent together with the submit, are in their commits' notes.
+            submitted = []
+            for before in stacks_before.values():
+                for change_id, commit in before.items():
+                    if change_id not in {change.change_id for change in current} and \
+                            is_ancestor(commit, base, repository):
+                        change = change_from(commit, '', read_note(commit, repository),
+                                             repository, change_id)
+                        change.submitted = True
+                        submitted.append(change)
+            events = events_of(repository, topic, current, submitted)
+            new = events - known[repository]
+            known[repository] = events
+            by_id = {change.change_id: change for change in current + submitted}
 
             new_messages = {}
             for event in sorted(new, key=str):
                 if 'message' == event[0]:
-                    new_messages[event[1]] = new_messages.get(event[1], 0) + 1
+                    change = by_id[event[1]]
+                    comment = change.comment(event[2])
+                    message = comment.messages[event[3]]
+                    if comment.is_unresolved() or PATCHSET_LEVEL == comment.place:
+                        new_messages[event[1]] = new_messages.get(event[1], 0) + 1
+                    elif not is_acknowledgement(message.text):
+                        # Nothing to answer, and not in inbox once submitted
+                        say(f'fyi {name} {change.short_id()} #{comment.number} (resolved) '
+                            + comment.place_label())
+                        for line in message_text(message).split('\n'):
+                            say(f'    {line}')
                 elif 'vote' == event[0]:
                     _, change_id, label, value, patch_set, by = event
                     say(f'vote {name} {change_id[:8]} {label}{value:+d} PS{patch_set} by {by}')
@@ -3623,7 +3725,12 @@ def print_overview(arguments):
 
 def print_comments(arguments):
     """Prints the threads of a change."""
-    change = find_change(arguments.change)
+    try:
+        change = find_change(arguments.change)
+    except ChangeError:
+        if arguments.change.isdigit():
+            raise
+        change = submitted_change(arguments.change, current_repository())
     print(f'{change.short_id()} ({change.state()}): {change.subject}')
     if change.verified_required:
         print('Needs Verified+1.')

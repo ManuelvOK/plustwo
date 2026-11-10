@@ -44,6 +44,9 @@ touches your branch. `plustwo pull` brings it in.
 1. Run `plustwo watch <REPO>...` as a background monitor. It prints one
    short line per event and nothing else:
    - `review <repo> <change>: <n> new` when the reviewer sent comments
+   - `fyi <repo> <change> #<n> (resolved) <place>` and the message,
+     indented, when the reviewer answered and resolved a thread. Nothing
+     to answer, but take it into account.
    - `vote <repo> <change> <label><value> PS<n> by <who>` for a vote
    - `submitted <repo> <topic>: <n> changes` after a submit
    - `rebased <repo> <topic>` after the reviewer rebased the stack
@@ -57,7 +60,10 @@ touches your branch. `plustwo pull` brings it in.
    lists every unresolved thread whose last message is the reviewer's, with
    the quoted source line, the reviewer's message on the whole change
    (place `/PATCHSET_LEVEL`), and negative votes with the end of their
-   message. `plustwo show <CHANGE>` gives all threads of a change.
+   message. `fyi` lines are the reviewer's replies on resolved threads,
+   newer than your last upload or answer: read them, don't answer them.
+   `plustwo show <CHANGE>` gives all threads of a change, also of a
+   submitted one.
    A thread made on an older patch set than the latest says so, with
    where its line is now. The place and the quote are still the old
    patch set's:

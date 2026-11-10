@@ -209,6 +209,41 @@ class FlowTest(unittest.TestCase):
         self.assertIn(f'submitted {name} feature: 2 changes', lines)
         self.assertFalse(any(line.startswith('vote') for line in lines), lines)
 
+    def test_resolved_reply_reaches_author(self):
+        # A resolved reply sent together with the submit: watch prints it,
+        # and show still finds the submitted change.
+        repo = self.repo
+        repo.git('switch', '--quiet', '-c', 'feature')
+        repo.commit('a.txt', 'a\n', 'Add a')
+        repo.change('upload')
+        change_id = repo.git('log', '-1', '--format=%(trailers:key=Change-Id,valueonly)')
+        time.sleep(1.1)  # news is newer than the upload, in seconds
+        repo.change('comment', '1', 'a.txt:1', 'Noted for later', '--resolved')
+        inbox = repo.change('inbox')
+        self.assertIn('(resolved) a.txt:1', inbox)
+        self.assertIn('Noted for later', inbox)
+        time.sleep(1.1)
+        repo.change('reply', change_id[:8], '1', 'Thanks.')
+        self.assertNotIn('Noted for later', repo.change('inbox'))
+        watch = subprocess.Popen([str(ROOT / 'plustwo'), 'watch', '.'], cwd=repo.path,
+                                 env=ENVIRONMENT, stdout=subprocess.PIPE, text=True)
+        try:
+            time.sleep(1.5)
+            repo.change('comment', '1', 'a.txt', 'Keep the text as is', '--resolved')
+            repo.approve('1')
+            repo.change('submit', '1')
+            time.sleep(1.5)
+        finally:
+            watch.terminate()
+        lines = watch.communicate()[0].split('\n')
+        name = repo.path.name
+        self.assertIn(f'fyi {name} {change_id[:8]} #2 (resolved) a.txt', lines)
+        self.assertIn('    Keep the text as is', lines)
+        self.assertIn(f'submitted {name} feature: 1 change', lines)
+        show = repo.change('show', change_id[:8])
+        self.assertIn('(Submitted)', show)
+        self.assertIn('Keep the text as is', show)
+
     def test_old_layout_is_migrated(self):
         repo = self.repo
         self.two_changes('review/old')
