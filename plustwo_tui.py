@@ -90,7 +90,8 @@ ACTIONS = (
      'which submits the changes below it too. Needs Code-Review+2 (and Verified+1 if '
      'required). Asks first and lists the unresolved comments.'),
     ('approve', 'Stacks and changes', '+2', 'vote Code-Review+2 on the latest patch set, like '
-     'Gerrit\'s Quick approve. Offers to send your drafts along.'),
+     'Gerrit\'s Quick approve. Asks first: the key again or y gives it. Offers to send your '
+     'drafts along.'),
     ('next-turn', 'Stacks', 'my turn', 'to the next change where it is your turn'),
     ('section-down', 'Stacks', 'move section', 'on a section heading: move the section down. '
      'open on a heading folds or unfolds it.'),
@@ -288,6 +289,11 @@ class Keymap:
                        for sequence in key_sequences(alternative))
         except ValueError:
             return False
+
+    def single_keys(self, name):
+        """The codes of the keys that alone stand for an action."""
+        return {sequence[0] for sequence, bound in self._sequences.items()
+                if name == bound and 1 == len(sequence)}
 
     def labels(self, name):
         """The keys of an action for display, like ['j', 'Down']."""
@@ -1287,10 +1293,17 @@ MY_TURNS = ('reviewer', 'submittable')
 
 
 def approve(interface, change):
-    """Code-Review+2 on the latest patch set, sending the drafts along if
-    the reviewer wants.
+    """Code-Review+2 on the latest patch set, after asking like quitting:
+    the approve key again or y gives it. Then the drafts go along if the
+    reviewer wants.
     """
     core = interface.core
+    key = interface.ask_key(f'Code-Review+2 on PS{change.latest_patch_set()} of '
+                            f'{change.short_id()} {change.subject}? '
+                            f'({interface.keymap.label("approve")} again or y)')
+    if key not in interface.keymap.single_keys('approve') | {ord('y')}:
+        interface.say('No vote given.')
+        return
     drafts = sum(not message.sent for comment in change.comments for message in comment.messages)
     send = bool(drafts) and ord('y') == interface.ask_key(
         f'{drafts} draft(s) unsent. Send them along? (y/N)')

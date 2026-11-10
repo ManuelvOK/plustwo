@@ -238,7 +238,9 @@ function toolbar(change) {
     el('button', {onclick: toggleSidebar, title: 'Hide or show the file list'},
        sidebarShown() ? 'Hide files' : 'Show files'),
     el('button', {class: 'primary', onclick: openReply}, 'Reply'),
-    el('button', {onclick: quickApprove, title: 'Code-Review+2'}, '+2'),
+    el('button', {onclick: quickApprove, title: 'Code-Review+2',
+                  class: state.confirmApprove ? 'primary' : null},
+       state.confirmApprove ? 'Confirm +2' : '+2'),
     el('span', {class: 'dim'}, 'compare'),
     select(state.a, versions, (event) => { state.a = event.target.value; render(); },
            versions.map((version) => version === 'base' ? 'Base' : `PS${version}`)),
@@ -501,7 +503,27 @@ document.getElementById('reply-dialog').addEventListener('close', async (event) 
   say(`${result.sent} draft(s) sent.`);
 });
 
-async function quickApprove() {
+// +2 asks first, like the terminal interface: a second click on "Confirm
+// +2", the approve key again or y gives it, anything else cancels.
+function quickApprove() {
+  if (!state.confirmApprove) {
+    state.confirmApprove = true;
+    render();
+    say(`Code-Review+2 on PS${state.change.patch_set} of ${state.change.short_id} `
+        + `${state.change.subject}? (${state.keys.keys.approve.split(',')[0]} again or y)`);
+    return;
+  }
+  state.confirmApprove = false;
+  approveNow();
+}
+
+function cancelApprove() {
+  state.confirmApprove = false;
+  say('No vote given.');
+  render();
+}
+
+async function approveNow() {
   const drafts = draftCount();
   const send = drafts > 0 && confirm(`${drafts} draft(s) unsent. Send them along?`);
   const result = await act('approve', {send});
@@ -544,6 +566,12 @@ document.addEventListener('keydown', (event) => {
   if (!name) return;
   if (/^[0-9]$/.test(name) && !pending.length && (name !== '0' || count)) {
     count += name; event.preventDefault(); return;
+  }
+  if (state.confirmApprove && !pending.length) {
+    const action = actionFor([name]).action;
+    event.preventDefault();
+    if (name === 'y' || action === 'approve') quickApprove(); else cancelApprove();
+    return;
   }
   pending.push(name);
   const found = actionFor(pending);
