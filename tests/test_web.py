@@ -165,6 +165,31 @@ class WebTest(unittest.TestCase):
         self.assertTrue(core.is_acknowledgement(' Thanks! '))
         self.assertFalse(core.is_acknowledgement('Ack, but rename it'))
 
+    def test_shown_text_from_core(self):
+        # A message without text only resolves, the page shows it as the
+        # core does.
+        change_id = self.change_id()
+
+        def act(action, **fields):
+            status, data = self.request('/api/action',
+                                        body={'repo': 0, 'id': change_id, 'action': action,
+                                              **fields})
+            self.assertEqual(200, status, data)
+            return data
+
+        number = act('comment', place='base.txt:2', text='Two?')['number']
+        act('send')
+        self.repository.change('reply', change_id[:8], str(number), 'Yes.')
+        self.assertEqual('resolved', act('resolve', number=number)['status'])
+        act('send')
+        _, change = self.request(f'/api/change?id={change_id}')
+        thread = next(comment for comment in change['comments'] if comment['number'] == number)
+        last = thread['messages'][-1]
+        self.assertEqual('', last['text'])
+        self.assertEqual(core.message_text(core.Message('reviewer', '', unresolved=False)),
+                         last['shown'])
+        self.assertEqual('Two?', thread['messages'][0]['shown'])
+
 
 if __name__ == '__main__':
     unittest.main()

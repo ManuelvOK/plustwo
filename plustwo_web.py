@@ -29,12 +29,13 @@ THEMES = {'light': 'GitHub', 'dark': 'Monokai Extended'}
 
 # ── what the API sends: the core's objects as JSON ────────────────────────
 
-def message_json(message, patch_set=None):
-    return {'author': message.author, 'text': message.text, 'sent': message.sent,
-            'unresolved': message.unresolved, 'patch_set': patch_set}
+def message_json(core, message, patch_set=None):
+    """A message for the page: text to edit, shown as the core shows it."""
+    return {'author': message.author, 'text': message.text, 'shown': core.message_text(message),
+            'sent': message.sent, 'unresolved': message.unresolved, 'patch_set': patch_set}
 
 
-def comment_json(comment, patch_sets=()):
+def comment_json(core, comment, patch_sets=()):
     """A thread for the page. patch_sets are its messages' patch sets, see
     core.message_patch_sets().
     """
@@ -46,8 +47,8 @@ def comment_json(comment, patch_sets=()):
             'patch_set': comment.patch_set, 'status': comment.status,
             'draft_status': comment.draft_status(), 'is_draft': comment.is_draft(),
             'has_draft': comment.has_draft(),
-            'messages': [message_json(message, patch_sets[index] if index < len(patch_sets)
-                                      else None)
+            'messages': [message_json(core, message,
+                                      patch_sets[index] if index < len(patch_sets) else None)
                          for index, message in enumerate(comment.messages)]}
 
 
@@ -177,7 +178,7 @@ class Server:
                 'verified_required': change.verified_required,
                 'problems': change.submit_problems(),
                 'files': files,
-                'comments': [comment_json(comment, core.message_patch_sets(
+                'comments': [comment_json(core, comment, core.message_patch_sets(
                     change, comment, int(query['b']) if query.get('b', '').isdigit() else None))
                     for comment in change.comments],
                 # Drafts go with the patch set shown on the right

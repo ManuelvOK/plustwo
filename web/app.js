@@ -505,7 +505,7 @@ function threadView(comment) {
          message.sent ? '' : ' (draft)',
          // The patch set it belongs to, like Gerrit's "Patchset 3"
          message.patch_set ? el('span', {class: 'dim'}, ` · PS${message.patch_set}`) : null, ': '),
-      message.text || (message.unresolved ? '(unresolved)' : '(resolved)'));
+      message.shown);
   });
   const number = comment.number;
   const {origin, note} = shownPlace(comment);
