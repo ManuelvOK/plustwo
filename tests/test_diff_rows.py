@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: Zlib
 """Checks of the side by side diff rows that plustwo renders itself.
 
 The diff itself comes from git. These tests make sure the layout loses or

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: Zlib
 """Checks of the registry of repositories and the dashboard: changes of
 several repositories, sections, WIP, the uploader and abandoned stacks.
 """

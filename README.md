@@ -106,4 +106,4 @@ change, so no checkout is touched. A newer upload stops a running one.
 
 ## License
 
-GPL-3.0-or-later, see [LICENSE](LICENSE).
+zlib, see [LICENSE](LICENSE). Contributions are under the same license.

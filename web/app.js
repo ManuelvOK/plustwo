@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: Zlib
 // The web interface of plustwo: plain JavaScript over the JSON API of
 // plustwo_web.py. The page only draws and sends, the core decides.
 'use strict';

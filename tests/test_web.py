@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: Zlib
 """Checks of the web interface's server: who may talk to it, and that its
 API reads and writes through the core.
 """

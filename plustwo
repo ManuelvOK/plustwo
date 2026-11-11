@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: Zlib
 """plustwo: Gerrit-like review of local commits, with patch sets and notes.
 
 A change is a commit under review. Like in Gerrit, it is identified by the

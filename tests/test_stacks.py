@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: Zlib
 """Checks of the review flow in scratch repositories: upload from any
 branch, the reviewer's rebase and submit, the author's pull, the watch
 lines and the move from the layout of older versions.

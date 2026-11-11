@@ -16,7 +16,7 @@ every command.
 | `AGENTS.md`      | guide for agents as authors, printed by `plustwo guide`       |
 | `tests/`         | `make test`: diff rows, flows, settings, keys and web API     |
 | `TESTING.md`     | manual walkthrough for the user, in a throwaway repository    |
-| `LICENSE`        | GPL-3.0-or-later, SPDX line in every source file              |
+| `LICENSE`        | zlib, SPDX line (`Zlib`) in every source file                 |
 | `Makefile`       | `check`, `test`, `install`, `link`, `uninstall`               |
 
 ## Design rules

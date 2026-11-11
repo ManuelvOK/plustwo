@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: Zlib
 """Web interface of plustwo, for the reviewer. Started by `plustwo serve`.
 
 A thin frontend like the terminal interface: a small HTTP server on

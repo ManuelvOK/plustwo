@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: Zlib
 """The format of `plustwo answer`, the author's answers in one batch."""
 
 import importlib.machinery

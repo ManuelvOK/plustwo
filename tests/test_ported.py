@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: Zlib
 """Checks of threads moved to newer patch sets, like Gerrit's ported
 comments: unit cases in a scratch repository, the inbox note, and over
 the history of real repositories (this one and TEST_REPOS) that a line
