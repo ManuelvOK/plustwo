@@ -3484,6 +3484,12 @@ class PatchSetEvent:
         """Whether the event's thread is still unresolved."""
         return THREAD == self.kind and UNRESOLVED == self.status and not self.draft
 
+    def is_yours(self):
+        """Whether the reviewer, the viewer of the interfaces, wrote it or
+        voted, drafts included.
+        """
+        return REVIEWER == self.author
+
 
 THREAD = 'thread'
 REPLY = 'reply'
@@ -3515,16 +3521,32 @@ class PatchSetEntry:
         """The threads started on it that are still unresolved."""
         return [event for event in self.events if event.is_open()]
 
-    def comments_label(self):
-        """Like "3 new (1 open), 1 reply", empty without any."""
+    def comments_label(self, compact=False):
+        """Whose threads and replies these are, like "you: 2 threads (1
+        open), 1 reply · author: 5 replies", "you" being the reviewer.
+        compact counts messages only, like "you 3 (1 open) · author 5".
+        Empty without any.
+        """
         parts = []
-        new, open_ = len(self.new_threads()), len(self.open_threads())
-        if new:
-            parts.append(f'{new} new' + (f' ({open_} open)' if open_ else ''))
-        replies = len(self.replies())
-        if replies:
-            parts.append(f'{replies} repl{"y" if 1 == replies else "ies"}')
-        return ', '.join(parts)
+        for name, yours in (('you', True), ('author', False)):
+            events = [event for event in self.events
+                      if VOTE != event.kind and yours == event.is_yours()]
+            threads = sum(THREAD == event.kind for event in events)
+            replies = len(events) - threads
+            open_ = sum(event.is_open() for event in events)
+            open_text = f' ({open_} open)' if open_ else ''
+            if compact:
+                if events:
+                    parts.append(f'{name} {len(events)}{open_text}')
+                continue
+            counts = []
+            if threads:
+                counts.append(f'{threads} thread{"s" if threads > 1 else ""}{open_text}')
+            if replies:
+                counts.append(f'{replies} repl{"y" if 1 == replies else "ies"}')
+            if counts:
+                parts.append(f'{name}: ' + ', '.join(counts))
+        return ' · '.join(parts)
 
     def vote_label(self, label):
         """The vote of a label on it for display, like +2, in parentheses
@@ -3624,6 +3646,21 @@ def patch_set_history(change, shown=None, repository=None):
                                      [vote for vote in change.votes if number == vote.patch_set],
                                      ordered))
     return history
+
+
+def last_send(history):
+    """Where the reviewer's newest send ends in a history from
+    patch_set_history(): (patch set number, index of its last event), None
+    before the first. A send is the messages and the vote sent together, so
+    its newest entry ends it. What comes after it happened since.
+    """
+    found = None
+    for entry in history:
+        for index, event in enumerate(entry.events):
+            if event.is_yours() and not event.draft and event.time and (
+                    found is None or event.time >= found[0]):
+                found = (event.time, entry.number, index)
+    return found[1:] if found else None
 
 
 def range_diff_command(change, first=None, second=None):

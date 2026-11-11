@@ -53,6 +53,19 @@ def comment_json(core, comment, patch_sets=()):
                          for index, message in enumerate(comment.messages)]}
 
 
+def history_list(core, history):
+    """core.patch_set_history() for the page, the reviewer's newest send
+    marked on its last event (last_send), see core.last_send().
+    """
+    last = core.last_send(history)
+    result = [history_json(core, entry) for entry in history]
+    for entry in result:
+        for index, event in enumerate(entry['events']):
+            event['last_send'] = (entry['number'], index) == last
+        entry['last_send'] = bool(last) and last[0] == entry['number']
+    return result
+
+
 def history_json(core, entry):
     """One patch set of core.patch_set_history() for the page."""
     return {'number': entry.number, 'uploaded': entry.uploaded, 'uploader': entry.uploader,
@@ -62,7 +75,8 @@ def history_json(core, entry):
             'events': [{'kind': event.kind, 'time': event.time, 'author': event.author,
                         'text': event.text, 'number': event.number, 'place': event.place,
                         'place_label': core.place_label(event.place),
-                        'status': event.status, 'draft': event.draft, 'open': event.is_open()}
+                        'status': event.status, 'draft': event.draft, 'open': event.is_open(),
+                        'yours': event.is_yours()}
                        for event in entry.events]}
 
 
@@ -183,9 +197,9 @@ class Server:
                     change, comment, int(query['b']) if query.get('b', '').isdigit() else None))
                     for comment in change.comments],
                 # Drafts go with the patch set shown on the right
-                'history': [history_json(core, entry) for entry in core.patch_set_history(
+                'history': history_list(core, core.patch_set_history(
                     change, int(query['b']) if query.get('b', '').isdigit() else None,
-                    repository)],
+                    repository)),
                 'votes': [vote_json(vote) for vote in change.votes]}
 
     def diff(self, query):

@@ -135,6 +135,11 @@ class WebTest(unittest.TestCase):
         self.assertTrue(change['files'][1]['reviewed'])
         self.assertTrue(any(comment['path'] == '/PATCHSET_LEVEL'
                             for comment in change['comments']))
+        # The reviewer's newest send is marked once, on its last event
+        events = [event for entry in change['history'] for event in entry['events']]
+        self.assertEqual(1, sum(event['last_send'] for event in events))
+        self.assertTrue(next(event for event in events if event['last_send'])['yours'])
+        self.assertEqual(1, sum(entry['last_send'] for entry in change['history']))
         status, data = self.request('/api/action', body={'repo': 0, 'id': change_id,
                                                          'action': 'nonsense'})
         self.assertEqual(400, status)

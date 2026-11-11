@@ -248,8 +248,21 @@ class PortTest(unittest.TestCase):
         history = core.patch_set_history(change, repository=self.directory)
         self.assertEqual([entry.kind for entry in history],
                          ['-', core.NO_CODE_CHANGE, core.REWORK])
+        # Whose they are: "you" is the reviewer, drafts count as yours
         self.assertEqual([entry.comments_label() for entry in history],
-                         ['2 new (1 open)', '1 new (1 open), 1 reply', '1 new, 2 replies'])
+                         ['you: 2 threads (1 open)', 'you: 1 thread (1 open) · author: 1 reply',
+                          'you: 1 thread, 1 reply · author: 1 reply'])
+        self.assertEqual([entry.comments_label(compact=True) for entry in history],
+                         ['you 2 (1 open)', 'you 1 (1 open) · author 1', 'you 2 · author 1'])
+        # The newest send ends with thread 4 on PS2, the author's reply after it
+        # is newer. Copied votes and drafts are no sends.
+        self.assertEqual(core.last_send(history), (2, 0))
+        self.assertEqual([event.is_yours() for event in history[1].events], [True, False])
+        nothing_sent = core.Change(change_id='I' + '0' * 40, commit=third, subject='', topic='t',
+                                   comments=[comments[2]], patch_sets={1: first},
+                                   uploads={1: 100})
+        self.assertIsNone(core.last_send(core.patch_set_history(nothing_sent,
+                                                                repository=self.directory)))
         self.assertEqual([(event.kind, event.number) for event in history[0].events],
                          [('thread', 1), ('thread', 2), ('vote', None)])
         self.assertEqual(history[0].events[1].text, 'Why?')

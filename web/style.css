@@ -92,6 +92,8 @@ details.patch-sets td { padding: 2px 8px; }
 tr.ps-row { cursor: pointer; } tr.ps-row:hover td { background: var(--panel); }
 tr.ps-event.link { cursor: pointer; }
 .open-threads { color: var(--warn); font-weight: 600; }
+.patch-sets td.yours { border-left: 3px solid var(--accent); padding-left: 4px; }
+.patch-sets .last-send { color: var(--accent); }
 td.moved { background: var(--moved); } td.moved .emph { background: var(--moved-emph); }
 td.text.removed.whole { background: var(--removed-emph); }
 td.text.added.whole { background: var(--added-emph); }

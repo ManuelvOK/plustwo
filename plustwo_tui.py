@@ -2839,7 +2839,12 @@ class PatchSetView:
         self._a, self._b = first, second
         self._expanded = set()
         self._history = []
-        # ('base',), ('patch set', entry) or ('event', entry, event)
+        # Where the reviewer's newest send ends, see core.last_send(). The
+        # patch set holding it is unfolded once, when the view opens.
+        self._last_send = None
+        self._opened = False
+        # ('base',), ('patch set', entry), ('event', entry, event) or
+        # ('last send', entry), the line below the newest send
         self._rows = []
         self._selected = 0
         self._scroll = 0
@@ -2851,12 +2856,21 @@ class PatchSetView:
         if change is None:
             return
         shown = int(self._b) if self._b.isdigit() else None
-        self._history = self._interface.core.patch_set_history(change, shown)
+        core = self._interface.core
+        self._history = core.patch_set_history(change, shown)
+        self._last_send = core.last_send(self._history)
+        if not self._opened:
+            self._opened = True
+            if self._last_send:
+                self._expanded.add(self._last_send[0])
         self._rows = [('base',)]
         for entry in self._history:
             self._rows.append(('patch set', entry))
             if entry.number in self._expanded:
-                self._rows += [('event', entry, event) for event in entry.events]
+                for index, event in enumerate(entry.events):
+                    self._rows.append(('event', entry, event))
+                    if (entry.number, index) == self._last_send:
+                        self._rows.append(('last send', entry))
         if not self._selected and len(self._rows) > 1:
             # On the right side's patch set at first
             self._selected = next((index for index, row in enumerate(self._rows)
@@ -2870,7 +2884,8 @@ class PatchSetView:
         entries = [(('down', 'up'), 'move')]
         if 'patch set' == row[0]:
             entries.append((('open',), 'fold' if row[1].number in self._expanded else 'unfold'))
-        entries += [(('set-a',), 'A'), (('set-b',), 'B'), (('compare-prompt',), 'type versions'),
+        entries += [(('set-a',), 'pick left side'), (('set-b',), 'pick right side'),
+                    (('compare-prompt',), 'type versions'),
                     (('back',), 'back'), (('help',), 'all keys')]
         return entries
 
@@ -2899,6 +2914,10 @@ class PatchSetView:
             if 'event' == content[0]:
                 self._draw_event(row, content[2], attributes, area.width)
                 continue
+            if 'last send' == content[0]:
+                line = f'── your last send {"─" * max(area.width - 30, 0)}'
+                out(row, 10, line, attributes | self._reviewer_colour(), area.width - 1)
+                continue
             version = 'base' if 'base' == content[0] else str(content[1].number)
             marks = ('●' if version == self._a else ' ') + ' ' \
                 + ('●' if version == self._b else ' ') + ' '
@@ -2913,13 +2932,33 @@ class PatchSetView:
             out(row, 6, f'{fold} PS{entry.number:<3} {when:<17} {entry.uploader:<12.12} '
                 f'{entry.kind:<15} {entry.vote_label(core.CODE_REVIEW):<6} '
                 f'{entry.vote_label(core.VERIFIED):<6} ', attributes)
-            comments = entry.comments_label()
+            # A folded patch set holding the newest send says so after its
+            # counts, which get shorter first when the row is narrow.
+            holds_send = (self._last_send and self._last_send[0] == entry.number
+                          and entry.number not in self._expanded)
+            marks = (' ◂ your last send', ' ◂ last send', ' ◂') if holds_send else ('',)
+            labels = (entry.comments_label(), entry.comments_label(compact=True))
+            room = area.width - 72
+            comments, mark = next(((label, mark) for mark in marks for label in labels
+                                   if len(label) + len(mark) <= room),
+                                  (labels[1][:max(room - len(marks[-1]), 0)], marks[-1]))
             out(row, 71, comments, attributes | (
                 status_attribute('unresolved') | curses.A_BOLD if entry.open_threads()
-                else self._interface.dim(attributes)))
+                else self._interface.dim(attributes)), area.width - 1)
+            if mark:
+                out(row, 71 + len(comments), mark, attributes | self._reviewer_colour(),
+                    area.width - 1)
+
+    def _reviewer_colour(self):
+        """The reviewer's colour, the viewer's own, as in threads."""
+        return self._interface.colour_pairs.attribute(tone(REVIEWER_COLOURS), -1)
 
     def _draw_event(self, row, event, attributes, width):
-        """An unfolded row: a thread, a reply or a vote."""
+        """An unfolded row: a thread, a reply or a vote. The reviewer's own,
+        the viewer's, get a bar in the reviewer's colour, as in threads.
+        """
+        if event.is_yours():
+            self._interface.text(row, 8, '▎', attributes | self._reviewer_colour())
         when = time.strftime('%m-%d %H:%M', time.localtime(event.time)) if event.time else ''
         who = 'Reviewer' if self._interface.core.REVIEWER == event.author else (
             'Author' if self._interface.core.AUTHOR == event.author else event.author)

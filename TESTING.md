@@ -52,6 +52,7 @@ In terminal 2:
 | #   | Do                                                     | Expect                                           |
 |-----|--------------------------------------------------------|--------------------------------------------------|
 | 15  | wait a second                                          | the list reloads, Turn `▶ you` again             |
+| 15a | open the change, `p`, look, `h`                        | `── your last send ──`, author's replies below   |
 | 16  | open the change, go to thread #1, `Y`, `s`, Enter      | Ack sent, the thread is resolved                 |
 | 17  | `s`, `Tab`, `2`, Enter                                 | `CR +2` badge, Turn `▶ submit`                   |
 | 18  | `S`, `y`                                               | submitted. Terminal 2 prints `submitted ...`     |

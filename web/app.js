@@ -243,7 +243,8 @@ function patchSetsView(change) {
       el('td', {}, `${open ? '▾' : '▸'} PS${entry.number}`), el('td', {}, when(entry.uploaded)),
       el('td', {}, entry.uploader), el('td', {}, entry.kind), el('td', {}, entry.code_review),
       el('td', {}, entry.verified),
-      el('td', {class: entry.open ? 'open-threads' : 'dim'}, entry.comments)));
+      el('td', {class: entry.open ? 'open-threads' : 'dim'}, entry.comments,
+         entry.last_send && !open ? el('span', {class: 'last-send'}, ' ◂ your last send') : null)));
     if (!open) continue;
     for (const event of entry.events) {
       const who = event.author === 'reviewer' ? 'Reviewer'
@@ -255,7 +256,11 @@ function patchSetsView(change) {
                                    + (event.number ? ' link' : ''),
                             onclick: () => event.number && showThread(change, entry.number, event)},
         el('td', {colspan: 2}), el('td', {class: 'dim'}, when(event.time, false)),
-        el('td', {colspan: 6}, text)));
+        el('td', {colspan: 6, class: event.yours ? 'yours' : ''}, text)));
+      if (event.last_send) {
+        body.append(el('tr', {class: 'last-send'}, el('td', {colspan: 2}),
+                       el('td', {colspan: 7}, '── your last send ──')));
+      }
     }
   }
   return el('details', {class: 'patch-sets', open: state.psOpen ? '' : null,
