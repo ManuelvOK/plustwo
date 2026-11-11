@@ -3266,11 +3266,13 @@ class ChangeView:
         signature = [path, width, thread_search]
         for comment in self._change.comments:
             shown = self._place_of(comment)
-            if shown.path != path:
+            if self._diff_path(shown.path) != path:
                 continue
             expanded = self._is_expanded(comment)
             place = (shown.side, shown.line) if shown.line is not None else None
             note, origin = shown.note, shown.origin
+            if core.PATCHSET_LEVEL == shown.path:
+                note = note or 'on the whole change'
             if place and place not in self._diff.shown_places():
                 note = ((f'{note}, ' if note else '')
                         + f'on {"old " if "old" == shown.side else ""}line {shown.line}, not in the '
@@ -3298,12 +3300,21 @@ class ChangeView:
         or on its line if the thread isn't in the diff.
         """
         shown = self._place_of(comment)
-        if shown.path in self._files:
-            self._file_index = self._files.index(shown.path)
+        path = self._diff_path(shown.path)
+        if path in self._files:
+            self._file_index = self._files.index(path)
             if self._prepare_diff():
                 height = self._diff_height()
                 if not self._diff.go_to_thread(comment.number, height) and shown.line is not None:
                     self._diff.go_to_line(shown.line, shown.side, height)
+
+    def _diff_path(self, path):
+        """The file whose diff shows threads on path: threads on the whole
+        change go on top of the commit message, as threads on a whole file
+        go on top of their file.
+        """
+        core = self._interface.core
+        return core.COMMIT_MSG if core.PATCHSET_LEVEL == path else path
 
     def _threads_at_cursor(self):
         """Numbers of the threads on the diff's cursor row: the thread the
@@ -3600,7 +3611,7 @@ class ChangeView:
             self._diff.open_gaps_with(core, interface.search)
         if mode in ('all', 'comments'):
             for comment in self._change.comments:
-                if self._place_of(comment).path == self._selected_file() and \
+                if self._diff_path(self._place_of(comment).path) == self._selected_file() and \
                         core.comment_matches(comment, interface.search):
                     self._expanded[comment.number] = True
         self._prepare_diff()
@@ -3656,11 +3667,7 @@ class ChangeView:
             if self._diff.thread_at(self._diff.cursor) == comment.number:
                 self._focus_pane(DIFF)
             else:
-                shown = self._place_of(comment)
-                self._interface.say(
-                    f'#{comment.number} is on the whole change ({shown.origin}, {shown.note}).'
-                    if self._interface.core.PATCHSET_LEVEL == shown.path != comment.place
-                    else f'#{comment.number} is on a file this version doesn\'t have.')
+                self._interface.say(f'#{comment.number} is on a file this version doesn\'t have.')
         elif DIFF == self._focus and self._diff.gap_at(self._diff.cursor) is not None:
             self._diff.expanded_gaps.add(self._diff.gap_at(self._diff.cursor))
         elif DIFF == self._focus:

@@ -340,6 +340,27 @@ class InboxTest(unittest.TestCase):
             shutil.rmtree(directory)
 
 
+    def test_whole_change(self):
+        # A message on the whole change is resolved, but asks all the same,
+        # unless it says nothing: empty (only resolves) or an acknowledgement
+        reviewer, author = core.REVIEWER, core.AUTHOR
+        comment = core.Comment(1, core.PATCHSET_LEVEL, 1,
+                               [core.Message(reviewer, 'Why?', unresolved=False)])
+        self.assertTrue(comment.wants_answer())
+        comment.messages.append(core.Message(author, 'Because.'))
+        self.assertFalse(comment.wants_answer())
+        for text in ('', '  ', 'Ack.', 'OK, thanks!'):
+            comment.messages.append(core.Message(reviewer, text, unresolved=False))
+            self.assertFalse(comment.wants_answer(), text)
+            comment.messages.pop()
+        comment.messages.append(core.Message(reviewer, '', unresolved=True))
+        self.assertTrue(comment.wants_answer())
+        # On a line, a resolved thread asks nothing
+        on_line = core.Comment(2, 'a.txt:3', 1,
+                               [core.Message(reviewer, 'Why?', unresolved=False)])
+        self.assertFalse(on_line.wants_answer())
+
+
 class SubmittableTest(unittest.TestCase):
 
     def test_submittable_in_stack(self):

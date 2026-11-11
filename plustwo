@@ -225,6 +225,15 @@ ACKNOWLEDGEMENTS = {'ack', 'acked', 'acknowledged', 'ok', 'okay', 'k', 'thanks',
 def is_acknowledgement(text):
     """Whether a message only acknowledges, like "Ack." or "OK, thanks!"."""
     return text.strip().rstrip('.!').strip().lower() in ACKNOWLEDGEMENTS
+
+
+def says_nothing(text):
+    """Whether a message has nothing to read: empty, as when it only
+    resolves its thread, or only an acknowledgement.
+    """
+    return not text.strip() or is_acknowledgement(text)
+
+
 REVIEWER = 'reviewer'
 AUTHOR = 'author'
 NEW_SIDE = 'new'
@@ -353,6 +362,16 @@ class Comment:
         """Whether the last sent message is the reviewer's."""
         sent = [message for message in self.messages if message.sent]
         return bool(sent) and REVIEWER == sent[-1].author
+
+    def wants_answer(self):
+        """Whether the author has to answer: the reviewer wrote last and the
+        thread is unresolved. A message on the whole change is resolved,
+        but asks all the same, unless it says nothing.
+        """
+        if not self.is_unanswered():
+            return False
+        return self.is_unresolved() or (PATCHSET_LEVEL == self.place
+                                        and not says_nothing(self.last_sent().text))
 
 
 @dataclass
@@ -493,7 +512,7 @@ class Change:
                 if comment.is_unanswered() and not comment.is_unresolved()
                 and PATCHSET_LEVEL != comment.place
                 and comment.last_sent().time > since
-                and not is_acknowledgement(comment.last_sent().text)]
+                and not says_nothing(comment.last_sent().text)]
 
     def unfinished_comments(self):
         """Sent threads that are still unresolved."""
@@ -3506,11 +3525,7 @@ def inbox_lines(repositories, topic=None):
                         lines += [f'    {line}' for line in vote.message.split('\n')[-10:]
                                   if vote.message]
             for comment in change.comments:
-                # A message on the whole change is resolved, but still news,
-                # unless it only acknowledges.
-                if not comment.is_unanswered() or not (
-                        comment.is_unresolved() or PATCHSET_LEVEL == comment.place
-                        and not is_acknowledgement(comment.last_sent().text)):
+                if not comment.wants_answer():
                     continue
                 commit = change.patch_sets.get(comment.patch_set, change.commit)
                 quoted = line_at(commit, comment.place, repository, comment.side)
@@ -3647,9 +3662,10 @@ def watch(repositories, output=sys.stdout, topic=None):
                     change = by_id[event[1]]
                     comment = change.comment(event[2])
                     message = comment.messages[event[3]]
-                    if comment.is_unresolved() or PATCHSET_LEVEL == comment.place:
+                    if comment.is_unresolved() or (PATCHSET_LEVEL == comment.place
+                                                   and not says_nothing(message.text)):
                         new_messages[event[1]] = new_messages.get(event[1], 0) + 1
-                    elif not is_acknowledgement(message.text):
+                    elif PATCHSET_LEVEL != comment.place and not says_nothing(message.text):
                         # Nothing to answer, and not in inbox once submitted
                         say(f'fyi {name} {change.short_id()} #{comment.number} (resolved) '
                             + comment.place_label())
