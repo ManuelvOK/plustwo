@@ -59,7 +59,7 @@ touches your branch. `plustwo pull` brings it in.
 2. On an event, run `plustwo inbox <REPO>...` (also takes `--topic`). It
    lists every unresolved thread whose last message is the reviewer's, with
    the quoted source line, the reviewer's message on the whole change
-   (place `/PATCHSET_LEVEL`), and negative votes with the end of their
+   (place `Change`), and negative votes with the end of their
    message. `fyi` lines are the reviewer's replies on resolved threads,
    newer than your last upload or answer: read them, don't answer them.
    `plustwo show <CHANGE>` gives all threads of a change, also of a

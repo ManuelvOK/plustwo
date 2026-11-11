@@ -95,6 +95,26 @@ class FlowTest(unittest.TestCase):
         repo.git('switch', '--quiet', 'main')
         self.assertIn('base branch', repo.change('upload', check=False))
 
+    def test_thread_places(self):
+        # Like Gerrit, no thread on a file or line the patch set doesn't have
+        repo = self.repo
+        self.two_changes()
+        repo.change('upload')
+        self.assertIn('no file', repo.change('comment', '2', 'nope.txt:1', 'x', check=False))
+        self.assertIn('not line 2', repo.change('comment', '2', 'b.txt:2', 'x', check=False))
+        self.assertIn('#1 added', repo.change('comment', '2', 'b.txt:1', 'Fine line'))
+        self.assertIn('#2 added', repo.change('comment', '2', 'b.txt', 'Whole file'))
+        # A message on the whole change starts resolved, --status still wins
+        repo.change('comment', '2', '/PATCHSET_LEVEL', 'Looks good')
+        repo.change('comment', '2', '/PATCHSET_LEVEL', 'Explain?', '--status', 'unresolved')
+        show = repo.change('show', '2')
+        self.assertIn('#3 [resolved] Change', show)
+        self.assertIn('#4 [unresolved] Change', show)
+        self.assertNotIn('/PATCHSET_LEVEL', show)
+        self.assertNotIn('/PATCHSET_LEVEL', repo.change('inbox'))
+        # status says what it did
+        self.assertIn('#1 resolved', repo.change('status', '2', '1', 'resolved'))
+
     def test_review_note_follows_upload(self):
         repo = self.repo
         self.two_changes()

@@ -262,6 +262,9 @@ NO_CODE_CHANGE = 'no code change'
 COMMIT_MSG = '/COMMIT_MSG'
 # Comments on the whole change, like the message of Gerrit's Reply dialog
 PATCHSET_LEVEL = '/PATCHSET_LEVEL'
+# How the interfaces name the whole change: short, and in a sentence
+CHANGE_PLACE = 'Change'
+WHOLE_CHANGE = 'on the whole change'
 # Whose turn it is on a change, like Gerrit's attention set
 REVIEWER_TURN = 'reviewer'
 AUTHOR_TURN = 'author'
@@ -343,8 +346,8 @@ class Comment:
         return UNRESOLVED if self.messages[-1].unresolved else RESOLVED
 
     def place_label(self):
-        """The place for display, marked when it is in the old version."""
-        return self.place + (' (old)' if OLD_SIDE == self.side else '')
+        """The place for display, see place_label()."""
+        return place_label(self.place, self.side)
 
     def is_draft(self):
         """Whether the thread exists only as the reviewer's draft so far."""
@@ -664,9 +667,63 @@ def config_files(repository=None):
     """The settings files, the one that wins first: the repository's, then
     the user's. The repository's only inside a repository.
     """
-    inside = subprocess.run([*git_command(repository),
-                             'rev-parse', '--git-dir'], capture_output=True).returncode == 0
-    return ([repository_config_path(repository)] if inside else []) + [user_config_path()]
+    directory = os.path.abspath(current_repository(repository) or os.getcwd())
+    own = _REPOSITORY_CONFIG_FILES.get(directory)
+    if own is None:
+        inside = subprocess.run(['git', '-C', directory, 'rev-parse', '--git-dir'],
+                                capture_output=True).returncode == 0
+        own = repository_config_path(directory) if inside else None
+        # Only a found one is kept: a directory can become a repository.
+        if own is not None:
+            _REPOSITORY_CONFIG_FILES[directory] = own
+    return ([own] if own else []) + [user_config_path()]
+
+
+# Directory -> its repository's settings file, see config_files(). The
+# interfaces read settings on every poll, so git is asked once.
+_REPOSITORY_CONFIG_FILES = {}
+
+
+def file_stamp(path):
+    """What tells that a file changed: (modification time, size), None
+    when it doesn't exist.
+    """
+    try:
+        status = os.stat(path)
+    except OSError:
+        return None
+    return status.st_mtime_ns, status.st_size
+
+
+def config_entries(path):
+    """The (key, value) pairs of a file in git config syntax, in order,
+    keys as git writes them (section and name in lower case). Read again
+    only when the file changed, see file_stamp().
+    """
+    return _config_entries(str(path), file_stamp(path))
+
+
+@functools.lru_cache(maxsize=64)
+def _config_entries(path, stamp):
+    if stamp is None:
+        return ()
+    output = git('config', '--file', path, '--list', '-z', check=False)
+    return tuple(tuple(entry.partition('\n')[::2]) for entry in output.split('\0') if entry)
+
+
+def config_key(key):
+    """A key as git config lists it: section and name in lower case, a
+    subsection between them as it is.
+    """
+    section, _, rest = key.partition('.')
+    middle, _, name = rest.rpartition('.')
+    return '.'.join(filter(None, (section.lower(), middle, name.lower())))
+
+
+def config_values(path, key):
+    """All values of a key in a file in git config syntax."""
+    key = config_key(key)
+    return [value for name, value in config_entries(path) if name == key]
 
 
 def setting(key, default=None, repository=None):
@@ -676,16 +733,31 @@ def setting(key, default=None, repository=None):
     setting of ours goes into git's own config.
     """
     for path in config_files(repository):
-        if path.exists():
-            value = git('config', '--file', str(path), '--get', key, check=False)
-            if value:
-                return value
+        values = config_values(path, key)
+        if values and values[-1]:
+            return values[-1]
     legacy = LEGACY_SETTINGS.get(key)
     if legacy:
-        value = git('config', legacy, check=False, repository=repository)
+        value = legacy_setting(legacy, current_repository(repository) or os.getcwd())
         if value:
             return value
     return default
+
+
+def legacy_setting(key, repository):
+    """An older setting from git's own config, read again only when one of
+    its files changed.
+    """
+    home = Path.home()
+    xdg = Path(os.environ.get('XDG_CONFIG_HOME') or home / '.config')
+    stamps = tuple(file_stamp(path) for path in (
+        Path(repository) / '.git' / 'config', home / '.gitconfig', xdg / 'git' / 'config'))
+    return _legacy_setting(key, repository, stamps)
+
+
+@functools.lru_cache(maxsize=64)
+def _legacy_setting(key, repository, _stamps):
+    return git('config', key, check=False, repository=repository)
 
 
 def settings_section(section, repository=None):
@@ -693,14 +765,11 @@ def settings_section(section, repository=None):
     repository's over the user's.
     """
     values = {}
+    start = section.lower() + '.'
     for path in reversed(config_files(repository)):
-        if not path.exists():
-            continue
-        output = git('config', '--file', str(path), '--get-regexp', rf'^{re.escape(section)}\.',
-                     check=False)
-        for line in filter(None, output.split('\n')):
-            key, _, value = line.partition(' ')
-            values[key[len(section) + 1:]] = value
+        for key, value in config_entries(path):
+            if key.startswith(start):
+                values[key[len(start):]] = value
     return values
 
 
@@ -763,20 +832,13 @@ def state_path(name):
 
 def state_values(name, key):
     """All values of a key in a state file."""
-    path = state_path(name)
-    if not path.exists():
-        return []
-    output = git('config', '--file', str(path), '--get-all', key, check=False)
-    return [value for value in output.split('\n') if value]
+    return [value for value in config_values(state_path(name), key) if value]
 
 
 def state_regexp(name, pattern):
     """(key, value) pairs of a state file whose keys match a pattern."""
-    path = state_path(name)
-    if not path.exists():
-        return []
-    output = git('config', '--file', str(path), '--get-regexp', pattern, check=False)
-    return [tuple(line.partition(' ')[::2]) for line in output.split('\n') if line]
+    return [(key, value) for key, value in config_entries(state_path(name))
+            if re.search(pattern, key)]
 
 
 def set_state(name, key, value, add=False):
@@ -793,10 +855,23 @@ def set_state(name, key, value, add=False):
 
 
 def toplevel(repository=None):
-    """The absolute path of a repository's working tree, None outside one."""
-    result = subprocess.run([*git_command(repository), 'rev-parse', '--show-toplevel'],
-                            capture_output=True, text=True)
-    return result.stdout.strip() or None if 0 == result.returncode else None
+    """The absolute path of a repository's working tree, None outside one.
+    Asked once per directory.
+    """
+    directory = os.path.abspath(current_repository(repository) or os.getcwd())
+    if directory not in _TOPLEVELS:
+        result = subprocess.run(['git', '-C', directory, 'rev-parse', '--show-toplevel'],
+                                capture_output=True, text=True)
+        found = result.stdout.strip() or None if 0 == result.returncode else None
+        if found is None:
+            # Not kept: the directory can become a repository.
+            return None
+        _TOPLEVELS[directory] = found
+    return _TOPLEVELS[directory]
+
+
+# Directory -> its repository's working tree, see toplevel()
+_TOPLEVELS = {}
 
 
 def registered_repositories():
@@ -1120,6 +1195,12 @@ def line_at(commit, place, repository=None, side=NEW_SIDE):
     return lines[number - 1].strip() if 1 <= number <= len(lines) else ''
 
 
+@cached_for_objects(0)
+def commit_message(commit, repository=None):
+    """A commit's whole message, as git log prints it."""
+    return git('log', '-1', '--format=%B', commit, repository=repository)
+
+
 def commit_message_text(commit, repository=None):
     """The commit message as the file /COMMIT_MSG shows it: a header with
     parent, author and committer, like in Gerrit, then the message.
@@ -1133,7 +1214,7 @@ def commit_message_text(commit, repository=None):
              for parent in parents.split()]
     lines += [f'Author:     {author}', f'AuthorDate: {author_date}',
               f'Commit:     {committer}', f'CommitDate: {commit_date}', '']
-    message = git('log', '-1', '--format=%B', commit, repository=repository)
+    message = commit_message(commit, repository)
     return '\n'.join(lines) + '\n' + message.rstrip('\n') + '\n'
 
 
@@ -1144,7 +1225,7 @@ def commit_message_parts(commit, repository=None):
     the trailers like Change-Id, '' without one. trailers are the lines
     of the last paragraph if git reads them all as trailers.
     """
-    message = git('log', '-1', '--format=%B', commit, repository=repository).strip('\n')
+    message = commit_message(commit, repository).strip('\n')
     subject, _, rest = message.partition('\n')
     paragraphs = rest.strip('\n').split('\n\n') if rest.strip() else []
     trailers = []
@@ -2044,12 +2125,16 @@ def status_name(name):
 
 
 def add_comment(change_id, place, text, sent=True, side=NEW_SIDE, author=REVIEWER,
-                status=UNRESOLVED, repository=None, patch_set=None):
-    """Starts a thread on a patch set, the newest without one, unresolved
-    like in Gerrit unless status says otherwise. Returns its number. The
-    author's threads are always sent. comment_place() gives place, side
-    and patch set for a line of a diff.
+                status=None, repository=None, patch_set=None):
+    """Starts a thread on a patch set, the newest without one. Returns its
+    number. Like in Gerrit it is unresolved unless status says otherwise,
+    and a message on the whole change is resolved, like one sent with the
+    drafts. The author's threads are always sent. comment_place() gives
+    place, side and patch set for a line of a diff. Like Gerrit, refuses a
+    file the version doesn't have and a line past its end.
     """
+    if status is None:
+        status = RESOLVED if PATCHSET_LEVEL == place else UNRESOLVED
     status = status_name(status)
 
     def edit(change):
@@ -2062,10 +2147,30 @@ def add_comment(change_id, place, text, sent=True, side=NEW_SIDE, author=REVIEWE
                                             time=int(time.time()) if sent_now else 0)],
                           side=side,
                           id=os.urandom(6).hex())
+        check_place(change, comment, repository)
         change.comments.append(comment)
         return comment.number
 
     return update_change(change_id, edit, repository)
+
+
+def check_place(change, comment, repository=None):
+    """Raises ChangeError when a new thread's file isn't in the version it
+    counts in, see thread_version(), or its line is past the file's end.
+    The commit message and the whole change are always there.
+    """
+    path, line = split_place(comment.place)
+    version = thread_version(change, comment, repository)
+    if path in (COMMIT_MSG, PATCHSET_LEVEL) or version is None:
+        return
+    commit, path = version
+    where = f'PS{comment.patch_set}' + (' (old side)' if OLD_SIDE == comment.side else '')
+    if 0 != subprocess.run([*git_command(repository), 'cat-file', '-e', f'{commit}:{path}'],
+                           capture_output=True).returncode:
+        raise ChangeError(f'{where} has no file {path}')
+    lines = file_lines(commit, path, repository)
+    if line is not None and lines is not None and not 1 <= line <= len(lines):
+        raise ChangeError(f'{path} has {len(lines)} lines in {where}, not line {line}')
 
 
 def add_message(change_id, number, author, text, sent=True, status=None, repository=None):
@@ -3163,6 +3268,14 @@ def moved_place(source, target, path, line, repository=None):
     return new_path, number, state
 
 
+def place_label(place, side=NEW_SIDE):
+    """A thread's place for display: "Change" for the whole change, marked
+    when it is in the old version.
+    """
+    return (CHANGE_PLACE if PATCHSET_LEVEL == place else place) \
+        + (' (old)' if OLD_SIDE == side else '')
+
+
 def split_place(place):
     """A place as (path, line), line None for a whole file or change."""
     path, _, line = place.rpartition(':')
@@ -3892,8 +4005,9 @@ def parse_arguments(argv):
         print(f'{count} answer(s) added')
 
     def status_command(arguments):
-        set_status(find_change(arguments.change).change_id, arguments.number, arguments.status,
-                   arguments.text)
+        change = find_change(arguments.change)
+        set_status(change.change_id, arguments.number, arguments.status, arguments.text)
+        print(f'{change.short_id()}: comment #{arguments.number} {status_name(arguments.status)}')
 
     def vote_command(arguments):
         change = find_change(arguments.change)
@@ -3988,7 +4102,7 @@ def parse_arguments(argv):
     comment = command('comment', comment_command, 'add a comment', 'change', 'place', 'text')
     comment.add_argument('--author', action='store_true', help="the author's comment")
     status_choices = {'choices': STATUSES + tuple(OLD_STATUSES)}
-    comment.add_argument('--status', default=UNRESOLVED, **status_choices)
+    comment.add_argument('--status', default=None, **status_choices)
     comment.add_argument('--resolved', action='store_const', const=RESOLVED, dest='status',
                          help='start the thread resolved, e.g. a note')
     reply = command('reply', reply_command, 'answer a thread', 'change', number, 'text')

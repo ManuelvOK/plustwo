@@ -42,7 +42,8 @@ def comment_json(core, comment, patch_sets=()):
     path, _, line = comment.place.rpartition(':')
     if not path or not line.isdigit():
         path, line = comment.place, ''
-    return {'number': comment.number, 'id': comment.id, 'place': comment.place, 'path': path,
+    return {'number': comment.number, 'id': comment.id, 'place': comment.place,
+            'place_label': comment.place_label(), 'path': path,
             'line': int(line) if line else None, 'side': comment.side,
             'patch_set': comment.patch_set, 'status': comment.status,
             'draft_status': comment.draft_status(), 'is_draft': comment.is_draft(),
@@ -60,6 +61,7 @@ def history_json(core, entry):
             'open': len(entry.open_threads()),
             'events': [{'kind': event.kind, 'time': event.time, 'author': event.author,
                         'text': event.text, 'number': event.number, 'place': event.place,
+                        'place_label': core.place_label(event.place),
                         'status': event.status, 'draft': event.draft, 'open': event.is_open()}
                        for event in entry.events]}
 
@@ -170,8 +172,7 @@ class Server:
                           'reviewed': core.is_reviewed(change, path, repository),
                           'renamed_from': renames.get(path)})
         return {**change_summary(core, change, repository),
-                'message': core.git('log', '-1', '--format=%B', change.commit,
-                                    repository=repository),
+                'message': core.commit_message(change.commit, repository),
                 'message_parts': dict(zip(('subject', 'body', 'trailers'),
                                           core.commit_message_parts(change.commit, repository))),
                 'patch_sets': sorted(change.patch_sets),

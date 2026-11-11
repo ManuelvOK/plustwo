@@ -250,7 +250,7 @@ function patchSetsView(change) {
         : event.author === 'author' ? 'Author' : event.author;
       const text = event.kind === 'vote' ? `${who}: ${event.text}`
         : `${event.kind === 'reply' ? 'reply on' : 'thread'} #${event.number} `
-          + `[${event.draft ? 'draft' : event.status}] ${event.place}  ${who}: ${event.text}`;
+          + `[${event.draft ? 'draft' : event.status}] ${event.place_label}  ${who}: ${event.text}`;
       body.append(el('tr', {class: `ps-event${event.open ? ' open-threads' : ''}`
                                    + (event.number ? ' link' : ''),
                             onclick: () => event.number && showThread(change, entry.number, event)},
@@ -520,7 +520,7 @@ function threadView(comment) {
   return el('div', {class: `thread ${comment.status}`, id: `thread-${number}`},
     el('div', {}, el('span', {class: `chip ${status === 'unresolved' ? 'warn' : ''}`},
                      `#${number} ${status}${pending}`), ' ',
-       el('span', {class: 'dim thread-place'}, comment.place + (comment.side === 'old' ? ' (old)' : '')
+       el('span', {class: 'dim thread-place'}, comment.place_label
           + (origin ? ` (${origin}${note ? ', ' + note : ''})` : '')), ownPatchSet),
     messages,
     editing ? editorFor(null, null, comment) : el('div', {class: 'actions'},
