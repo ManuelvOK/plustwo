@@ -10,6 +10,7 @@ import importlib.util
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +19,8 @@ import test_diff_rows
 import test_stacks
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+import plustwo_tui as tui  # pylint: disable=wrong-import-position
 _loader = importlib.machinery.SourceFileLoader('plustwo', str(ROOT / 'plustwo'))
 _spec = importlib.util.spec_from_loader('plustwo', _loader)
 core = importlib.util.module_from_spec(_spec)
@@ -359,6 +362,38 @@ class InboxTest(unittest.TestCase):
         on_line = core.Comment(2, 'a.txt:3', 1,
                                [core.Message(reviewer, 'Why?', unresolved=False)])
         self.assertFalse(on_line.wants_answer())
+
+
+class PollTest(unittest.TestCase):
+
+    def test_one_git_call_per_poll(self):
+        # The interfaces poll stack_version(): settings, registry and the
+        # repository's place are read once, not on every poll
+        directory = tempfile.mkdtemp(prefix='plustwo-poll-')
+        try:
+            subprocess.run(['git', 'init', '--quiet', directory], check=True)
+            core.stack_version(directory)
+            core.review_repositories()
+            calls = []
+            run = core.subprocess.run
+
+            def counted(*arguments, **keywords):
+                calls.append(arguments[0])
+                return run(*arguments, **keywords)
+
+            core.subprocess.run = counted
+            try:
+                core.stack_version(directory)
+                core.review_repositories()
+            finally:
+                core.subprocess.run = run
+            self.assertEqual(1, len(calls), calls)
+        finally:
+            shutil.rmtree(directory)
+
+    def test_patch_set_count(self):
+        self.assertEqual('1 patch set', tui.patch_set_count(1))
+        self.assertEqual('3 patch sets', tui.patch_set_count(3))
 
 
 class SubmittableTest(unittest.TestCase):

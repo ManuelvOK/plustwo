@@ -476,25 +476,37 @@ def run(core, list_name=None):
         # Enter then arrives as \r and Ctrl+J as \n, so the comment box
         # tells them apart.
         curses.nonl()
-        without_flow_control()
+        keys_as_keys()
         Interface(screen, core, list_name).loop()
 
     curses.wrapper(start)
 
 
-def without_flow_control():
-    """Turns off the terminal's flow control (XON/XOFF), so C-s and C-q
-    arrive as keys instead of stopping the output. curses keeps this mode
-    after programs run outside and restores the old one at the end.
+def keys_as_keys():
+    """Lets C-s, C-q and C-c arrive as keys: turns off the terminal's flow
+    control (XON/XOFF), which stops the output, and its interrupt key,
+    which ends the program (the emacs keys use C-c). C-z still suspends.
+    curses keeps this mode after programs run outside and restores the old
+    one at the end.
     """
     import termios  # pylint: disable=import-outside-toplevel
     try:
         attributes = termios.tcgetattr(sys.stdin.fileno())
         attributes[0] &= ~(termios.IXON | termios.IXOFF)
+        attributes[6] = list(attributes[6])
+        # No character is the interrupt key, like stty intr undef
+        attributes[6][termios.VINTR] = bytes([termios_disabled()])
         termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, attributes)
     except termios.error:
         return
     curses.def_prog_mode()
+
+
+def termios_disabled():
+    """The value that turns a terminal key off, _POSIX_VDISABLE: 0 on
+    Linux, 0xff on the BSDs and macOS.
+    """
+    return 0 if sys.platform.startswith('linux') else 0xff
 
 
 # The reply to OSC 11, the question for the terminal's background
@@ -781,11 +793,21 @@ class Interface:
         height, width = self._screen.getmaxyx()
         view = self._views[-1]
         view.draw(Area(self._screen, 0, height - 2, width))
-        # The keys in bold, what they do dimmed
-        column = 1
+        # The keys in bold, what they do dimmed. The help key stays, the
+        # other hints go from the end when the line is too narrow.
+        entries = []
         for names, label in view.footer():
             keys = '/'.join(filter(None, (self.keymap.label(name) for name in names)))
-            if not keys or column + len(keys) + len(label) + 1 >= width:
+            if keys:
+                entries.append((names, keys, label))
+        kept = [entry for entry in entries if ('help',) == entry[0]]
+        others = [entry for entry in entries if ('help',) != entry[0]]
+        while others and 1 + sum(len(keys) + len(label) + 4
+                                 for _, keys, label in others + kept) - 3 >= width:
+            others.pop()
+        column = 1
+        for _names, keys, label in others + kept:
+            if column + len(keys) + len(label) + 1 >= width:
                 continue
             self.text(height - 2, column, keys, curses.A_BOLD, width)
             self.text(height - 2, column + len(keys) + 1, label, self.dim(), width)
@@ -2506,6 +2528,11 @@ def in_half(parts, side, left_width):
     return [(' ' * left_width + HALF_SEPARATOR, SECONDARY, -1, 0)] + parts
 
 
+def patch_set_count(count):
+    """The header's "3 patch sets"; the p key lists them."""
+    return f'{count} patch set{"" if 1 == count else "s"}'
+
+
 def thread_rows(comment, width, expanded, core, note='', origin='', patch_sets=()):
     """A thread as rows of the diff, each a list of (text, foreground,
     background, styles): a box with a border in the status' colour and a
@@ -2542,10 +2569,9 @@ def thread_rows(comment, width, expanded, core, note='', origin='', patch_sets=(
     room = max(inner - len(title) - 3, 0)
     note_rows = []
     if note and len(note) > room:
-        # What fits goes into the title row, the rest onto rows of its own.
-        first = (textwrap.wrap(note, room) or [''])[0] if room >= 10 else ''
-        note_rows = textwrap.wrap(note[len(first):].strip(), inner)
-        note = first
+        # Whole onto rows of its own, never split between title and body
+        note_rows = textwrap.wrap(note, inner)
+        note = ''
     extra = f' {note} ' if note else ''
     top = '─' * max(inner - len(title) - len(extra), 0)
     rows = [[*pad, ('┌─', *border), *title_parts(-1),
@@ -2717,7 +2743,8 @@ class PatchSetView:
         else:
             label = ('draft' if event.draft else event.status)
             what = 'reply on' if 'reply' == event.kind else 'thread'
-            text = (f'{when:<11} {what} #{event.number} [{label}] {event.place}  {who}: '
+            text = (f'{when:<11} {what} #{event.number} [{label}] '
+                    f'{self._interface.core.place_label(event.place)}  {who}: '
                     f'{event.text}')
             out_attributes = attributes | (status_attribute('unresolved') | curses.A_BOLD
                                            if event.is_open() else
@@ -2988,18 +3015,25 @@ class ChangeView:
                 self._interface.colour_pairs.attribute(0, 1 if 'conflicts' == self._behind
                                                        else 3) | curses.A_BOLD)
         out(0, max(area.width - len(version), 1), version, header_dim)
-        patch_sets = ' '.join(str(number) for number in sorted(change.patch_sets)) or '-'
+        patch_sets = patch_set_count(len(change.patch_sets))
         try:
             (first, _), (second, _) = core.versions_to_compare(change, *self._compare)
             comparing = f'comparing {first} -> {second}'
         except core.ChangeError as error:
             comparing = str(error)
-        header = f'Patch sets: {patch_sets}   {comparing}'
+        header = f'{patch_sets}   {comparing}'
         if FILES not in self._layout:
-            # Without the files pane, the header says which file it is.
-            header += (f'   sidebar hidden ({self._interface.keymap.label("sidebar")}), file '
-                       f'{self._file_index + 1}/{len(self._files)}: '
-                       f'{file_label(core, self._selected_file(), self._renames)}')
+            # Without the files pane, the header says which file it is,
+            # with fewer words when the line is narrow.
+            label = file_label(core, self._selected_file(), self._renames)
+            where = f'file {self._file_index + 1}/{len(self._files)}: '
+            sidebar = f'sidebar hidden ({self._interface.keymap.label("sidebar")}), '
+            for extra in (sidebar + where + label, where + label,
+                          where + label.rsplit('/', 1)[-1]):
+                if len(header) + 3 + len(extra) <= area.width - 2:
+                    break
+            header += '   ' + extra
+            header = header[:max(area.width - 2, 0)]
         out(1, 1, header, self._interface.dim())
         self._draw_votes(4 + len(header))
         if FILES in self._layout:
@@ -3035,8 +3069,10 @@ class ChangeView:
             mark = '▶ ' if is_current else '› ' if other.change_id in self._yours else '  '
             out(top + row, left, mark + subject, attributes, left + width)
             if marker:
-                out(top + row, left + 2 + len(subject), marker,
-                    attributes | curses.color_pair(2), left + width)
+                # Always green, at the right end. Its own colour pair, not
+                # added to the row's, which would mix the two.
+                own = (attributes & (curses.A_BOLD | curses.A_REVERSE)) | curses.color_pair(2)
+                out(top + row, left + width - len(marker), marker, own, left + width)
 
     def _message_lines(self, width):
         """The commit message as rows of the box: (text, attributes), the
@@ -3144,11 +3180,10 @@ class ChangeView:
                 left + width)
             core = self._interface.core
             shown = self._place_of(comment)
-            place = ('Change' if core.PATCHSET_LEVEL == comment.place
-                     else comment.place_label().rsplit('/', 1)[-1])
+            place = comment.place_label().rsplit('/', 1)[-1]
             if core.PATCHSET_LEVEL == shown.path != comment.place:
                 # Like in Gerrit, a thread on a gone file is on the whole change.
-                place = f'Change ({shown.origin}, {shown.note})'
+                place = f'{core.CHANGE_PLACE} ({shown.origin}, {shown.note})'
             out(top + index, left + 6 + len(label), f' {place}', attributes, left + width)
 
     def _markers(self):
@@ -3272,7 +3307,7 @@ class ChangeView:
             place = (shown.side, shown.line) if shown.line is not None else None
             note, origin = shown.note, shown.origin
             if core.PATCHSET_LEVEL == shown.path:
-                note = note or 'on the whole change'
+                note = note or core.WHOLE_CHANGE
             if place and place not in self._diff.shown_places():
                 note = ((f'{note}, ' if note else '')
                         + f'on {"old " if "old" == shown.side else ""}line {shown.line}, not in the '
