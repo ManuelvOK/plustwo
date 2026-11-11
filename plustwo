@@ -528,6 +528,18 @@ class Change:
         return [vote for vote in self.votes
                 if label == vote.label and latest and latest == vote.patch_set]
 
+    def own_vote(self, label=CODE_REVIEW):
+        """The value the label's default voter (the reviewer for
+        Code-Review) gave on the latest patch set, 0 without a vote.
+        """
+        by = DEFAULT_VOTERS[label_name(label)]
+        return next((vote.value for vote in self.current_votes(label_name(label))
+                     if by == vote.by), 0)
+
+    def draft_count(self):
+        """How many of the reviewer's drafts sending would send."""
+        return sum(not message.sent for comment in self.comments for message in comment.messages)
+
     def label_value(self, label):
         """A label's summary for display, as Gerrit shows it: the lowest
         value if someone gave it, else the highest if someone gave it, else
@@ -2319,6 +2331,23 @@ def send_drafts(change_id, message='', repository=None):
     return update_change(change_id, edit, repository)
 
 
+def reply(change_id, message='', vote=None, repository=None):
+    """Gerrit's Reply dialog in one step: sends the drafts and the message,
+    and votes Code-Review if vote differs from the reviewer's vote now.
+    Returns (drafts sent, patch set voted on or None).
+    """
+    voted = None
+    if vote is not None and vote != find_change(change_id, repository).own_vote():
+        voted = set_vote(change_id, CODE_REVIEW, vote, repository=repository)
+    return send_drafts(change_id, message, repository), voted
+
+
+def vote_values(label=CODE_REVIEW):
+    """A label's values from the lowest to the highest, like -2 .. +2."""
+    low, high = LABEL_RANGES[label_name(label)]
+    return tuple(range(low, high + 1))
+
+
 def set_status(change_id, number, status, text='', repository=None):
     """The author resolves a thread or makes it unresolved again, with a
     message (text may be empty).
@@ -3795,6 +3824,35 @@ def watch(repositories, output=sys.stdout, topic=None):
 
 # ── command line ──────────────────────────────────────────────────────────
 
+def thread_file_after(files, path, thread_paths, step):
+    """The next file after path (step 1) or the previous one (step -1) in
+    files that has a thread: thread_paths are the files of the threads.
+    None when there is none in that direction.
+    """
+    if path in files:
+        index = files.index(path) + step
+    else:
+        index = 0 if step > 0 else len(files) - 1
+    while 0 <= index < len(files):
+        if files[index] in thread_paths:
+            return files[index]
+        index += step
+    return None
+
+
+def threads_in_list_order(comments):
+    """Threads for a list of them: the unresolved ones (drafts too) first,
+    then the resolved ones, each by number.
+    """
+    return sorted(comments, key=lambda comment: (not comment.is_unresolved(), comment.number))
+
+
+def answered_by_author(comment):
+    """Whether the author wrote the thread's last sent message."""
+    last = comment.last_sent()
+    return last is not None and AUTHOR == last.author
+
+
 def message_text(message):
     """A message's text for display. An empty one only changed the status."""
     if message.text:
@@ -3802,17 +3860,22 @@ def message_text(message):
     return f'({"unresolved" if message.unresolved else "resolved"})'
 
 
-def comment_counts(change):
+# Short words for the statuses, for narrow columns
+SHORT_STATUSES = {UNRESOLVED: 'open', RESOLVED: 'done'}
+
+
+def comment_counts(change, short=False):
     """Thread counts per status for display, like "2 unresolved, 1
-    resolved".
+    resolved", or short "2 open · 1 done".
     """
     sent = [comment for comment in change.comments if not comment.is_draft()]
-    counts = [f'{sum(status == comment.status for comment in sent)} {status}'
+    counts = [f'{sum(status == comment.status for comment in sent)} '
+              + (SHORT_STATUSES[status] if short else status)
               for status in STATUSES if any(status == comment.status for comment in sent)]
     drafts = sum(comment.has_draft() for comment in change.comments)
     if drafts:
         counts.append(f'{drafts} draft' + ('s' if drafts > 1 else ''))
-    return ', '.join(counts) or '-'
+    return (' · ' if short else ', ').join(counts) or '-'
 
 
 def vote_label(change, label):

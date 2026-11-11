@@ -139,6 +139,20 @@ class WebTest(unittest.TestCase):
                                                          'action': 'nonsense'})
         self.assertEqual(400, status)
 
+    def test_reply_votes_only_when_changed(self):
+        # The reply box's step: drafts, message and the vote together
+        change_id = self.change_id()
+        directory = self._directory.name
+        own = core.find_change(change_id, directory).own_vote()
+        self.assertEqual((0, None), core.reply(change_id, '', own, directory))
+        other = -1 if own != -1 else 1
+        sent, voted = core.reply(change_id, '', other, directory)
+        self.assertEqual(0, sent)
+        self.assertIsNotNone(voted)
+        self.assertEqual(other, core.find_change(change_id, directory).own_vote())
+        core.reply(change_id, '', own, directory)
+        self.assertEqual(own, core.find_change(change_id, directory).own_vote())
+
     def test_typed_ack_resolves(self):
         # A reply that only acknowledges resolves like the Ack key, and
         # leaves the author's inbox, also as a message on the whole change.

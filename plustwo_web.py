@@ -282,10 +282,10 @@ class Server:
         elif 'delete-draft' == action:
             core.delete_draft(change_id, number, repository)
         elif 'send' == action:
-            if body.get('vote') is not None:
-                core.set_vote(change_id, core.CODE_REVIEW, int(body['vote']),
-                              repository=repository)
-            return {'sent': core.send_drafts(change_id, body.get('message', ''), repository)}
+            vote = body.get('vote')
+            sent, _voted = core.reply(change_id, body.get('message', ''),
+                                      None if vote is None else int(vote), repository)
+            return {'sent': sent}
         elif 'vote' == action:
             core.set_vote(change_id, body.get('label', core.CODE_REVIEW), int(body['value']),
                           repository=repository)
