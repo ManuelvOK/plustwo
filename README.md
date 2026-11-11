@@ -54,14 +54,19 @@ every other registered repository (`plustwo register PATH`,
 1. The list shows every stack. `l` opens a change, `T` jumps to the next
    change where it is your turn.
 2. In a change: files and threads on the left, the side by side diff on
-   the right. `Tab` switches panes, `]c` jumps to the next change.
-3. `c` comments on the cursor line, `<` and `>` choose the old or new side.
-   `m` marks a file reviewed.
+   the right. `Tab` switches panes, `]c` jumps to the next change, `]t` to
+   the next thread and `]u` to the next unresolved one, also in the next
+   files.
+3. `c` (or `o`) comments on the cursor line, `O` on the line above, `<`
+   and `>` choose the old or new side. `m` marks a file reviewed. In the
+   comment box, Esc on written text asks once before it discards it.
 4. On a thread: `r` replies, `y` answers Done, `Y` Ack, `x` toggles
    resolved. A reply that only acknowledges, like "Ack." or "OK, thanks",
    resolves too. Everything stays a draft.
-5. `s` sends all drafts, with an optional message on the whole change.
-   That tells the author to start.
+5. `s` opens the reply box, like Gerrit's Reply: it sends all drafts, an
+   optional message on the whole change and the Code-Review vote (`Tab`
+   goes to the vote, `←`/`→` or a digit picks it). That tells the author
+   to start.
 6. `A` votes Code-Review+2, `S` submits: the base branch moves forward to
    the change.
 

@@ -320,3 +320,105 @@ class BackgroundReplyTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class UsabilityTest(unittest.TestCase):
+    """Keys and pieces of the change screen added for everyday use."""
+
+    def test_vim_habits(self):
+        vim = tui.Keymap('vim')
+        self.assertEqual(('comment', None), feed(vim, 'o'))
+        self.assertEqual(('comment-above', None), feed(vim, 'O'))
+        self.assertEqual(('next-unresolved', None), feed(vim, ']', 'u'))
+        # Gerrit's o opens, so only O comments there
+        gerrit = tui.Keymap('gerrit')
+        self.assertEqual(('open', None), feed(gerrit, 'o'))
+        self.assertEqual(('comment-above', None), feed(gerrit, 'O'))
+        self.assertEqual(('comment-above', None), feed(tui.Keymap('emacs'), ctrl('o')))
+        self.assertEqual(('next-unresolved', None), feed(gerrit, ctrl('n')))
+        emacs = tui.Keymap('emacs')
+        self.assertEqual(('next-unresolved', None), feed(emacs, tui.META | ord('}')))
+        for preset in tui.PRESETS:
+            self.assertEqual([], tui.Keymap(preset).errors)
+
+    def test_help_has_one_section_per_group(self):
+        for preset in tui.PRESETS:
+            lines = tui.Keymap(preset).help_lines(100)
+            groups = {action[1] for action in tui.ACTIONS}
+            headings = [line for line in lines if line in groups]
+            self.assertEqual(len(headings), len(set(headings)), preset)
+        text = '\n'.join(tui.Keymap('vim').help_lines(100))
+        for label in ('next file', 'previous file', 'more context', 'less context',
+                      'pick left side', 'pick right side', 'fold/unfold all'):
+            self.assertIn(label, text)
+        # Two labels of an action pair are never the same
+        labels = {action[0]: action[2] for action in tui.ACTIONS}
+        for first, second in (('next-file', 'prev-file'), ('more-context', 'less-context'),
+                              ('set-a', 'set-b'), ('fold-all', 'fold-every'),
+                              ('next-thread', 'prev-thread'), ('search-next', 'search-prev')):
+            self.assertNotEqual(labels[first], labels[second])
+
+    def test_escape_asks_once_with_text(self):
+        self.assertTrue(tui.TextBox('').cancel())
+        self.assertTrue(tui.TextBox('  ').cancel())
+        box = tui.TextBox('Why?')
+        self.assertFalse(box.cancel())
+        self.assertTrue(box.discarding)
+        # Any other key keeps the text and asks again next time
+        box.keep()
+        self.assertFalse(box.cancel())
+        self.assertTrue(box.cancel())
+        self.assertEqual('again discards', dict(tui.box_keys(False, discarding=True))['Esc'])
+        self.assertEqual('send', dict(tui.box_keys(True, 'send'))['⏎'])
+        self.assertIn('C-g', dict(tui.box_keys(True)))
+
+    def test_vote_choice(self):
+        choice = tui.Choice(core.vote_values(), 1)
+        self.assertEqual(' -2   -1    0  [+1]  +2 ', choice.text())
+        choice.key(curses.KEY_RIGHT)
+        choice.key(curses.KEY_RIGHT)
+        self.assertEqual(2, choice.value)
+        choice.key('-')
+        choice.key('1')
+        self.assertEqual(-1, choice.value)
+        choice.key('0')
+        self.assertEqual(0, choice.value)
+        self.assertIn('[ 0]', choice.text())
+        self.assertFalse(choice.key('x'))
+        choice.key('7')
+        self.assertEqual(0, choice.value)
+
+    def test_line_above(self):
+        diff = tui.DiffPane(None)
+        # Line 1, a thread, line 2 wrapped onto two rows, a gap, line 3
+        diff.rows = [('diff', 0), ('thread', 1, 0), ('diff', 1), ('diff', 2), ('diff', 3),
+                     ('diff', 4)]
+        diff.numbers = [(1, 1), (None, None), (2, 2), (None, None), (None, None), (3, 3)]
+        diff._continues = [False, False, True, False, False]
+        self.assertEqual(2, diff.line_above(5))
+        self.assertEqual(2, diff.line_above(4))
+        self.assertEqual(0, diff.line_above(3))
+        self.assertEqual(0, diff.line_above(2))
+        self.assertIsNone(diff.line_above(0))
+
+    def test_threads_across_files(self):
+        files = ['/COMMIT_MSG', 'a.py', 'b.py', 'c.py']
+        self.assertEqual('c.py', core.thread_file_after(files, 'a.py', {'c.py'}, 1))
+        self.assertEqual('/COMMIT_MSG', core.thread_file_after(files, 'b.py',
+                                                               {'/COMMIT_MSG', 'c.py'}, -1))
+        self.assertIsNone(core.thread_file_after(files, 'c.py', {'a.py'}, 1))
+        self.assertEqual('a.py', core.thread_file_after(files, None, {'a.py'}, 1))
+
+    def test_comments_pane_and_dashboard(self):
+        def comment(number, unresolved, author=core.REVIEWER):
+            return core.Comment(number, 'a.py:1', 1, [core.Message(author, 'x',
+                                                                   unresolved=unresolved)])
+        comments = [comment(1, False), comment(2, True), comment(3, False), comment(4, True)]
+        self.assertEqual([2, 4, 1, 3], [c.number for c in core.threads_in_list_order(comments)])
+        answered = comment(5, True)
+        answered.messages.append(core.Message(core.AUTHOR, 'Because.'))
+        self.assertTrue(core.answered_by_author(answered))
+        self.assertFalse(core.answered_by_author(comments[1]))
+        change = types.SimpleNamespace(comments=comments)
+        self.assertEqual('2 open · 2 done', core.comment_counts(change, short=True))
+        self.assertEqual('2 unresolved, 2 resolved', core.comment_counts(change))

@@ -75,22 +75,22 @@ ACTIONS = (
     ('reload', 'Everywhere', 'reload', 'reload now (it also reloads by itself)'),
     ('back', 'Everywhere', 'back', 'back (not on the first screen, quit quits). In the diff, '
      'back to the files or comments.'),
-    ('down', 'Moving', 'move', 'down. A count before moves that far, e.g. 15 down.'),
-    ('up', 'Moving', 'move', 'up'),
+    ('down', 'Moving', 'down', 'down. A count before moves that far, e.g. 15 down.'),
+    ('up', 'Moving', 'up', 'up'),
     ('top', 'Moving', 'top', 'to the top. With a count to that row.'),
     ('bottom', 'Moving', 'bottom', 'to the bottom. With a count to that row, in the diff to '
      'that line of the new version.'),
-    ('page-down', 'Moving', 'half page', 'half a page down'),
-    ('page-up', 'Moving', 'half page', 'half a page up'),
-    ('scroll-down', 'Moving', 'scroll', 'in the diff: the view one row down, the cursor stays. '
+    ('page-down', 'Moving', 'half page down', 'half a page down'),
+    ('page-up', 'Moving', 'half page up', 'half a page up'),
+    ('scroll-down', 'Moving', 'scroll down', 'in the diff: the view one row down, the cursor stays. '
      'j and k scroll through a thread taller than the pane, too.'),
-    ('scroll-up', 'Moving', 'scroll', 'in the diff: the view one row up, the cursor stays'),
+    ('scroll-up', 'Moving', 'scroll up', 'in the diff: the view one row up, the cursor stays'),
     ('open', 'Moving', 'open', 'open. In the stack (▶ is the change shown, › and the turn '
      'colour mark those where it is your turn, "(submittable)" those a submit would take '
      'now): shows that change. On a file: into the '
      'diff. In the comments: unfolds the thread and goes to it in the diff. In the diff: folds '
      'or unfolds the thread.'),
-    ('diff', 'Stacks', 'diff', 'the diff of the change in git\'s pager'),
+    ('diff', 'Stacks', 'diff in pager', 'the diff of the change in git\'s pager'),
     ('vote', 'Stacks and changes', 'vote', 'vote Code-Review (-2..+2) on the latest patch set'),
     ('verified', 'Stacks and changes', 'needs Verified', 'whether the change needs Verified+1 '
      '(it comes from a check)'),
@@ -100,44 +100,51 @@ ACTIONS = (
     ('approve', 'Stacks and changes', '+2', 'vote Code-Review+2 on the latest patch set, like '
      'Gerrit\'s Quick approve. Asks first: the key again or y gives it. Offers to send your '
      'drafts along.'),
-    ('next-turn', 'Stacks', 'my turn', 'to the next change where it is your turn'),
-    ('section-down', 'Stacks', 'move section', 'on a section heading: move the section down. '
+    ('next-turn', 'Stacks', 'to my turn', 'to the next change where it is your turn'),
+    ('section-down', 'Stacks', 'section down', 'on a section heading: move the section down. '
      'open on a heading folds or unfolds it.'),
-    ('section-up', 'Stacks', 'move section', 'on a section heading: move the section up'),
+    ('section-up', 'Stacks', 'section up', 'on a section heading: move the section up'),
     ('rebase', 'Stacks and changes', 'rebase', 'rebase the stack onto the base branch, without '
      'touching any checkout. On a conflict the author is asked to rebase.'),
     ('next-pane', 'Change', 'next pane', 'next pane: stack, commit message, files, comments, '
      'diff'),
-    ('thread-patch-set', 'Threads', 'own PS', 'show the thread on its own patch set: the diff '
+    ('thread-patch-set', 'Threads', 'thread on its PS', 'show the thread on its own patch set: the diff '
      'against its parent, at the thread. Again (or back in the diff) returns to the '
      'comparison before.'),
     ('sidebar', 'Change', 'sidebar', 'hide or show the left column (stack, files, comments), '
      'so the diff gets the whole width. The setting tui.sidebar (auto, shown, hidden) picks the '
      'start, auto hides it below 100 columns.'),
     ('next-change', 'Change', 'next change', 'the next change of the stack (above)'),
-    ('prev-change', 'Change', 'prev change', 'the previous change of the stack (below)'),
-    ('next-file', 'Change', 'file', 'next file'),
-    ('prev-file', 'Change', 'file', 'previous file'),
-    ('next-chunk', 'Change', 'chunk', 'in the diff: to the next changed lines'),
-    ('prev-chunk', 'Change', 'chunk', 'in the diff: to the previous changed lines'),
-    ('next-thread', 'Change', 'thread', 'in the diff: to the next thread'),
-    ('prev-thread', 'Change', 'thread', 'in the diff: to the previous thread'),
+    ('prev-change', 'Change', 'previous change', 'the previous change of the stack (below)'),
+    ('next-file', 'Change', 'next file', 'next file'),
+    ('prev-file', 'Change', 'previous file', 'previous file'),
+    ('next-chunk', 'Change', 'next chunk', 'in the diff: to the next changed lines'),
+    ('prev-chunk', 'Change', 'previous chunk', 'in the diff: to the previous changed lines'),
+    ('next-thread', 'Change', 'next thread', 'in the diff: to the next thread, at the '
+     'file\'s end in the next file with threads'),
+    ('prev-thread', 'Change', 'previous thread', 'in the diff: to the previous thread'),
+    ('next-unresolved', 'Change', 'next unresolved', 'in the diff: to the next unresolved '
+     'thread, at the file\'s end in the next file with one'),
+    ('prev-unresolved', 'Change', 'previous unresolved', 'in the diff: to the previous unresolved '
+     'thread, also in the files before'),
     ('comment', 'Change', 'comment', 'in the diff: comment on the cursor line, or on the whole '
      'file on rows without a line number. On a thread it replies. In the files: comment on '
      'the file. It stays a draft until sent.'),
-    ('file-comment', 'Change', 'on file', 'comment on the whole file'),
-    ('more-context', 'Change', 'context', 'more context around the changes, up to the whole '
+    ('file-comment', 'Change', 'comment on file', 'comment on the whole file'),
+    ('comment-above', 'Change', 'comment above', 'in the diff: comment on the line above the '
+     'cursor line, like vim\'s O, its box opens between the two lines'),
+    ('more-context', 'Change', 'more context', 'more context around the changes, up to the whole '
      'file'),
-    ('less-context', 'Change', 'context', 'less context around the changes'),
+    ('less-context', 'Change', 'less context', 'less context around the changes'),
     ('vimdiff', 'Change', 'vimdiff', 'the file\'s diff in vimdiff'),
     ('patch-sets', 'Change', 'patch sets', 'the patch sets: when, by whom, their type, votes '
      'and comments, to choose the versions to compare. l unfolds a patch set, Enter shows the '
      'diff (on a thread: at the thread).'),
-    ('set-a', 'Patch sets', 'A', 'in the patch sets: the row\'s version on the left side (A), '
+    ('set-a', 'Patch sets', 'pick left side', 'in the patch sets: the row\'s version on the left side (A), '
      '< too'),
-    ('set-b', 'Patch sets', 'B', 'in the patch sets: the row\'s patch set on the right side (B), '
+    ('set-b', 'Patch sets', 'pick right side', 'in the patch sets: the row\'s patch set on the right side (B), '
      '> too'),
-    ('compare-prompt', 'Patch sets', 'type', 'in the patch sets: type the versions to compare: '
+    ('compare-prompt', 'Patch sets', 'type versions', 'in the patch sets: type the versions to compare: '
      '"1 3", "2 current" or "base 2". Empty: the whole change, latest patch set.'),
     ('search', 'Change', 'search', 'in the diff: search the file for a text, from the cursor '
      'on, on both sides. Lower case finds any case. Up and Down in the prompt go through the '
@@ -145,12 +152,12 @@ ACTIONS = (
      'where it looks: the lines shown, the whole file (opens the gaps with matches), the file '
      'and the comments, only the comments. The setting tui.search (shown, file, all, '
      'comments) picks the start.'),
-    ('search-next', 'Change', 'match', 'in the diff: to the next match of the search, also '
+    ('search-next', 'Change', 'next match', 'in the diff: to the next match of the search, also '
      'after its marks were removed'),
-    ('search-prev', 'Change', 'match', 'in the diff: to the previous match of the search'),
-    ('search-clear', 'Change', 'unmark', 'remove the marks of the search. The next match key '
+    ('search-prev', 'Change', 'previous match', 'in the diff: to the previous match of the search'),
+    ('search-clear', 'Change', 'unmark matches', 'remove the marks of the search. The next match key '
      'brings them back.'),
-    ('fold-all', 'Change', 'fold all', 'fold all threads, or unfold all if all are folded'),
+    ('fold-all', 'Change', 'fold/unfold all', 'fold all threads, or unfold all if all are folded'),
     ('unfold-every', 'Change', 'unfold all', 'unfold all threads'),
     ('fold-every', 'Change', 'fold all', 'fold all threads'),
     ('reviewed', 'Change', 'reviewed', 'mark the file reviewed, or unmark it. The mark stays while '
@@ -163,10 +170,10 @@ ACTIONS = (
     ('edit-draft', 'Threads', 'edit draft', 'edit your draft in the thread. Empty deletes it.'),
     ('done', 'Threads', 'Done', 'reply "Done" as a draft, which resolves the thread'),
     ('ack', 'Threads', 'Ack', 'reply "Ack" as a draft, which resolves the thread'),
-    ('resolve', 'Threads', 'resolved', 'whether sending the draft resolves the thread or makes '
+    ('resolve', 'Threads', 'resolved on/off', 'whether sending the draft resolves the thread or makes '
      'it unresolved again (Gerrit\'s Resolved checkbox). Without a draft, it makes an empty '
      'one.'),
-    ('send', 'Threads', 'send', 'send all drafts of this change, with an optional message on '
+    ('send', 'Threads', 'reply and send', 'send all drafts of this change, with an optional message on '
      'the whole change, which tells the author to start'),
 )
 ACTION_NAMES = tuple(action[0] for action in ACTIONS)
@@ -182,7 +189,9 @@ VIM_KEYS = {
     'next-pane': 'Tab', 'next-file': '] f', 'prev-file': '[ f',
     'next-change': '] s', 'prev-change': '[ s',
     'next-chunk': '] c', 'prev-chunk': '[ c', 'next-thread': '] t', 'prev-thread': '[ t',
-    'comment': 'c', 'file-comment': 'C', 'more-context': '+,=', 'less-context': '-',
+    'next-unresolved': '] u', 'prev-unresolved': '[ u',
+    # Like vim's o and O, which open a line below and above
+    'comment': 'c,o', 'comment-above': 'O', 'file-comment': 'C', 'more-context': '+,=', 'less-context': '-',
     'vimdiff': 't', 'patch-sets': 'p', 'fold-all': 'i', 'unfold-every': 'z R',
     'fold-every': 'z M',
     'reply': 'r', 'edit-draft': 'e', 'done': 'y', 'ack': 'Y', 'resolve': 'x', 'send': 's',
@@ -207,6 +216,9 @@ PRESETS = {
               'page-down': 'C-v,PageDown', 'page-up': 'M-v,PageUp', 'open': 'Enter,C-f',
               'next-chunk': 'n', 'prev-chunk': 'p', 'next-file': 'N', 'prev-file': 'P',
               'next-thread': ']', 'prev-thread': '[', 'patch-sets': 'b',
+              'next-unresolved': 'M-}', 'prev-unresolved': 'M-{',
+              # C-o like Emacs' open-line
+              'comment': 'c', 'comment-above': 'C-o',
               # Like delete-other-windows
               'sidebar': 'C-x 1', 'set-b': 'M-b', 'thread-patch-set': 'C-c p',
               # Emacs' M-s holds its search commands
@@ -221,6 +233,9 @@ PRESETS = {
                'back': 'u,h,Esc', 'open': 'o,l,Enter',
                'next-chunk': 'n', 'prev-chunk': 'p', 'next-thread': 'N', 'prev-thread': 'P',
                'next-file': ']', 'prev-file': '[', 'send': 'a', 'patch-sets': 'b',
+               # o opens here
+               'comment': 'c', 'comment-above': 'O',
+               'next-unresolved': 'C-n', 'prev-unresolved': 'C-p',
                # Gerrit's r marks the file reviewed
                'reviewed': 'r,m,Space', 'reply': 'R', 'reload': 'C-r',
                'next-change': 'M-n', 'prev-change': 'M-p',
@@ -394,36 +409,25 @@ class Keymap:
         return '  '.join(parts)
 
     def help_lines(self, width):
-        """The help screen: the keys of every action with a few words, by
-        group, in two columns when the screen is wide enough.
+        """The help screen: the keys of every action with a few words, one
+        section per group, in two columns when the screen is wide enough.
         """
-        entries = []
-        group = None
-        for name, action_group, label, _description in ACTIONS:
-            if action_group != group:
-                entries.append((None, action_group))
-                group = action_group
+        groups = {}
+        for name, group, label, _description in ACTIONS:
             keys = ' '.join(key_label(alternative) for alternative in self.labels(name))
             if keys:
-                entries.append((keys, label))
+                groups.setdefault(group, []).append((keys, label))
         lines = [f'plustwo keys ({self.preset})   mouse: click, double click, wheel', '']
-        cell = 30
+        cell = min(max(len(f'  {keys:<9.9} {label}') for entries in groups.values()
+                       for keys, label in entries) + 2, 36)
         columns = 2 if width >= 2 * cell + 2 else 1
-        row = []
-        for keys, label in entries:
-            if keys is None:
-                if row:
-                    lines.append(''.join(row))
-                    row = []
-                lines.append(label)
-                continue
-            row.append(f'  {keys:<9.9} {label}'[:cell].ljust(cell))
-            if len(row) == columns:
-                lines.append(''.join(row).rstrip())
-                row = []
-        if row:
-            lines.append(''.join(row).rstrip())
-        lines += ['', 'Comment box: Enter saves, \\ at the end, Alt+Enter or Ctrl+J start a new line.',
+        for group, entries in groups.items():
+            lines.append(group)
+            for start in range(0, len(entries), columns):
+                lines.append(''.join(f'  {keys:<9.9} {label}'[:cell].ljust(cell)
+                                     for keys, label in entries[start:start + columns]).rstrip())
+        lines += ['', 'Comment box: Enter saves. Alt+Enter, Ctrl+J or \\ at the end start a new '
+                  'line. Esc on text asks once, again discards it.',
                   'Blue lines come from changes below, purple partly.']
         return lines
 
@@ -672,8 +676,10 @@ class Interface:
     def back(self):
         """Goes back to the previous view. Returns False at the first one."""
         if len(self._views) > 1:
-            self._views.pop()
+            note = getattr(self._views.pop(), 'leaving_note', lambda: '')()
             self._views[-1].reload()
+            if note:
+                self.say(note)
             return True
         return False
 
@@ -796,7 +802,10 @@ class Interface:
         # The keys in bold, what they do dimmed. The help key stays, the
         # other hints go from the end when the line is too narrow.
         entries = []
-        for names, label in view.footer():
+        if getattr(self, '_box_footer', None):
+            # A text box is open: its keys
+            entries = [((), keys, label) for keys, label in self._box_footer()]
+        for names, label in () if entries else view.footer():
             keys = '/'.join(filter(None, (self.keymap.label(name) for name in names)))
             if keys:
                 entries.append((names, keys, label))
@@ -897,7 +906,8 @@ class Interface:
         finally:
             os.unlink(path)
 
-    def write_text(self, title, initial='', anchor=None):
+    def write_text(self, title, initial='', anchor=None, save='save', choice=None,
+                   lines=()):
         """Lets the reviewer write a comment in a small box, so the diff
         stays visible. Returns the text, '' if left empty, None if
         cancelled.
@@ -908,26 +918,92 @@ class Interface:
         row, or above it when there is no room. Without one it sits above
         the bottom line, as wide as the screen.
 
-        Enter saves, Alt-Enter starts a new line, Esc or C-g cancels, ^E
-        continues in the editor. With the emacs keys, C-e goes to the end of
-        the line, and C-x C-e continues in the editor.
+        save is what Enter does, for the hints. choice is (label, Choice):
+        a row above the text to pick a value, like the vote of Gerrit's
+        Reply dialog. Tab, or Up on the first line, goes there. lines are
+        rows of information above it.
+
+        Enter saves, Alt-Enter starts a new line, Esc or C-g cancels (with
+        text in the box only when pressed twice), ^E continues in the
+        editor. With the emacs keys, C-e goes to the end of the line, and
+        C-x C-e continues in the editor.
         """
         emacs = 'emacs' == self.keymap.preset
         box = TextBox(initial, emacs)
+        # Whether the keys go to the choice's row instead of the text
+        state = {'on_choice': False}
+
+        def footer():
+            keys = box_keys(emacs, save, box.discarding)
+            if choice:
+                keys.insert(1, ('Tab', 'message' if state['on_choice'] else 'vote'))
+            return keys
+
+        self._box_footer = footer
         curses.curs_set(1)
         self._screen.timeout(-1)
         try:
             while True:
+                extra = list(lines)
+                if choice:
+                    extra.append((f'{choice[0]}: {choice[1].text()}', state['on_choice']))
                 place = anchor
                 if isinstance(anchor, DiffGap):
                     # The box's height depends on its width, which the gap
                     # gives: once to learn the width, once with the height.
-                    place = anchor.place(TEXT_BOX_ROWS + 2)
-                    place = anchor.place(text_box_height(box, place[2]))
+                    place = anchor.place(TEXT_BOX_ROWS + 2 + len(extra))
+                    place = anchor.place(text_box_height(box, place[2]) + len(extra))
                 self._draw(refresh=False)
-                self._draw_text_box(box, title, place)
+                self._draw_text_box(box, title, place, footer(), extra)
                 self._screen.refresh()
                 key = self._screen.get_wch()
+                cancel = '\x07' == key
+                if '\x1b' == key:
+                    # Alt-Enter arrives as Esc and Enter, a lone Esc cancels.
+                    self._screen.timeout(ESC_DELAY_MS)
+                    try:
+                        following = self._screen.get_wch()
+                    except curses.error:
+                        following = None
+                    finally:
+                        self._screen.timeout(-1)
+                    if following is None:
+                        cancel = True
+                    elif '\x1b' == following:
+                        # Two quick presses
+                        box.cancel()
+                        cancel = True
+                    else:
+                        box.keep()
+                        if following in ('\n', '\r'):
+                            box.insert('\n')
+                        elif '[' == following:
+                            # Shift+Enter, where the terminal tells it apart:
+                            # CSI 13;2u or CSI 27;2;13~
+                            sequence = self._read_sequence()
+                            if sequence in ('13;2u', '27;2;13~'):
+                                box.insert('\n')
+                        continue
+                if cancel:
+                    if box.cancel():
+                        return None
+                    continue
+                box.keep()
+                if choice and ('\t' == key or (curses.KEY_UP == key and not state['on_choice']
+                                               and '\n' not in box.text[:box.position])):
+                    state['on_choice'] = not state['on_choice']
+                    curses.curs_set(0 if state['on_choice'] else 1)
+                    continue
+                if state['on_choice'] and key not in ('\r', curses.KEY_ENTER):
+                    if curses.KEY_DOWN == key:
+                        state['on_choice'] = False
+                        curses.curs_set(1)
+                    elif not choice[1].key(key) and isinstance(key, str) and key.isprintable():
+                        # Typing goes back to the message
+                        state['on_choice'] = False
+                        curses.curs_set(1)
+                        box.key(key)
+                    continue
                 if '\n' == key:
                     # Ctrl+J: Enter is \r, see curses.nonl() in run()
                     box.insert('\n')
@@ -945,35 +1021,16 @@ class Interface:
                         box.insert('\n')
                         continue
                     return box.text.strip()
-                if '\x07' == key:
-                    return None
                 if emacs and '\x18' == key:
                     # C-x C-e continues in the editor, like in a shell
                     if '\x05' == self._screen.get_wch():
                         return self.edit_text(box.text)
                     continue
-                if '\x1b' == key:
-                    # Alt-Enter arrives as Esc and Enter, a lone Esc cancels.
-                    self._screen.timeout(ESC_DELAY_MS)
-                    try:
-                        following = self._screen.get_wch()
-                    except curses.error:
-                        return None
-                    finally:
-                        self._screen.timeout(-1)
-                    if following in ('\n', '\r'):
-                        box.insert('\n')
-                    elif '[' == following:
-                        # Shift+Enter, where the terminal tells it apart:
-                        # CSI 13;2u or CSI 27;2;13~
-                        sequence = self._read_sequence()
-                        if sequence in ('13;2u', '27;2;13~'):
-                            box.insert('\n')
-                elif '\x05' == key and not emacs:
+                if '\x05' == key and not emacs:
                     return self.edit_text(box.text)
-                else:
-                    box.key(key)
+                box.key(key)
         finally:
+            self._box_footer = None
             if isinstance(anchor, DiffGap):
                 anchor.close()
             curses.curs_set(0)
@@ -999,8 +1056,11 @@ class Interface:
             self._screen.timeout(-1)
         return sequence
 
-    def _draw_text_box(self, box, title, anchor):
-        """Draws the box of write_text() and puts the terminal cursor in it."""
+    def _draw_text_box(self, box, title, anchor, keys=(), extra=()):
+        """Draws the box of write_text() and puts the terminal cursor in it.
+        keys go into the frame's bottom, extra are (text, focused) rows
+        above the text.
+        """
         height, width = self._screen.getmaxyx()
         row, left, box_width = anchor or (height - 2, 0, width - 1)
         box_width = max(box_width, 20)
@@ -1008,23 +1068,31 @@ class Interface:
         inside = min(len(rows), TEXT_BOX_ROWS)
         cursor_row, cursor_column = box.cursor_position(box_width - 2)
         first = max(0, min(cursor_row - inside + 1, len(rows) - inside))
+        above = len(extra)
         top = row + 1
-        if not anchor or top + inside + 2 > height - 1:
-            top = max(row - inside - 2, 0)
-        hint = (' ⏎ save  \\⏎ new line  C-g cancel  C-x C-e editor '
-                if box.emacs else ' ⏎ save  \\⏎ new line  Esc cancel  ^E editor ')
+        if not anchor or top + inside + above + 2 > height - 1:
+            top = max(row - inside - above - 2, 0)
+        hint = ' ' + '  '.join(f'{key} {label}' for key, label in keys) + ' '
+        bottom = top + above + inside + 1
         self.text(top, left, '┌' + '─' * (box_width - 2) + '┐', curses.A_BOLD)
         self.text(top, left + 2, f' {title} ', curses.A_BOLD)
-        self.text(top + inside + 1, left, '└' + '─' * (box_width - 2) + '┘', curses.A_BOLD)
+        self.text(bottom, left, '└' + '─' * (box_width - 2) + '┘', curses.A_BOLD)
         if len(hint) + 4 < box_width:
-            self.text(top + inside + 1, left + box_width - len(hint) - 2, hint, self.dim())
+            discarding = box.discarding
+            self.text(bottom, left + box_width - len(hint) - 2, hint,
+                      curses.A_BOLD if discarding else self.dim())
+        for offset, (line, focused) in enumerate(extra):
+            self.text(top + 1 + offset, left, '│', curses.A_BOLD)
+            self.text(top + 1 + offset, left + 1, f'{line:<{box_width - 2}}'[:box_width - 2],
+                      curses.A_REVERSE if focused else self.dim())
+            self.text(top + 1 + offset, left + box_width - 1, '│', curses.A_BOLD)
         for offset in range(inside):
             line = rows[first + offset] if first + offset < len(rows) else ''
-            self.text(top + 1 + offset, left, '│', curses.A_BOLD)
-            self.text(top + 1 + offset, left + 1, f'{line:<{box_width - 2}}')
-            self.text(top + 1 + offset, left + box_width - 1, '│', curses.A_BOLD)
+            self.text(top + 1 + above + offset, left, '│', curses.A_BOLD)
+            self.text(top + 1 + above + offset, left + 1, f'{line:<{box_width - 2}}')
+            self.text(top + 1 + above + offset, left + box_width - 1, '│', curses.A_BOLD)
         try:
-            self._screen.move(top + 1 + cursor_row - first, left + 1 + cursor_column)
+            self._screen.move(top + 1 + above + cursor_row - first, left + 1 + cursor_column)
         except curses.error:
             pass
 
@@ -1064,6 +1132,29 @@ class Interface:
                     answer += key
         finally:
             curses.curs_set(0)
+            self._screen.timeout(RELOAD_INTERVAL_MS)
+
+    def choose(self, question, choice):
+        """Picks a value of a Choice in the bottom line: Left, Right or a
+        digit, Enter takes it. Returns the value, None on Esc or C-g.
+        """
+        height, width = self._screen.getmaxyx()
+        self._screen.timeout(-1)
+        try:
+            while True:
+                self._draw(refresh=False)
+                self._screen.move(height - 1, 0)
+                self._screen.clrtoeol()
+                line = f'{question} {choice.text()}   ←/→ or a digit, Enter takes it'
+                self.text(height - 1, 0, line, curses.A_BOLD, width)
+                self._screen.refresh()
+                key = self._screen.get_wch()
+                if key in ('\r', '\n', curses.KEY_ENTER):
+                    return choice.value
+                if key in ('\x1b', '\x07', 'q'):
+                    return None
+                choice.key(key)
+        finally:
             self._screen.timeout(RELOAD_INTERVAL_MS)
 
     def ask_key(self, question):
@@ -1135,6 +1226,59 @@ def pager_environment():
 TEXT_BOX_ROWS = 6
 
 
+def box_keys(emacs, save='save', discarding=False):
+    """The keys of the comment box for its frame and the footer: (keys,
+    what they do).
+    """
+    cancel = 'C-g' if emacs else 'Esc'
+    keys = [('⏎', save), ('Alt-⏎', 'new line'),
+            (cancel, 'again discards' if discarding else 'cancel'),
+            ('C-x C-e' if emacs else '^E', 'editor')]
+    return keys
+
+
+class Choice:
+    """A value picked from a few, like a vote from -2 to +2: Left and Right
+    move, a digit picks, - before it a negative one.
+    """
+
+    def __init__(self, values, current=0):
+        self.values = tuple(values)
+        self.index = self.values.index(current) if current in self.values else 0
+        self._minus = False
+
+    @property
+    def value(self):
+        return self.values[self.index]
+
+    def key(self, key):
+        """Handles a key from get_wch(). Returns whether it was one of the
+        choice's keys.
+        """
+        if key in (curses.KEY_LEFT, curses.KEY_RIGHT):
+            step = 1 if curses.KEY_RIGHT == key else -1
+            self.index = max(0, min(self.index + step, len(self.values) - 1))
+        elif '-' == key:
+            self._minus = True
+            return True
+        elif '+' == key:
+            pass
+        elif isinstance(key, str) and key.isdigit():
+            value = -int(key) if self._minus else int(key)
+            if value in self.values:
+                self.index = self.values.index(value)
+        else:
+            self._minus = False
+            return False
+        self._minus = False
+        return True
+
+    def text(self):
+        """The values in a row, the chosen one in brackets: -2 -1 [0] +1 +2."""
+        return ' '.join(f'[{value:+d}]' if index == self.index else f' {value:+d} '
+                        for index, value in enumerate(self.values)).replace('+0', ' 0')
+
+
 def text_box_height(box, width):
     """Rows the comment box takes at a width, with its frame."""
     return min(len(box.rows(max(width, 20) - 2)), TEXT_BOX_ROWS) + 2
@@ -1179,6 +1323,22 @@ class TextBox:
         self.position = len(text)
         # Whether Emacs' editing keys work: C-a, C-e, C-f, C-b, C-k, C-d
         self.emacs = emacs
+        # Whether the cancel key was pressed once with text in the box
+        self.discarding = False
+
+    def cancel(self):
+        """Esc (C-g with the emacs keys): whether the box closes. An empty
+        box closes at once. With text in it, the first press only warns,
+        the next one discards. Any other key ends the warning, see keep().
+        """
+        if not self.text.strip() or self.discarding:
+            return True
+        self.discarding = True
+        return False
+
+    def keep(self):
+        """A key other than the cancel key: the text stays."""
+        self.discarding = False
 
     def insert(self, characters):
         """Inserts at the cursor."""
@@ -1448,10 +1608,13 @@ class StackView:
                 column += 8
             turn = change.turn()
             yours = 'your-turn' in self._sections[row_content[1]]
-            out(row, column, f'{TURN_LABELS.get(turn, turn) if not yours else "▶ yours":<10} ',
+            # The same rule as the Your turn section: "you" there and here
+            mine = ('▶ submit' if core.SUBMITTABLE == turn else '▶ you') if yours else None
+            out(row, column, f'{mine or TURN_LABELS.get(turn, turn):<10} ',
                 attributes | (curses.A_BOLD | curses.color_pair(3) if yours
                               else secondary_text))
-            out(row, column + 11, core.comment_counts(change), attributes | secondary_text)
+            out(row, column + 11, core.comment_counts(change, short=True),
+                attributes | secondary_text)
 
     def mouse(self, row, _column, kind):
         """A click selects a row, a double click opens it."""
@@ -1581,15 +1744,13 @@ def vote_action(interface, change, action):
         if not change.patch_sets:
             interface.say(f'{change.short_id()} has no patch set yet, nothing to vote on.', ERROR)
             return
-        answer = interface.ask(f'Code-Review on PS{change.latest_patch_set()} (+2 +1 0 -1 -2):')
-        if not answer:
+        value = interface.choose(f'Code-Review on PS{change.latest_patch_set()}:',
+                                 Choice(core.vote_values(), change.own_vote()))
+        if value is None or value == change.own_vote():
             return
-        if not re.fullmatch(r'[+-]?[0-2]', answer):
-            interface.say('A vote is one of +2, +1, 0, -1, -2.', ERROR)
-            return
-        number = core.set_vote(change.change_id, core.CODE_REVIEW, int(answer))
+        number = core.set_vote(change.change_id, core.CODE_REVIEW, value)
         interface.after_write()
-        interface.say(f'Code-Review{int(answer):+d} on PS{number}.' if int(answer)
+        interface.say(f'Code-Review{value:+d} on PS{number}.' if value
                       else 'Code-Review vote removed.')
     elif 'verified' == action:
         core.require_verified(change.change_id, not change.verified_required)
@@ -2448,12 +2609,16 @@ class DiffPane:
             self.side = ('old', 'new')[side]
         return not after
 
-    def go_to_next_thread(self, forward, height):
+    def go_to_next_thread(self, forward, height, numbers=None, from_edge=False):
         """Puts the cursor on the first row of the next (or previous)
-        thread. Returns whether there is one.
+        thread, only of the threads with these numbers if given. from_edge
+        starts from the top (or the bottom). Returns whether there is one.
         """
         starts = [index for index, row in enumerate(self.rows)
-                  if 'thread' == row[0] and 0 == row[2]]
+                  if 'thread' == row[0] and 0 == row[2] and (numbers is None or row[1] in numbers)]
+        if from_edge and starts:
+            self._jump(starts[0] if forward else starts[-1], height)
+            return True
         return self._jump_to_one_of(starts, forward, height)
 
     def _jump_to_one_of(self, indexes, forward, height):
@@ -2491,6 +2656,24 @@ class DiffPane:
                and self._continues[self.rows[index + 1][1]]):
             index += 1
         return index
+
+    def line_above(self, index):
+        """The first row of the line above the line at row index: the
+        nearest one with a line number, over threads, gaps and the rows a
+        line wrapped onto. None at the top.
+        """
+        while (0 < index < len(self.rows) and 'diff' == self.rows[index][0]
+               and self._continues[self.rows[index][1]]):
+            index -= 1
+        index -= 1
+        while index >= 0:
+            if 'diff' == self.rows[index][0] and self.numbers[index] != (None, None):
+                while (0 < index and 'diff' == self.rows[index][0]
+                       and self._continues[self.rows[index][1]]):
+                    index -= 1
+                return index
+            index -= 1
+        return None
 
     def cursor_place(self):
         """(line, side) of the cursor line, on the cursor's side if the line
@@ -2587,15 +2770,18 @@ def thread_rows(comment, width, expanded, core, note='', origin='', patch_sets=(
         # The patch set the message belongs to, like Gerrit's "Patchset 3"
         patch_set = (f' · PS{patch_sets[message_index]}'
                      if message_index < len(patch_sets) and patch_sets[message_index] else '')
-        prefix = f' {name}{patch_set}: '
+        # The reviewer's own messages, the viewer's, get a bar in their
+        # colour on the left, so they stand out from the author's.
+        bar = ('▎', name_colour, tint, 0) if reviewer else (' ', -1, tint, 0)
+        # The name on a row of its own, like Gerrit, the text below it at
+        # the box's whole width
+        rows.append([*pad, ('│', *border), bar, (name, name_colour, tint, 0),
+                     (patch_set.ljust(inner - len(name)), SECONDARY, tint, 0), ('│', *border)])
         lines = [line for paragraph in core.message_text(message).split('\n')
-                 for line in textwrap.wrap(paragraph, max(inner - len(prefix), 10)) or ['']]
-        for number, line in enumerate(lines):
-            start_parts = [(f' {name}', name_colour, tint, 0),
-                           (patch_set, SECONDARY, tint, 0), (': ', name_colour, tint, 0)] \
-                if 0 == number else [(' ' * len(prefix), -1, tint, 0)]
-            rows.append([*pad, ('│', *border), *start_parts,
-                         (line.ljust(inner + 1 - len(prefix)), -1, tint, 0), ('│', *border)])
+                 for line in textwrap.wrap(paragraph, max(inner - 1, 10)) or ['']]
+        for line in lines:
+            rows.append([*pad, ('│', *border), bar, (' ' + line.ljust(inner - 1), -1, tint, 0),
+                         ('│', *border)])
     rows.append([*pad, ('└' + '─' * (inner + 1) + '┘', *border)])
     return [row + [(' ', RIGHT_MARK, -1, 0)] for row in rows]
 
@@ -2873,7 +3059,8 @@ class ChangeView:
             entries = [(('open',), 'go to')] + thread_footer(self._selected_comment())
         elif self._diff.rows and self._diff.thread_at(self._diff.cursor) is not None:
             entries = thread_footer(self._thread_at_cursor()) + [
-                (('comment',), 'new thread'), (('open',), 'fold')]
+                (('comment',), 'new thread'),
+                (('open',), 'fold' if self._is_expanded(self._thread_at_cursor()) else 'unfold')]
             if self._diff.is_tall(self._diff_height()):
                 entries.insert(0, (('down', 'up'), 'read on'))
         elif self._diff.rows and self._diff.gap_at(self._diff.cursor) is not None:
@@ -2881,6 +3068,8 @@ class ChangeView:
         else:
             entries = [(('comment',), 'comment'), (('side-old', 'side-new'), 'side'),
                        (('next-chunk', 'prev-chunk'), 'chunk')]
+            if change.unfinished_comments():
+                entries.append((('next-unresolved', 'prev-unresolved'), 'unresolved'))
             if self._interface.marking:
                 entries += [(('search-next', 'search-prev'), 'match'), (('search-clear',), 'unmark')]
             if self._threads_at_cursor():
@@ -2928,7 +3117,7 @@ class ChangeView:
                     self._stack_index = self._current_in_stack()
                 self._submittable = core.submittable_in(self._stack)
                 self._message = core.commit_message_parts(change.commit)
-                # Where it is the user's turn, like the dashboard's "▶ yours"
+                # Where it is the user's turn, like the dashboard's "▶ you"
                 user = core.current_user()
                 self._yours = {other.change_id for other in self._stack
                                if 'your-turn' in other.sections(user)}
@@ -3014,6 +3203,15 @@ class ChangeView:
             out(0, max(area.width - len(version) - len(state) - len(behind) - 2, 1), behind,
                 self._interface.colour_pairs.attribute(0, 1 if 'conflicts' == self._behind
                                                        else 3) | curses.A_BOLD)
+        drafts = change.draft_count()
+        if drafts:
+            # Unsent drafts, in the drafts' colour, so they aren't forgotten
+            label = f' {drafts} draft{"" if 1 == drafts else "s"} '
+            behind_width = len(behind) + 1 if self._behind else 0
+            out(0, max(area.width - len(version) - len(state) - behind_width - len(label) - 2,
+                       1), label,
+                self._interface.colour_pairs.attribute(0, STATUS_COLOURS['draft'])
+                | curses.A_BOLD)
         out(0, max(area.width - len(version), 1), version, header_dim)
         patch_sets = patch_set_count(len(change.patch_sets))
         try:
@@ -3103,8 +3301,21 @@ class ChangeView:
                 lines[self._message_scroll:self._message_scroll + height]):
             out(top + row, left, text, attributes, left + width)
 
+    def leaving_note(self):
+        """What the reviewer should know when leaving the change: drafts
+        not sent yet.
+        """
+        drafts = self._change.draft_count() if self._change else 0
+        if not drafts:
+            return ''
+        return (f'{drafts} draft{"" if 1 == drafts else "s"} of {self._change.short_id()} '
+                f'not sent, {self._interface.keymap.label("send")} sends.')
+
     def _switch_to(self, change_id):
         """Shows another change of the stack."""
+        note = self.leaving_note() if change_id != self._change_id else ''
+        if note:
+            self._interface.say(note)
         self._change_id = change_id
         self._file_index = None
         self._comment_index = 0
@@ -3162,29 +3373,52 @@ class ChangeView:
                     left + width)
 
     def _draw_comments(self):
-        """Draws the thread list."""
+        """Draws the thread list: unresolved first, each with ↩ when the
+        author answered last and the start of its last message.
+        """
         out = self._interface.text
+        core = self._interface.core
         self._frame(COMMENTS, 'Comments')
         top, left, height, width = self._layout[COMMENTS]
-        comments = self._change.comments
+        comments = self._comments()
         if not comments:
             out(top, left, 'none yet', self._interface.dim(), left + width)
-        for index, comment in enumerate(comments[:height]):
+        first = max(0, min(self._comment_index - height + 1, len(comments) - height))
+        # For clicks
+        self._comments_first = first
+        for row, comment in enumerate(comments[first:first + height]):
+            index = first + row
             selected = index == self._comment_index
             attributes = curses.A_REVERSE if selected and COMMENTS == self._focus else 0
             label = comment_label(comment)
-            out(top + index, left, ' ' * width, attributes, left + width)
-            out(top + index, left, f'#{comment.number} ', attributes, left + width)
-            out(top + index, left + 4, f'[{label}]',
-                attributes | status_attribute('draft' if comment.is_draft() else comment.status),
-                left + width)
-            core = self._interface.core
+            out(top + row, left, ' ' * width, attributes, left + width)
+            column = left
+            answered = core.answered_by_author(comment)
+            parts = [(f'#{comment.number}'.ljust(4), attributes),
+                     ('↩ ' if answered else '  ',
+                      attributes | curses.color_pair(3)
+                      if answered else attributes),
+                     (f'[{label}]', attributes | status_attribute(
+                         'draft' if comment.is_draft() else comment.status))]
             shown = self._place_of(comment)
             place = comment.place_label().rsplit('/', 1)[-1]
             if core.PATCHSET_LEVEL == shown.path != comment.place:
                 # Like in Gerrit, a thread on a gone file is on the whole change.
                 place = f'{core.CHANGE_PLACE} ({shown.origin}, {shown.note})'
-            out(top + index, left + 6 + len(label), f' {place}', attributes, left + width)
+            parts.append((f' {place}', attributes))
+            # The last message with text, not one that only changed the status
+            text = next((' '.join(message.text.split()) for message in reversed(comment.messages)
+                         if message.text.strip()), '')
+            if text:
+                parts.append((f'  {text}', attributes | self._interface.dim(attributes)))
+            for text, attribute in parts:
+                out(top + row, column, text, attribute, left + width)
+                column += len(text)
+
+    def _comments(self):
+        """The threads in the comments pane's order."""
+        return self._interface.core.threads_in_list_order(self._change.comments) \
+            if self._change else []
 
     def _markers(self):
         """Threads on the shown file: (side, line) -> numbers of threads."""
@@ -3270,8 +3504,8 @@ class ChangeView:
         return self._files[self._file_index] if self._files else None
 
     def _selected_comment(self):
-        comments = self._change.comments
-        return comments[self._comment_index] if comments else None
+        comments = self._comments()
+        return comments[min(self._comment_index, len(comments) - 1)] if comments else None
 
     def _diff_height(self):
         return self._layout[DIFF][2] if self._layout else 20
@@ -3342,6 +3576,33 @@ class ChangeView:
                 height = self._diff_height()
                 if not self._diff.go_to_thread(comment.number, height) and shown.line is not None:
                     self._diff.go_to_line(shown.line, shown.side, height)
+
+    def _go_to_thread(self, forward, unresolved):
+        """]t and [t: to the next (previous) thread, in the next file with
+        threads at the file's end, like going through all of them. ]u and
+        [u only to unresolved ones.
+        """
+        interface = self._interface
+        self._focus_pane(DIFF)
+        # The diff may not be laid out for this file yet
+        self._prepare_diff()
+        threads = [comment for comment in self._change.comments
+                   if not unresolved or comment.is_unresolved()]
+        numbers = {comment.number for comment in threads}
+        height = self._diff_height()
+        if self._diff.go_to_next_thread(forward, height, numbers):
+            return
+        paths = {self._diff_path(self._place_of(comment).path) for comment in threads}
+        path = interface.core.thread_file_after(self._files, self._selected_file(), paths,
+                                                1 if forward else -1)
+        kind = 'unresolved threads' if unresolved else 'threads'
+        if path is None:
+            interface.say(f'No more {kind} in this direction.')
+            return
+        self._file_index = self._files.index(path)
+        self._prepare_diff()
+        self._diff.go_to_next_thread(forward, self._diff_height(), numbers, from_edge=True)
+        interface.say(f'In {file_label(interface.core, path, self._renames)}.')
 
     def _diff_path(self, path):
         """The file whose diff shows threads on path: threads on the whole
@@ -3531,16 +3792,14 @@ class ChangeView:
         elif action in ('next-file', 'prev-file'):
             step = (count or 1) * (1 if 'next-file' == action else -1)
             self._file_index = max(0, min(self._file_index + step, len(self._files) - 1))
-        elif action in ('next-chunk', 'prev-chunk', 'next-thread', 'prev-thread'):
+        elif action in ('next-chunk', 'prev-chunk'):
             self._focus_pane(DIFF)
             # The diff may not be laid out for this file yet
             self._prepare_diff()
-            forward = action.startswith('next')
-            moved = (self._diff.go_to_chunk(forward, height) if action.endswith('chunk')
-                     else self._diff.go_to_next_thread(forward, height))
-            if not moved:
-                interface.say('No more changes in this direction.' if action.endswith('chunk')
-                              else 'No more threads in this direction.')
+            if not self._diff.go_to_chunk('next-chunk' == action, height):
+                interface.say('No more changes in this direction.')
+        elif action in ('next-thread', 'prev-thread', 'next-unresolved', 'prev-unresolved'):
+            self._go_to_thread(action.startswith('next'), action.endswith('unresolved'))
         elif action in ('search', 'search-next', 'search-prev', 'search-clear'):
             self._search(action)
         elif 'open' == action:
@@ -3582,6 +3841,17 @@ class ChangeView:
             self._new_comment()
         elif 'file-comment' == action:
             self._new_comment(whole_file=True)
+        elif 'comment-above' == action:
+            if DIFF != self._focus:
+                interface.say(f'{interface.keymap.label("comment-above")} comments on the line '
+                              'above the cursor, in the diff.')
+                return
+            index = self._diff.line_above(self._diff.cursor)
+            if index is None:
+                interface.say('No line above to comment on.')
+                return
+            self._diff.set_cursor(index, height)
+            self._new_comment()
         elif action in ('more-context', 'less-context'):
             step = interface.context_step + (-1 if 'less-context' == action else 1)
             interface.context_step = max(0, min(step, len(CONTEXT_STEPS) - 1))
@@ -3672,6 +3942,12 @@ class ChangeView:
         """
         if DIFF != self._focus:
             return False
+        number = self._diff.thread_at(self._diff.cursor)
+        if (ord('h'),) == self._interface.keymap.last and number is not None \
+                and self._is_expanded(self._change.comment(number)):
+            # Like vim: l unfolds the thread, h folds it again
+            self._expanded[number] = False
+            return True
         if self._previous_compare is not None:
             self._thread_patch_set()
             return True
@@ -3729,8 +4005,9 @@ class ChangeView:
                     self._stack_index = self._stack_first(height) + offset
                 elif FILES == pane and offset < len(self._files):
                     self._file_index = offset
-                elif COMMENTS == pane and offset < len(self._change.comments):
-                    self._comment_index = offset
+                elif COMMENTS == pane and offset + getattr(self, '_comments_first', 0) < len(
+                        self._change.comments):
+                    self._comment_index = offset + getattr(self, '_comments_first', 0)
                     self._show_comment_in_diff(self._selected_comment())
                 elif DIFF == pane:
                     self._diff.cursor = self._diff.stop_of(min(self._diff.scroll + offset,
@@ -3879,17 +4156,36 @@ def thread_action(interface, change, comment, action):
     """
     core = interface.core
     if 'send' == action:
-        # Like Gerrit's Reply dialog: a message on the whole change goes
-        # along, if written.
-        message = interface.write_text('Message on the whole change (optional, Enter sends)')
+        # Like Gerrit's Reply dialog: the drafts, a message on the whole
+        # change and the vote go in one step.
+        drafts = change.draft_count()
+        choice = None
+        if change.patch_sets:
+            choice = (f'Code-Review on PS{change.latest_patch_set()}',
+                      Choice(core.vote_values(), change.own_vote()))
+        message = interface.write_text(
+            'Reply', save='send', choice=choice,
+            lines=[(f'{drafts} draft{"" if 1 == drafts else "s"} to send. '
+                    'A message on the whole change, optional:' if drafts
+                    else 'No drafts. A message on the whole change, optional:', False)])
         if message is None:
             interface.say('Nothing sent.')
             return
-        count = core.send_drafts(change.change_id, message)
+        count, voted = core.reply(change.change_id, message,
+                                  choice[1].value if choice else None)
         interface.after_write()
-        interface.say(f'{count} draft(s) sent' + (' with a message.' if message else '.')
-                      if count or message else 'No drafts to send.',
-                      OK if count or message else None)
+        done = []
+        if count:
+            done.append(f'{count} draft{"" if 1 == count else "s"} sent'
+                        + (' with a message' if message else ''))
+        elif message:
+            done.append('message sent')
+        if voted:
+            value = choice[1].value
+            done.append(f'Code-Review{value:+d} on PS{voted}' if value else 'vote removed')
+        text = ', '.join(done)
+        interface.say(text[:1].upper() + text[1:] + '.' if done else 'Nothing to send.',
+                      OK if done else None)
     elif comment is None:
         return
     elif action in ('done', 'ack'):

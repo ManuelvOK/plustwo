@@ -24,7 +24,7 @@ In terminal 1 (you), `cd` to the printed directory and start `plustwo`.
 
 | #   | Do                                                     | Expect                                           |
 |-----|--------------------------------------------------------|--------------------------------------------------|
-| 1   | look at the list                                       | one stack `feature`, two changes, Turn `▶ yours` |
+| 1   | look at the list                                       | one stack `feature`, two changes, Turn `▶ you`   |
 | 2   | `l` on the first change                                | files left, side by side diff right              |
 | 3   | `j` to a.txt, `l` into the diff                        | a gap row `26 common lines`, then line 30        |
 | 4   | `c` on the gap row                                     | the gap opens                                    |
@@ -33,6 +33,7 @@ In terminal 1 (you), `cd` to the printed directory and start `plustwo`.
 | 7   | `m`                                                    | `✓` before a.txt, title `1/2 reviewed`           |
 | 8   | `W` a few times                                        | the title shows the whitespace mode              |
 | 9   | `s`, write "Looks good otherwise", Enter               | drafts sent. Terminal 2 prints `review ...`      |
+| 9a  | `]u` a few times                                       | goes through the unresolved threads of all files |
 | 10  | `h`, `h` back to the list                              | Turn of the first change is now `author`         |
 
 ## As the author
@@ -50,9 +51,9 @@ In terminal 2:
 
 | #   | Do                                                     | Expect                                           |
 |-----|--------------------------------------------------------|--------------------------------------------------|
-| 15  | wait a second                                          | the list reloads, Turn `▶ yours` again           |
+| 15  | wait a second                                          | the list reloads, Turn `▶ you` again             |
 | 16  | open the change, go to thread #1, `Y`, `s`, Enter      | Ack sent, the thread is resolved                 |
-| 17  | `A`                                                    | `CR +2` badge, Turn `▶ submit`                   |
+| 17  | `s`, `Tab`, `2`, Enter                                 | `CR +2` badge, Turn `▶ submit`                   |
 | 18  | `S`, `y`                                               | submitted. Terminal 2 prints `submitted ...`     |
 | 19  | in terminal 2: `plustwo pull`                          | the branch now starts after the submitted change |
 | 20  | `?` in the interface                                   | all keys, `q` quits                              |
