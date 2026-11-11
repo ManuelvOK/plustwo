@@ -422,6 +422,7 @@ class CompareTest(unittest.TestCase):
             self.colour_pairs = None
             self.keymap = tui.Keymap('vim', {})
             self.messages = []
+            self.follow_latest = False
 
         def say(self, text, *_):
             self.messages.append(text)
@@ -461,6 +462,53 @@ class CompareTest(unittest.TestCase):
         self.assertEqual(label(changes[two], '2', '1'), 'comparing 2 [latest] -> 1')
         self.assertEqual(label(changes[two], 'base', '1'), 'comparing base -> 1')
 
+        # Before a send, nothing to compare since it
+        with self.assertRaisesRegex(core.ChangeError, 'Nothing sent yet'):
+            core.last_send_compare(changes[one])
+
+        def fresh(change_id):
+            return next(change for change in core.changes_in_stack(str(repo.path))
+                        if change.change_id == change_id)
+
+        repo.change('comment', one, 'b.txt:1', 'Why b?')
+        self.assertEqual(core.last_send_patch_set(fresh(one)), 1)
+        self.assertEqual(core.compare_label(fresh(one), 'base', 'latest'),
+                         'comparing base -> 1 [latest, your last send]')
+        with self.assertRaisesRegex(core.ChangeError, 'on the latest patch set'):
+            core.last_send_compare(fresh(one))
+        repo.git('commit', '--quiet', '--amend', '--no-edit', '--allow-empty')
+        repo.write('b.txt', 'bb\n')
+        repo.git('commit', '--quiet', '--amend', '-a', '--no-edit')
+        repo.change('upload')
+        self.assertEqual(core.last_send_compare(fresh(one)), ('1', core.LATEST))
+        self.assertEqual(core.compare_label(fresh(one), '1', 'latest'),
+                         'comparing 1 [your last send] -> 2 [latest]')
+        self.assertEqual(core.compare_label(fresh(one), '1', 'latest', short=True),
+                         'comparing 1 [last send] -> 2 [latest]')
+        # Without follow, a newer patch set than the right side is mentioned
+        self.assertEqual(core.compare_label(fresh(one), 'base', '1', follow=False),
+                         'comparing base -> 1 [your last send]   PS2 is newer')
+
+        # Follow latest: a symbolic right side moves along, else it stays
+        self.assertEqual(core.follow_latest(('base', 'latest'), 1, 2, True),
+                         (('base', 'latest'), True))
+        self.assertEqual(core.follow_latest(('base', 'latest'), 1, 2, False),
+                         (('base', '1'), False))
+        self.assertEqual(core.follow_latest(('base', '1'), 1, 2, True), (('base', '1'), False))
+        self.assertEqual(core.follow_latest(('base', 'latest'), 2, 2, True),
+                         (('base', 'latest'), False))
+        self.assertEqual(core.right_side(fresh(one), '2'), core.LATEST)
+        self.assertEqual(core.right_side(fresh(one), '2', follow=False), '2')
+        self.assertEqual(core.right_side(fresh(one), '1'), '1')
+        # The switch is state, off by default
+        self.assertFalse(core.follows_latest())
+        try:
+            core.set_follows_latest(True)
+            self.assertTrue(core.follows_latest())
+        finally:
+            core.set_follows_latest(False)
+        self.assertFalse(core.follows_latest())
+
         interface = self.Interface()
         view = tui.ChangeView(interface, two, str(repo.path))
         view.reload()
@@ -469,7 +517,7 @@ class CompareTest(unittest.TestCase):
         view._switch_to(one)  # pylint: disable=protected-access
         self.assertEqual(view.compare, tui.DEFAULT_COMPARE)
         # A choice the change doesn't have falls back, with a message
-        view._compare = ('1', '2')  # pylint: disable=protected-access
+        view._compare = ('1', '3')  # pylint: disable=protected-access
         view.reload()
         self.assertEqual(view.compare, tui.DEFAULT_COMPARE)
         self.assertIn('gone', interface.messages[-1])

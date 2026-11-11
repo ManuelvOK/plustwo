@@ -69,6 +69,9 @@ every other registered repository (`plustwo register PATH`,
    to start.
 6. `A` votes Code-Review+2, `S` submits: the base branch moves forward to
    the change.
+7. `g l` compares the patch set of your last send with the latest, to see
+   what the author did since. `F` makes the right side follow new uploads
+   (off at the start, kept for later sessions).
 
 `?` lists all keys.
 

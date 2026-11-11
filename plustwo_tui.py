@@ -140,6 +140,11 @@ ACTIONS = (
     ('patch-sets', 'Change', 'patch sets', 'the patch sets: when, by whom, their type, votes '
      'and comments, to choose the versions to compare. l unfolds a patch set, Enter shows the '
      'diff (on a thread: at the thread).'),
+    ('compare-last-send', 'Change', 'last send -> latest', 'compare the patch set of your last '
+     'send with the latest, to see what happened since'),
+    ('follow-latest', 'Change', 'follow latest on/off', 'whether a right side on the latest '
+     'patch set moves to a new upload. Off (the start), it stays and the header says when a '
+     'newer one is there. Kept for later sessions, the web page shares it.'),
     ('set-a', 'Patch sets', 'pick left side', 'in the patch sets: the row\'s version on the left side (A), '
      '< too'),
     ('set-b', 'Patch sets', 'pick right side', 'in the patch sets: the row\'s patch set on the right side (B), '
@@ -200,6 +205,8 @@ VIM_KEYS = {
     # Like vim's C-w o, which keeps only the current window
     'sidebar': 'C-w o,z s',
     'set-a': 'a', 'set-b': 'b', 'compare-prompt': ':', 'thread-patch-set': 'g p',
+    # Not g f, which is vim's "go to file". The interface has no f search.
+    'compare-last-send': 'g l', 'follow-latest': 'F',
     'search': '/', 'search-next': 'n', 'search-prev': 'N',
     # Like the usual vim mapping of C-l to :nohlsearch
     'search-clear': 'C-l',
@@ -221,6 +228,8 @@ PRESETS = {
               'comment': 'c', 'comment-above': 'C-o',
               # Like delete-other-windows
               'sidebar': 'C-x 1', 'set-b': 'M-b', 'thread-patch-set': 'C-c p',
+              # g reloads here
+              'compare-last-send': 'C-c l', 'follow-latest': 'C-c f',
               # Emacs' M-s holds its search commands
               'search': 'C-s', 'search-next': 'M-s n', 'search-prev': 'M-s p',
               # Like Emacs' unhighlight-regexp
@@ -243,6 +252,7 @@ PRESETS = {
                'unfold-every': 'e', 'fold-every': 'E', 'edit-draft': 'w',
                # a sends and b chooses patch sets here
                'set-a': '{', 'set-b': '}',
+               'compare-last-send': 'L', 'follow-latest': 'F',
                # / is Gerrit's search, C-g goes on like a browser's find
                'search-next': 'C-g', 'search-prev': 'M-g'},
 }
@@ -637,6 +647,9 @@ class Interface:
         self.context_step = 0
         # Gerrit's whitespace mode of the diff, one of core.WHITESPACE_MODES
         self.whitespace = core.setting('diff.whitespace', 'none')
+        # Whether a right side on the latest patch set moves to a new upload,
+        # state that the follow-latest key toggles
+        self.follow_latest = core.follows_latest()
         if self.whitespace not in core.WHITESPACE_MODES:
             self.whitespace = 'none'
         # The text searched last in the diff, whether its matches are
@@ -3071,6 +3084,8 @@ class ChangeView:
         # version doesn't have it
         self._previous_compare = None
         self._extra_file = None
+        # The latest patch set at the last reload, to see a new upload
+        self._latest_seen = None
         # The commit message (subject, body, trailers) and how far its box
         # is scrolled
         self._message = ('', '', [])
@@ -3115,6 +3130,11 @@ class ChangeView:
                 entries.append((('open',), 'unfold'))
         if any(not message.sent for comment in change.comments for message in comment.messages):
             entries.append((('send',), 'send'))
+        sent = core.last_send_patch_set(change)
+        if sent is not None and sent != change.latest_patch_set() and \
+                (self._compare[0], core.right_side(change, self._compare[1])) != (
+                    str(sent), core.LATEST):
+            entries.append((('compare-last-send',), 'since last send'))
         if not change.submit_problems():
             entries.append((('submit',), 'submit'))
         elif not change.is_approved(core.CODE_REVIEW):
@@ -3143,6 +3163,14 @@ class ChangeView:
                     self._previous_compare = None
                     self._interface.say('The patch sets compared before are gone, '
                                         'showing base -> latest.')
+                now = change.latest_patch_set()
+                if self._latest_seen is not None:
+                    self._compare, moved = core.follow_latest(
+                        self._compare, self._latest_seen, now, self._interface.follow_latest)
+                    if moved:
+                        self._interface.say(f'PS{now} uploaded, now ' + core.compare_label(
+                            change, *self._compare))
+                self._latest_seen = now
                 # The commit message comes first, like in Gerrit.
                 # A renamed file is listed once, under its new name.
                 self._renames = core.renames_of(change.commit)
@@ -3260,7 +3288,10 @@ class ChangeView:
         out(0, max(area.width - len(version), 1), version, header_dim)
         patch_sets = patch_set_count(len(change.patch_sets))
         try:
-            comparing = core.compare_label(change, *self._compare)
+            follow = self._interface.follow_latest
+            comparing = core.compare_label(change, *self._compare, follow=follow)
+            if len(patch_sets) + 3 + len(comparing) > area.width - 2:
+                comparing = core.compare_label(change, *self._compare, follow=follow, short=True)
         except core.ChangeError as error:
             comparing = str(error)
         header = f'{patch_sets}   {comparing}'
@@ -3367,6 +3398,7 @@ class ChangeView:
         # Like in Gerrit, every change opens with its default comparison.
         self._compare = DEFAULT_COMPARE
         self._previous_compare = self._extra_file = None
+        self._latest_seen = None
         # From the stack pane, the focus stays there to go on.
         if STACK != self._focus:
             self._focus = self._left_pane = FILES
@@ -3858,6 +3890,22 @@ class ChangeView:
             interface.open(PatchSetView(interface, self))
         elif 'compare-prompt' == action:
             self._choose_patch_sets()
+        elif 'compare-last-send' == action:
+            try:
+                self.compare = core.last_send_compare(change)
+            except core.ChangeError as error:
+                interface.say(str(error))
+            else:
+                interface.say('Now ' + core.compare_label(change, *self._compare))
+        elif 'follow-latest' == action:
+            interface.follow_latest = not interface.follow_latest
+            core.set_follows_latest(interface.follow_latest)
+            if interface.follow_latest:
+                self._compare = (self._compare[0],
+                                 core.right_side(change, self._compare[1]))
+            interface.say('Follow latest: ' + ('on, a new upload moves the right side.'
+                                               if interface.follow_latest
+                                               else 'off, the right side stays.'))
         elif action in ('unfold-every', 'fold-every'):
             expand = 'unfold-every' == action
             self._expanded = {comment.number: expand for comment in self._change.comments}
@@ -4078,8 +4126,10 @@ class ChangeView:
     @compare.setter
     def compare(self, versions):
         # Checked here: a wrong choice must not break drawing the diff.
-        self._interface.core.versions_to_compare(self._change, *versions)
-        self._compare = versions
+        core = self._interface.core
+        core.versions_to_compare(self._change, *versions)
+        self._compare = (versions[0], core.right_side(self._change, versions[1],
+                                                      self._interface.follow_latest))
 
     def show_thread(self, number):
         """Goes to a thread in the diff, unfolded."""
@@ -4103,9 +4153,7 @@ class ChangeView:
         elif len(parts) <= 2 and all(part.isdigit() or part in ('current', 'base', 'latest')
                                      for part in parts):
             compare = (parts[0], parts[1] if 2 == len(parts) else None)
-            # Checked here: a wrong choice must not break drawing the diff.
-            self._interface.core.versions_to_compare(self._change, *compare)
-            self._compare = compare
+            self.compare = compare
         else:
             self._interface.say('Give one or two of: patch set numbers, "base", "latest", '
                                 '"current".')

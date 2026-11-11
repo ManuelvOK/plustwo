@@ -1015,6 +1015,19 @@ def toggle_section(name):
     return name in folded
 
 
+def follows_latest():
+    """Whether a right side on the latest patch set moves to a new upload,
+    the interfaces' switch, off by default. State, not a setting, since the
+    interfaces change it.
+    """
+    return ['true'] == state_values('view', 'view.follow-latest')[-1:]
+
+
+def set_follows_latest(on):
+    """Turns follows_latest() on or off, for later sessions too."""
+    set_state('view', 'view.follow-latest', 'true' if on else None)
+
+
 def base_branch(repository=None):
     """The branch reviewed changes go to: the setting review.base, else
     main.
@@ -2467,15 +2480,27 @@ def require_verified(change_id, required, repository=None):
     update_change(change_id, edit, repository)
 
 
-def compare_label(change, first=None, second=None):
-    """The versions compared for display, like "comparing base -> 2
-    [latest]": the latest patch set is tagged when it is one side.
+def compare_label(change, first=None, second=None, follow=True, short=False):
+    """The versions compared for display, like "comparing 1 [your last
+    send] -> 2 [latest]": the latest patch set and the one of the
+    reviewer's last send are tagged when they are a side. Without follow, a
+    newer patch set than the right side is mentioned instead ("PS3 is
+    newer"). short shortens the tags for narrow lines.
     """
     (left, _), (right, _) = versions_to_compare(change, first, second)
     latest = str(change.latest_patch_set()) if change.patch_sets else None
-    left, right = (f'{version} [latest]' if version == latest else version
-                   for version in (left, right))
-    return f'comparing {left} -> {right}'
+    sent = last_send_patch_set(change)
+    sent = str(sent) if sent is not None else None
+
+    def tagged(version):
+        tags = (['latest'] if version == latest else []) + (
+            [('last send' if short else 'your last send')] if version == sent else [])
+        return f'{version} [{", ".join(tags)}]' if tags else version
+
+    label = f'comparing {tagged(left)} -> {tagged(right)}'
+    if not follow and latest and right.isdigit() and int(right) < int(latest):
+        label += f'   PS{latest} is newer'
+    return label
 
 
 def can_compare(change, first=None, second=None):
@@ -3614,16 +3639,35 @@ def message_patch_sets(change, comment, shown=None):
 def patch_set_history(change, shown=None, repository=None):
     """The change's patch sets, oldest first, as PatchSetEntry: when and by
     whom each was uploaded, its kind against the one before (computed, so
-    older notes work), the votes on it and what happened on it. A thread
-    belongs to the patch set it was started on. A reply belongs to the
-    patch set that was the newest when it was sent, by the upload times,
-    like Gerrit's comments per patch set. Draft replies belong to shown,
-    the patch set the reviewer looks at, the newest without one. A draft
-    thread belongs to the patch set it is on, like a sent one.
+    older notes work), the votes on it and what happened on it, see
+    patch_set_events().
+    """
+    numbers = sorted(change.patch_sets)
+    events = patch_set_events(change, shown)
+    history = []
+    for index, number in enumerate(numbers):
+        commit = change.patch_sets[number]
+        kind = (patch_set_kind(change.patch_sets[numbers[index - 1]], commit, repository)
+                if index else '-')
+        history.append(PatchSetEntry(number, commit, change.uploads.get(number, 0),
+                                     change.uploaders.get(number, ''), kind,
+                                     [vote for vote in change.votes if number == vote.patch_set],
+                                     events[number]))
+    return history
+
+
+def patch_set_events(change, shown=None):
+    """What happened on each patch set: number -> PatchSetEvent list, in
+    order, without running git. A thread belongs to the patch set it was
+    started on. A reply belongs to the patch set that was the newest when
+    it was sent, by the upload times, like Gerrit's comments per patch set.
+    Draft replies belong to shown, the patch set the reviewer looks at, the
+    newest without one. A draft thread belongs to the patch set it is on,
+    like a sent one.
     """
     numbers = sorted(change.patch_sets)
     if not numbers:
-        return []
+        return {}
     shown = shown if shown in change.patch_sets else numbers[-1]
 
     def newest_at(when):
@@ -3654,18 +3698,9 @@ def patch_set_history(change, shown=None, repository=None):
             events[vote.patch_set].append(PatchSetEvent(
                 VOTE, vote.time, vote.by, f'{vote.label}{vote.value:+d}'
                 + (f': {vote.message.split(chr(10))[0]}' if vote.message else '')))
-    history = []
-    for index, number in enumerate(numbers):
-        commit = change.patch_sets[number]
-        kind = (patch_set_kind(change.patch_sets[numbers[index - 1]], commit, repository)
-                if index else '-')
-        # Drafts have no time yet: they come last.
-        ordered = sorted(events[number], key=lambda event: (event.draft, event.time))
-        history.append(PatchSetEntry(number, commit, change.uploads.get(number, 0),
-                                     change.uploaders.get(number, ''), kind,
-                                     [vote for vote in change.votes if number == vote.patch_set],
-                                     ordered))
-    return history
+    # Drafts have no time yet: they come last.
+    return {number: sorted(found, key=lambda event: (event.draft, event.time))
+            for number, found in events.items()}
 
 
 def last_send(history):
@@ -3681,6 +3716,53 @@ def last_send(history):
                     found is None or event.time >= found[0]):
                 found = (event.time, entry.number, index)
     return found[1:] if found else None
+
+
+def last_send_patch_set(change):
+    """The patch set the reviewer's newest send belongs to, like
+    last_send() but without git, None before the first send.
+    """
+    found = None
+    for number, events in patch_set_events(change).items():
+        for event in events:
+            if event.is_yours() and not event.draft and event.time and (
+                    found is None or event.time >= found[0]):
+                found = (event.time, number)
+    return found[1] if found else None
+
+
+def last_send_compare(change):
+    """The versions to compare to see what happened since the reviewer's
+    last send: its patch set against the latest. Raises ChangeError if
+    there is nothing to compare.
+    """
+    number = last_send_patch_set(change)
+    if number is None:
+        raise ChangeError('Nothing sent yet.')
+    if number == change.latest_patch_set():
+        raise ChangeError('Your last send is on the latest patch set.')
+    return str(number), LATEST
+
+
+def follow_latest(compare, before, now, follow=True):
+    """The versions to compare after the latest patch set went from before
+    to now: with follow, a right side on the latest stays "latest" and
+    moves along, else it stays on the patch set it was. Returns the
+    versions and whether the right side moved.
+    """
+    first, second = compare
+    if now <= before or LATEST != second:
+        return compare, False
+    if follow:
+        return compare, True
+    return (first, str(before)), False
+
+
+def right_side(change, version, follow=True):
+    """A version picked for the right side: with follow, the latest patch
+    set is kept as "latest", so it moves along with a new upload.
+    """
+    return LATEST if follow and version == str(change.latest_patch_set()) else version
 
 
 def range_diff_command(change, first=None, second=None):

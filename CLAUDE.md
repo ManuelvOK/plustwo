@@ -59,8 +59,9 @@ every command.
   messages on the whole change. `plustwo init` sets `notes.rewriteRef`, so
   notes follow amends and rebases.
 - State (not settings): registered repositories and lists
-  (`$XDG_STATE_HOME/plustwo/repos`) and the dashboard's section order and
-  folding (`.../dashboard`), git config syntax. `make test` points
+  (`$XDG_STATE_HOME/plustwo/repos`), the dashboard's section order and
+  folding (`.../dashboard`) and the diff's follow-latest switch
+  (`.../view`), git config syntax. `make test` points
   XDG_STATE_HOME into `.test/`, tests never touch the real state.
 - Settings: own files in git config syntax, read with `git config --file`:
   `~/.config/plustwo/config` (user) and `.git/plustwo/config` (repository,

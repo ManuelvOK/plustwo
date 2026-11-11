@@ -197,6 +197,15 @@ async function renderChange(id, file) {
     state.a = 'base'; state.b = 'latest'; state.previousCompare = null;
     say('The patch sets compared before are gone, showing base -> latest.');
   }
+  // A new upload: with follow-latest a right side on the latest moves
+  // along, else it stays on the patch set it was (see core.follow_latest)
+  const follow = state.keys && state.keys.follow_latest;
+  if (state.change && state.change.id === change.id && state.latestSeen
+      && change.patch_set > state.latestSeen && state.b === 'latest') {
+    if (follow) say(`PS${change.patch_set} uploaded.`);
+    else state.b = String(state.latestSeen);
+  }
+  state.latestSeen = change.patch_set;
   state.change = change;
   // A file only an older patch set has, while a thread is shown there
   state.file = file && (state.previousCompare || change.files.some((entry) => entry.path === file))
@@ -341,9 +350,23 @@ function toolbar(change) {
     select(state.a, versions, (event) => { state.a = event.target.value; render(); },
            versions.map((version) => version === 'base' ? 'Base' : psLabel(Number(version)))),
     el('span', {}, '→'),
-    select(b, change.patch_sets.map(String), (event) => { state.b = event.target.value; render(); },
-           change.patch_sets.map(psLabel)),
+    select(b, change.patch_sets.map(String), (event) => {
+      // With follow-latest, the latest stays "latest" and moves to a new upload
+      const value = event.target.value;
+      state.b = state.keys.follow_latest && value === String(change.patch_set) ? 'latest' : value;
+      render();
+    }, change.patch_sets.map(psLabel)),
     state.diff && state.diff.comparing ? el('span', {class: 'dim'}, state.diff.comparing) : null,
+    el('label', {title: 'A right side on the latest patch set moves to a new upload'},
+       el('input', {type: 'checkbox', checked: state.keys.follow_latest ? '' : null,
+                    onchange: async (event) => {
+                      const data = await act('follow-latest', {on: event.target.checked});
+                      state.keys.follow_latest = data.on;
+                      if (data.on && state.b === String(change.patch_set)) state.b = 'latest';
+                      say(data.on ? 'Follow latest: on.' : 'Follow latest: off.');
+                      render();
+                    }}),
+       ' follow latest'),
     el('span', {class: 'dim'}, 'context'),
     select(state.context, CONTEXTS, (event) => { state.context = event.target.value; render(); }),
     el('span', {class: 'dim'}, 'whitespace'),

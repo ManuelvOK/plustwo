@@ -53,6 +53,8 @@ In terminal 2:
 |-----|--------------------------------------------------------|--------------------------------------------------|
 | 15  | wait a second                                          | the list reloads, Turn `▶ you` again             |
 | 15a | open the change, `p`, look, `h`                        | `── your last send ──`, author's replies below   |
+| 15b | `g l`                                                  | `Your last send is on the latest patch set.`     |
+| 15c | `F`                                                    | `Follow latest: on, ...`                         |
 | 16  | open the change, go to thread #1, `Y`, `s`, Enter      | Ack sent, the thread is resolved                 |
 | 17  | `s`, `Tab`, `2`, Enter                                 | `CR +2` badge, Turn `▶ submit`                   |
 | 18  | `S`, `y`                                               | submitted. Terminal 2 prints `submitted ...`     |

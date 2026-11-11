@@ -210,7 +210,7 @@ class Server:
         context = None if 'all' == query.get('context') else int(query.get('context', '10'))
         whitespace = query.get('whitespace', 'none')
         rows = core.file_diff_rows(change, first, second, path, context, repository, whitespace)
-        comparing = core.compare_label(change, first, second)
+        comparing = core.compare_label(change, first, second, follow=core.follows_latest())
         if rows is None:
             return {'binary': True, 'rows': [], 'comparing': comparing}
         old, new, paths = core.diff_endpoints(change, first, second, path, repository)
@@ -252,7 +252,7 @@ class Server:
         keys = {**plustwo_tui.PRESETS[preset],
                 **{name: value for name, value in overrides.items()
                    if name in plustwo_tui.ACTION_NAMES}}
-        return {'preset': preset, 'keys': keys,
+        return {'preset': preset, 'keys': keys, 'follow_latest': self.core.follows_latest(),
                 'actions': [{'name': name, 'group': group, 'label': label,
                              'description': description}
                             for name, group, label, description in plustwo_tui.ACTIONS]}
@@ -267,6 +267,9 @@ class Server:
         if 'order' == body.get('action'):
             core.set_section_order(body['sections'])
             return {}
+        if 'follow-latest' == body.get('action'):
+            core.set_follows_latest(bool(body.get('on')))
+            return {'on': core.follows_latest()}
         repository = self.repository(body)
         change = core.find_change(body['id'], repository)
         change_id = change.change_id
