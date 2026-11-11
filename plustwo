@@ -2467,6 +2467,26 @@ def require_verified(change_id, required, repository=None):
     update_change(change_id, edit, repository)
 
 
+def compare_label(change, first=None, second=None):
+    """The versions compared for display, like "comparing base -> 2
+    [latest]": the latest patch set is tagged when it is one side.
+    """
+    (left, _), (right, _) = versions_to_compare(change, first, second)
+    latest = str(change.latest_patch_set()) if change.patch_sets else None
+    left, right = (f'{version} [latest]' if version == latest else version
+                   for version in (left, right))
+    return f'comparing {left} -> {right}'
+
+
+def can_compare(change, first=None, second=None):
+    """Whether the change has the versions, see versions_to_compare()."""
+    try:
+        versions_to_compare(change, first, second)
+    except ChangeError:
+        return False
+    return True
+
+
 def versions_to_compare(change, first=None, second=None):
     """The two versions a diff compares, as (label, commit) pairs.
 

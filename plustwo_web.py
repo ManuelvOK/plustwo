@@ -210,8 +210,9 @@ class Server:
         context = None if 'all' == query.get('context') else int(query.get('context', '10'))
         whitespace = query.get('whitespace', 'none')
         rows = core.file_diff_rows(change, first, second, path, context, repository, whitespace)
+        comparing = core.compare_label(change, first, second)
         if rows is None:
-            return {'binary': True, 'rows': []}
+            return {'binary': True, 'rows': [], 'comparing': comparing}
         old, new, paths = core.diff_endpoints(change, first, second, path, repository)
         old_path = core.old_path_of(change, first, second, paths[0], repository) or paths[0]
         theme = 'light' if 'light' == query.get('theme') else 'dark'
@@ -233,7 +234,7 @@ class Server:
             shown = core.thread_place(change, comment, first, second, repository)
             threads[comment.number] = {'path': shown.path, 'line': shown.line, 'side': shown.side,
                                        'origin': shown.origin, 'note': shown.note}
-        return {'binary': False, 'renamed_from': None if old_path == paths[0] else old_path,
+        return {'binary': False, 'comparing': comparing, 'renamed_from': None if old_path == paths[0] else old_path,
                 'threads': threads,
                 'from_below': [sorted(lines) for lines in from_below],
                 'partly': [sorted(lines) for lines in partly],

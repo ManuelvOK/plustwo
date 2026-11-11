@@ -409,6 +409,72 @@ class PollTest(unittest.TestCase):
         self.assertEqual('3 patch sets', tui.patch_set_count(3))
 
 
+class CompareTest(unittest.TestCase):
+    """The patch sets compared belong to one change: another change opens
+    with its default, and a choice the change doesn't have never breaks.
+    """
+
+    class Interface:
+        """What a ChangeView needs of the interface, without a terminal."""
+
+        def __init__(self):
+            self.core = core
+            self.colour_pairs = None
+            self.keymap = tui.Keymap('vim', {})
+            self.messages = []
+
+        def say(self, text, *_):
+            self.messages.append(text)
+
+        def back(self):
+            pass
+
+    def setUp(self):
+        self.directory = tempfile.mkdtemp(prefix='plustwo-compare-')
+        self.repo = test_stacks.Repository(self.directory)
+
+    def tearDown(self):
+        shutil.rmtree(self.directory)
+
+    def test_compare(self):
+        repo = self.repo
+        repo.git('switch', '--quiet', '-c', 'topic')
+        repo.commit('a.txt', 'a\n', 'Add a')
+        repo.change('upload')
+        repo.git('commit', '--quiet', '--amend', '-m', 'Add a, better\n\n'
+                 + repo.git('log', '-1', '--format=%B').split('\n\n', 1)[1])
+        repo.commit('b.txt', 'b\n', 'Add b')
+        repo.change('upload')
+        ids = [line.split(': ')[1] for line in repo.git(
+            'log', '--reverse', '--format=%(trailers:key=Change-Id)', 'main..').split('\n')
+            if line]
+        two, one = ids
+        changes = {change.change_id: change
+                   for change in core.changes_in_stack(str(repo.path))}
+        self.assertTrue(core.can_compare(changes[two], '1', '2'))
+        self.assertFalse(core.can_compare(changes[one], '1', '2'))
+        self.assertTrue(core.can_compare(changes[one], 'base', 'latest'))
+        # The latest patch set is tagged when it is one side
+        label = core.compare_label
+        self.assertEqual(label(changes[two], 'base', 'latest'), 'comparing base -> 2 [latest]')
+        self.assertEqual(label(changes[two], '1', '2'), 'comparing 1 -> 2 [latest]')
+        self.assertEqual(label(changes[two], '2', '1'), 'comparing 2 [latest] -> 1')
+        self.assertEqual(label(changes[two], 'base', '1'), 'comparing base -> 1')
+
+        interface = self.Interface()
+        view = tui.ChangeView(interface, two, str(repo.path))
+        view.reload()
+        view.compare = ('1', '2')
+        # Another change opens with its default
+        view._switch_to(one)  # pylint: disable=protected-access
+        self.assertEqual(view.compare, tui.DEFAULT_COMPARE)
+        # A choice the change doesn't have falls back, with a message
+        view._compare = ('1', '2')  # pylint: disable=protected-access
+        view.reload()
+        self.assertEqual(view.compare, tui.DEFAULT_COMPARE)
+        self.assertIn('gone', interface.messages[-1])
+
+
 class SubmittableTest(unittest.TestCase):
 
     def test_submittable_in_stack(self):

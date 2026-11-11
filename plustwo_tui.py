@@ -3137,6 +3137,12 @@ class ChangeView:
         for change in core.changes_in_stack():
             if change.change_id == self._change_id:
                 self._change = change
+                if not core.can_compare(change, *self._compare):
+                    # E.g. a patch set chosen before is gone after a reload.
+                    self._compare = DEFAULT_COMPARE
+                    self._previous_compare = None
+                    self._interface.say('The patch sets compared before are gone, '
+                                        'showing base -> latest.')
                 # The commit message comes first, like in Gerrit.
                 # A renamed file is listed once, under its new name.
                 self._renames = core.renames_of(change.commit)
@@ -3254,8 +3260,7 @@ class ChangeView:
         out(0, max(area.width - len(version), 1), version, header_dim)
         patch_sets = patch_set_count(len(change.patch_sets))
         try:
-            (first, _), (second, _) = core.versions_to_compare(change, *self._compare)
-            comparing = f'comparing {first} -> {second}'
+            comparing = core.compare_label(change, *self._compare)
         except core.ChangeError as error:
             comparing = str(error)
         header = f'{patch_sets}   {comparing}'
@@ -3359,6 +3364,9 @@ class ChangeView:
         self._file_index = None
         self._comment_index = 0
         self._expanded = {}
+        # Like in Gerrit, every change opens with its default comparison.
+        self._compare = DEFAULT_COMPARE
+        self._previous_compare = self._extra_file = None
         # From the stack pane, the focus stays there to go on.
         if STACK != self._focus:
             self._focus = self._left_pane = FILES

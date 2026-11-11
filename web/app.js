@@ -183,11 +183,19 @@ async function renderList() {
 // ── the change page ───────────────────────────────────────────────────────
 
 async function renderChange(id, file) {
-  const change = await api('change', {id, b: state.b});
+  const same = state.change && state.change.id.startsWith(id);
+  const change = await api('change', {id, b: same ? state.b : 'latest'});
   if (!state.change || state.change.id !== change.id) {
+    // Like in Gerrit, every change opens with its default comparison.
     state.a = 'base'; state.b = 'latest'; state.cursor = 0; state.editor = null;
+    state.previousCompare = null;
     // Another change starts on its first file after the commit message
     if (state.change) state.file = null;
+  } else if ([state.a, state.b].some((version) => /^[0-9]+$/.test(version)
+                                     && !change.patch_sets.includes(Number(version)))) {
+    // E.g. a patch set chosen before is gone after a reload
+    state.a = 'base'; state.b = 'latest'; state.previousCompare = null;
+    say('The patch sets compared before are gone, showing base -> latest.');
   }
   state.change = change;
   // A file only an older patch set has, while a thread is shown there
@@ -335,6 +343,7 @@ function toolbar(change) {
     el('span', {}, '→'),
     select(b, change.patch_sets.map(String), (event) => { state.b = event.target.value; render(); },
            change.patch_sets.map(psLabel)),
+    state.diff && state.diff.comparing ? el('span', {class: 'dim'}, state.diff.comparing) : null,
     el('span', {class: 'dim'}, 'context'),
     select(state.context, CONTEXTS, (event) => { state.context = event.target.value; render(); }),
     el('span', {class: 'dim'}, 'whitespace'),
