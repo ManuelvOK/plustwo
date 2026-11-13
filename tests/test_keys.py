@@ -471,3 +471,24 @@ class StickyCursorTest(unittest.TestCase):
         view._file_index = 2  # pylint: disable=protected-access
         view._files = ['/COMMIT_MSG', 'Z', 'a', 'b']  # pylint: disable=protected-access
         self.assertEqual(3, view._file_index)  # pylint: disable=protected-access
+
+
+class SidebarHeightsTest(unittest.TestCase):
+    """The heights of the sidebar's panes: stack, message, files, comments."""
+
+    def test_short_content_leaves_rows_to_the_comments(self):
+        self.assertEqual([3, 5, 3, 29], tui.sidebar_heights(40, [1, 5, 2, 4]))
+
+    def test_max_min_fair(self):
+        # A long message and one file: the message gets the room
+        self.assertEqual([3, 20, 3, 14], tui.sidebar_heights(40, [2, 30, 2, 14]))
+        # Nothing fits: equal shares, the odd rows to the lowest panes
+        self.assertEqual([3, 4, 4, 4], tui.sidebar_heights(15, [10, 10, 20, 20]))
+        self.assertEqual([3, 7, 7, 7], tui.sidebar_heights(24, [3, 30, 20, 20]))
+
+    def test_tiny_screen(self):
+        self.assertEqual([2, 2, 3, 3], tui.sidebar_heights(10, [10, 10, 20, 20]))
+        for rows in range(4, 60):
+            heights = tui.sidebar_heights(rows, [10, 1, 20, 20])
+            self.assertEqual(rows, sum(heights), rows)
+            self.assertGreaterEqual(min(heights), 3 if rows >= 12 else 1)

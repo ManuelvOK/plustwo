@@ -2822,8 +2822,37 @@ FILES = 'files'
 COMMENTS = 'comments'
 DIFF = 'diff'
 PANES = (STACK, MESSAGE, FILES, COMMENTS, DIFF)
-# The commit message box shows at most this many rows
-MESSAGE_ROWS = 6
+def sidebar_heights(rows, wants):
+    """The inside heights of the sidebar's panes (stack, message, files,
+    comments), for rows inside their frames together and the rows their
+    content wants. Max-min fair: panes whose content fits an equal share
+    get exactly that, the rest is shared equally among those that want
+    more, again until all rows are used. Every pane gets at least 3 rows
+    (2 or 1 on a tiny screen). Rows nobody needs go to the comments, the
+    last pane, and so do the rows an equal share leaves over.
+    """
+    count = len(wants)
+    floor = 3 if rows >= 3 * count else 2 if rows >= 2 * count else 1
+    wants = [max(want, floor) for want in wants]
+    heights = [0] * count
+    waiting = list(range(count))
+    left = rows
+    while waiting and left > 0:
+        share = left // len(waiting)
+        fitting = [index for index in waiting if wants[index] <= share]
+        if not fitting:
+            for index in waiting:
+                heights[index] = share
+            # The odd rows to the lowest panes, the comments first
+            for index in waiting[::-1][:left - share * len(waiting)]:
+                heights[index] += 1
+            return heights
+        for index in fitting:
+            heights[index] = wants[index]
+            left -= wants[index]
+            waiting.remove(index)
+    heights[-1] += max(left, 0)
+    return heights
 
 def thread_footer(comment):
     """The footer's actions on a thread: reply or edit the draft, Done,
@@ -3292,21 +3321,19 @@ class ChangeView:
                 self._focus = DIFF
             return {DIFF: (3, 1, area.height - 4, area.width - 3)}
         left_width = min(max(area.width * 3 // 10, 28), 50)
-        # The stack on top, like Gerrit's relation chain, at most 5 rows
-        stack_rows = min(max(len(self._stack), 1), 5)
-        # The commit message below, as tall as it is up to MESSAGE_ROWS. The
-        # files and comments come first when there is little room.
+        # From the top: the stack like Gerrit's relation chain, the commit
+        # message, the files and the comments, sized by their content. The
+        # four frames take 8 of the rows below the two header rows.
+        stack_rows, message_rows, files_height, comments_height = sidebar_heights(
+            area.height - 2 - 8, [len(self._stack), len(self._message_lines(left_width - 2)),
+                                  len(self._files), len(self._comment_rows()) or 1])
         message_top = 3 + stack_rows + 2
-        room = area.height - message_top - 1 - 2 - 2 * (4 + 2)
-        message_rows = max(1, min(MESSAGE_ROWS, len(self._message_lines(left_width - 2)), room))
         files_top = message_top + message_rows + 2
-        files_height = max((area.height - files_top - 2) // 2, 2)
         comments_top = files_top + files_height + 2
         return {STACK: (3, 1, stack_rows, left_width - 2),
                 MESSAGE: (message_top, 1, message_rows, left_width - 2),
                 FILES: (files_top, 1, files_height, left_width - 2),
-                COMMENTS: (comments_top, 1, max(area.height - comments_top - 1, 1),
-                           left_width - 2),
+                COMMENTS: (comments_top, 1, comments_height, left_width - 2),
                 DIFF: (3, left_width + 1, area.height - 4, area.width - left_width - 3)}
 
     def _frame(self, pane, title, above=0, below=0):
