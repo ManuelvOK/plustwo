@@ -54,11 +54,15 @@ every other registered repository (`plustwo register PATH`,
 1. The list shows every stack. `l` opens a change, `T` jumps to the next
    change where it is your turn.
 2. In a change: files and threads on the left, the side by side diff on
-   the right. `Tab` switches panes, `]c` jumps to the next change, `]t` to
-   the next thread and `]u` to the next unresolved one, also in the next
-   files.
+   the right. `Tab` switches panes, `Shift-Tab` back to the one before,
+   `]c` jumps to the next change, `]t` to the next thread, `]u` to the
+   next unresolved one and `]n` to the next one worth a look (new since
+   the left side, on changed lines, or waiting for you), also in the next
+   files. Threads the comparison leaves as they were are grey and marked
+   `·` in the comments pane.
 3. `c` (or `o`) comments on the cursor line, `O` on the line above, `<`
-   and `>` choose the old or new side. `m` marks a file reviewed. In the
+   and `>` choose the old or new side. `m` marks a file reviewed, `M`
+   marks it and opens the next file. In the
    comment box, Esc on written text asks once before it discards it.
 4. On a thread: `r` replies, `y` answers Done, `Y` Ack, `x` toggles
    resolved. A reply that only acknowledges, like "Ack." or "OK, thanks",

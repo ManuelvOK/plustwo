@@ -2531,6 +2531,20 @@ def toggle_reviewed(change_id, path, repository=None):
     return update_change(change_id, edit, repository)
 
 
+def mark_reviewed(change_id, path, repository=None):
+    """Marks a file of the change reviewed, also when it is already."""
+    def edit(change):
+        change.reviewed[path] = file_diff_hash(change.commit, path, repository)
+
+    update_change(change_id, edit, repository)
+
+
+def file_after(files, path):
+    """The file after path in the file list, None on the last."""
+    index = files.index(path) + 1 if path in files else len(files)
+    return files[index] if index < len(files) else None
+
+
 def label_name(label):
     """The label a name like cr, Code-Review or v stands for."""
     name = LABEL_ALIASES.get(label.lower())

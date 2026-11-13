@@ -108,6 +108,8 @@ ACTIONS = (
      'touching any checkout. On a conflict the author is asked to rebase.'),
     ('next-pane', 'Change', 'next pane', 'next pane: stack, commit message, files, comments, '
      'diff'),
+    ('last-pane', 'Change', 'last pane', 'back to the pane focused before, again returns, like '
+     'Alt+Tab'),
     ('thread-patch-set', 'Threads', 'thread on its PS', 'show the thread on its own patch set: the diff '
      'against its parent, at the thread. Again (or back in the diff) returns to the '
      'comparison before.'),
@@ -127,6 +129,11 @@ ACTIONS = (
      'thread, at the file\'s end in the next file with one'),
     ('prev-unresolved', 'Change', 'previous unresolved', 'in the diff: to the previous unresolved '
      'thread, also in the files before'),
+    ('next-relevant', 'Change', 'next relevant', 'in the diff: to the next thread worth a look, '
+     'also in the next files: one the comparison touches (new messages since the left side, or '
+     'on changed lines) or an unresolved one waiting for you'),
+    ('prev-relevant', 'Change', 'previous relevant', 'in the diff: to the previous thread worth '
+     'a look'),
     ('comment', 'Change', 'comment', 'in the diff: comment on the cursor line, or on the whole '
      'file on rows without a line number. On a thread it replies. In the files: comment on '
      'the file. It stays a draft until sent.'),
@@ -167,6 +174,8 @@ ACTIONS = (
     ('fold-every', 'Change', 'fold all', 'fold all threads'),
     ('reviewed', 'Change', 'reviewed', 'mark the file reviewed, or unmark it. The mark stays while '
      'the file\'s diff stays the same.'),
+    ('reviewed-next', 'Change', 'reviewed, next file', 'mark the file reviewed and open the next '
+     'file of the list, reviewed or not. On the last file it only marks.'),
     ('whitespace', 'Change', 'whitespace', 'which whitespace changes the diff ignores, like '
      'Gerrit: none, trailing, changed, all'),
     ('side-old', 'Change', 'old side', 'in the diff: the cursor to the old side, comments go there'),
@@ -195,12 +204,14 @@ VIM_KEYS = {
     'next-change': '] s', 'prev-change': '[ s',
     'next-chunk': '] c', 'prev-chunk': '[ c', 'next-thread': '] t', 'prev-thread': '[ t',
     'next-unresolved': '] u', 'prev-unresolved': '[ u',
+    'next-relevant': '] n', 'prev-relevant': '[ n', 'last-pane': 'S-Tab',
     # Like vim's o and O, which open a line below and above
     'comment': 'c,o', 'comment-above': 'O', 'file-comment': 'C', 'more-context': '+,=', 'less-context': '-',
     'vimdiff': 't', 'patch-sets': 'p', 'fold-all': 'i', 'unfold-every': 'z R',
     'fold-every': 'z M',
     'reply': 'r', 'edit-draft': 'e', 'done': 'y', 'ack': 'Y', 'resolve': 'x', 'send': 's',
-    'whitespace': 'W', 'approve': 'A', 'next-turn': 'T', 'reviewed': 'm,Space', 'side-old': '<', 'side-new': '>',
+    'whitespace': 'W', 'approve': 'A', 'next-turn': 'T', 'reviewed': 'm,Space',
+    'reviewed-next': 'M', 'side-old': '<', 'side-new': '>',
     'section-down': 'J', 'section-up': 'K',
     # Like vim's C-w o, which keeps only the current window
     'sidebar': 'C-w o,z s',
@@ -224,6 +235,7 @@ PRESETS = {
               'next-chunk': 'n', 'prev-chunk': 'p', 'next-file': 'N', 'prev-file': 'P',
               'next-thread': ']', 'prev-thread': '[', 'patch-sets': 'b',
               'next-unresolved': 'M-}', 'prev-unresolved': 'M-{',
+              'next-relevant': 'M-]', 'prev-relevant': 'M-[',
               # C-o like Emacs' open-line
               'comment': 'c', 'comment-above': 'C-o',
               # Like delete-other-windows
@@ -245,8 +257,10 @@ PRESETS = {
                # o opens here
                'comment': 'c', 'comment-above': 'O',
                'next-unresolved': 'C-n', 'prev-unresolved': 'C-p',
-               # Gerrit's r marks the file reviewed
-               'reviewed': 'r,m,Space', 'reply': 'R', 'reload': 'C-r',
+               # Like N and P for threads: Alt goes to the relevant ones
+               'next-relevant': 'M-N', 'prev-relevant': 'M-P',
+               # Gerrit's r marks the file reviewed, its M marks it and goes on
+               'reviewed': 'r,m,Space', 'reviewed-next': 'M', 'reply': 'R', 'reload': 'C-r',
                'next-change': 'M-n', 'prev-change': 'M-p',
                # e and E unfold and fold all threads, so drafts are edited with w
                'unfold-every': 'e', 'fold-every': 'E', 'edit-draft': 'w',
@@ -3096,7 +3110,7 @@ class ChangeView:
             entries = [(('down', 'up'), 'scroll'), (('open',), 'comment on it')]
         elif FILES == self._focus:
             entries = [(('open',), 'diff'), (('reviewed',), 'reviewed'),
-                       (('file-comment',), 'comment')]
+                       (('reviewed-next',), 'reviewed, next'), (('file-comment',), 'comment')]
         elif COMMENTS == self._focus:
             entries = [(('open',), 'go to')] + thread_footer(self._selected_comment())
         elif self._diff.rows and self._diff.thread_at(self._diff.cursor) is not None:
@@ -3112,6 +3126,9 @@ class ChangeView:
                        (('next-chunk', 'prev-chunk'), 'chunk')]
             if change.unfinished_comments():
                 entries.append((('next-unresolved', 'prev-unresolved'), 'unresolved'))
+            if self._cached('relevant', lambda: core.relevant_threads(change, *self._compare)):
+                entries.append((('next-relevant', 'prev-relevant'), 'relevant'))
+            entries.append((('reviewed-next',), 'reviewed, next'))
             if self._interface.marking:
                 entries += [(('search-next', 'search-prev'), 'match'), (('search-clear',), 'unmark')]
             if self._threads_at_cursor():
@@ -3740,17 +3757,21 @@ class ChangeView:
                 if not self._diff.go_to_thread(comment.number, height) and shown.line is not None:
                     self._diff.go_to_line(shown.line, shown.side, height)
 
-    def _go_to_thread(self, forward, unresolved):
+    def _go_to_thread(self, forward, kind='thread'):
         """]t and [t: to the next (previous) thread, in the next file with
         threads at the file's end, like going through all of them. ]u and
-        [u only to unresolved ones.
+        [u (kind unresolved) only to unresolved ones, ]n and [n (kind
+        relevant) to those worth a look, see core.relevant_threads().
         """
         interface = self._interface
         self._focus_pane(DIFF)
         # The diff may not be laid out for this file yet
         self._prepare_diff()
+        relevant = self._cached('relevant', lambda: interface.core.relevant_threads(
+            self._change, *self._compare)) if 'relevant' == kind else None
         threads = [comment for comment in self._change.comments
-                   if not unresolved or comment.is_unresolved()]
+                   if ('unresolved' != kind or comment.is_unresolved())
+                   and (relevant is None or comment.number in relevant)]
         numbers = {comment.number for comment in threads}
         height = self._diff_height()
         if self._diff.go_to_next_thread(forward, height, numbers):
@@ -3758,9 +3779,9 @@ class ChangeView:
         paths = {self._diff_path(self._place_of(comment).path) for comment in threads}
         path = interface.core.thread_file_after(self._files, self._selected_file(), paths,
                                                 1 if forward else -1)
-        kind = 'unresolved threads' if unresolved else 'threads'
         if path is None:
-            interface.say(f'No more {kind} in this direction.')
+            interface.say(f'No more {"threads" if "thread" == kind else kind + " threads"} '
+                          'in this direction.')
             return
         self._file_index = self._files.index(path)
         self._prepare_diff()
@@ -3928,6 +3949,12 @@ class ChangeView:
             panes = [pane for pane in PANES if not self._layout or pane in self._layout]
             self._focus_pane(panes[(panes.index(self._focus) + 1) % len(panes)]
                              if self._focus in panes else DIFF)
+        elif 'last-pane' == action:
+            last = getattr(self, '_last_pane', None)
+            if last is None or (self._layout and last not in self._layout) or last == self._focus:
+                interface.say('No pane focused before.')
+            else:
+                self._focus_pane(last)
         elif 'sidebar' == action:
             interface.sidebar = 'hidden' if self._layout and FILES in self._layout else 'shown'
         elif action in ('next-change', 'prev-change'):
@@ -3961,8 +3988,9 @@ class ChangeView:
             self._prepare_diff()
             if not self._diff.go_to_chunk('next-chunk' == action, height):
                 interface.say('No more changes in this direction.')
-        elif action in ('next-thread', 'prev-thread', 'next-unresolved', 'prev-unresolved'):
-            self._go_to_thread(action.startswith('next'), action.endswith('unresolved'))
+        elif action in ('next-thread', 'prev-thread', 'next-unresolved', 'prev-unresolved',
+                        'next-relevant', 'prev-relevant'):
+            self._go_to_thread(action.startswith('next'), action.split('-')[1])
         elif action in ('search', 'search-next', 'search-prev', 'search-clear'):
             self._search(action)
         elif 'open' == action:
@@ -4010,6 +4038,17 @@ class ChangeView:
             interface.after_write()
             interface.say(f'{file_label(core, self._selected_file())} '
                           + ('reviewed.' if marked else 'not reviewed any more.'))
+        elif 'reviewed-next' == action and self._selected_file():
+            path = self._selected_file()
+            core.mark_reviewed(self._change_id, path)
+            interface.after_write()
+            following = core.file_after(self._files, path)
+            if following is None:
+                interface.say(f'{file_label(core, path)} reviewed, the last file.')
+            else:
+                self._file_index = self._files.index(following)
+                interface.say(f'{file_label(core, path)} reviewed, now '
+                              f'{file_label(core, following, self._renames)}.')
         elif 'approve' == action:
             approve(interface, change)
         elif 'comment' == action and DIFF == self._focus and self._diff.thread_at(
@@ -4113,6 +4152,9 @@ class ChangeView:
         """
         if DIFF == pane and DIFF != self._focus:
             self._left_pane = self._focus
+        if pane != self._focus:
+            # For last-pane, like Alt+Tab
+            self._last_pane = self._focus
         self._focus = pane
 
     def go_left(self):
@@ -4131,7 +4173,7 @@ class ChangeView:
             self._thread_patch_set()
             return True
         if self._layout and self._left_pane in self._layout:
-            self._focus = self._left_pane
+            self._focus_pane(self._left_pane)
         return True
 
     def _open(self):

@@ -424,3 +424,19 @@ class UsabilityTest(unittest.TestCase):
         change = types.SimpleNamespace(comments=comments)
         self.assertEqual('2 open · 2 done', core.comment_counts(change, short=True))
         self.assertEqual('2 unresolved, 2 resolved', core.comment_counts(change))
+
+    def test_relevant_reviewed_next_and_last_pane(self):
+        vim, emacs, gerrit = (tui.Keymap(preset) for preset in ('vim', 'emacs', 'gerrit'))
+        self.assertEqual(('next-relevant', None), feed(vim, ']', 'n'))
+        self.assertEqual(('prev-relevant', None), feed(vim, '[', 'n'))
+        self.assertEqual(('next-relevant', None), feed(emacs, tui.META | ord(']')))
+        self.assertEqual(('prev-relevant', None), feed(emacs, tui.META | ord('[')))
+        self.assertEqual(('next-relevant', None), feed(gerrit, tui.META | ord('N')))
+        self.assertEqual(('prev-relevant', None), feed(gerrit, tui.META | ord('P')))
+        for keymap in (vim, emacs, gerrit):
+            with self.subTest(keymap.preset):
+                self.assertEqual(('reviewed-next', None), feed(keymap, 'M'))
+                self.assertEqual(('last-pane', None), feed(keymap, curses.KEY_BTAB))
+                self.assertEqual(('next-pane', None), feed(keymap, '\t'))
+        # vim's n stays the search's
+        self.assertEqual(('search-next', None), feed(vim, 'n'))
