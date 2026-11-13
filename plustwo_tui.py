@@ -3979,11 +3979,12 @@ class ChangeView:
         """
         core = self._interface.core
         if self._previous_compare is not None:
-            compare, file_index, number = self._previous_compare
+            compare, path, number = self._previous_compare
             self._previous_compare = self._extra_file = None
             self._compare = compare
             self.reload()
-            self._file_index = min(file_index, len(self._files) - 1)
+            if path in self._files:
+                self._file_index = self._files.index(path)
             self.show_thread(number)
             self._interface.say('Back to the comparison before.')
             return
@@ -3998,7 +3999,8 @@ class ChangeView:
         if core.BASE == first and str(comment.patch_set) == second:
             self._interface.say(f'#{comment.number} is shown on its PS{comment.patch_set}.')
             return
-        self._previous_compare = (self._compare, self._file_index, comment.number)
+        current = self._files[self._file_index] if self._files else None
+        self._previous_compare = (self._compare, current, comment.number)
         self.compare = (core.BASE, str(comment.patch_set))
         path, _line = core.split_place(comment.place)
         if path not in self._files and core.PATCHSET_LEVEL != path:
