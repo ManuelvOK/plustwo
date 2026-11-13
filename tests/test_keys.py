@@ -440,3 +440,34 @@ class UsabilityTest(unittest.TestCase):
                 self.assertEqual(('next-pane', None), feed(keymap, '\t'))
         # vim's n stays the search's
         self.assertEqual(('search-next', None), feed(vim, 'n'))
+
+
+class StickyCursorTest(unittest.TestCase):
+    """The sidebar's cursors stay on their item when the list changes."""
+
+    def test_keyed_cursor(self):
+        self.assertEqual((2, 'b'), tui.keyed_cursor(['x', 'a', 'b'], 'b', 0))
+        # Gone: the nearest position, now on another item
+        self.assertEqual((1, 'c'), tui.keyed_cursor(['a', 'c'], 'b', 1))
+        self.assertEqual((1, 'c'), tui.keyed_cursor(['a', 'c'], 'b', 5))
+        self.assertEqual((0, 'b'), tui.keyed_cursor([], 'b', 3))
+
+    def test_thread_and_file_cursor_follow_reordering(self):
+        class Thread:  # pylint: disable=too-few-public-methods
+            def __init__(self, identifier):
+                self.id = identifier
+        view = tui.ChangeView.__new__(tui.ChangeView)
+        threads = [Thread('t1'), Thread('t2'), Thread('t3')]
+        view._comments = lambda: threads  # pylint: disable=protected-access
+        view._comment_index = 1  # pylint: disable=protected-access
+        threads.reverse()
+        self.assertEqual(1, view._comment_index)  # pylint: disable=protected-access
+        threads.insert(0, Thread('t0'))
+        self.assertEqual(2, view._comment_index)  # pylint: disable=protected-access
+        del threads[2]
+        self.assertEqual(2, view._comment_index)  # pylint: disable=protected-access
+        self.assertEqual('t1', threads[2].id)
+        view._files = ['/COMMIT_MSG', 'a', 'b']  # pylint: disable=protected-access
+        view._file_index = 2  # pylint: disable=protected-access
+        view._files = ['/COMMIT_MSG', 'Z', 'a', 'b']  # pylint: disable=protected-access
+        self.assertEqual(3, view._file_index)  # pylint: disable=protected-access

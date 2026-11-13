@@ -1475,6 +1475,19 @@ def wheel_action(kind):
     return {WHEEL_DOWN: 'down', WHEEL_UP: 'up'}.get(kind)
 
 
+def keyed_cursor(keys, key, position):
+    """A list cursor that sticks to its item: the row of key in keys (the
+    list after a change), else the row nearest to the old position.
+    Returns (row, key of that row), (0, key) for an empty list.
+    """
+    if key in keys:
+        return keys.index(key), key
+    if not keys:
+        return 0, key
+    row = max(0, min(position, len(keys) - 1))
+    return row, keys[row]
+
+
 def move(index, action, length, count=None):
     """New list position after down, up, top, bottom or a page, staying
     inside the list. A count moves that many rows, or with top and bottom
@@ -3098,6 +3111,51 @@ class ChangeView:
         self._yours = set()
         self._behind = None
 
+    # The cursors of the stack, files and comments panes stick to their
+    # item (Change-Id, path, thread id), so they stay on it when the list
+    # changes, e.g. when a thread gets resolved. See keyed_cursor().
+
+    @property
+    def _stack_index(self):
+        keys = [other.change_id for other in reversed(self._stack)]
+        self._stack_position, self._stack_key = keyed_cursor(
+            keys, getattr(self, '_stack_key', None), getattr(self, '_stack_position', 0))
+        return self._stack_position
+
+    @_stack_index.setter
+    def _stack_index(self, index):
+        keys = [other.change_id for other in reversed(self._stack)]
+        self._stack_position = index
+        self._stack_key = keys[index] if 0 <= index < len(keys) else None
+
+    @property
+    def _file_index(self):
+        # None until the change is read
+        if getattr(self, '_file_position', None) is None:
+            return None
+        self._file_position, self._file_key = keyed_cursor(self._files, self._file_key,
+                                                           self._file_position)
+        return self._file_position
+
+    @_file_index.setter
+    def _file_index(self, index):
+        self._file_position = index
+        self._file_key = self._files[index] if index is not None and \
+            0 <= index < len(self._files) else None
+
+    @property
+    def _comment_index(self):
+        keys = [comment.id for comment in self._comments()]
+        self._comment_position, self._comment_key = keyed_cursor(
+            keys, getattr(self, '_comment_key', None), getattr(self, '_comment_position', 0))
+        return self._comment_position
+
+    @_comment_index.setter
+    def _comment_index(self, index):
+        keys = [comment.id for comment in self._comments()]
+        self._comment_position = index
+        self._comment_key = keys[index] if 0 <= index < len(keys) else None
+
     def footer(self):
         """Only the actions that work right now: those of the focused pane
         and what the cursor is on, then those the change's state allows.
@@ -3187,8 +3245,6 @@ class ChangeView:
                 if self._file_index is None:
                     # The commit message stays first, the first real file is shown.
                     self._file_index = 1 if len(self._files) > 1 else 0
-                self._file_index = min(self._file_index, max(len(self._files) - 1, 0))
-                self._comment_index = min(self._comment_index, max(len(change.comments) - 1, 0))
                 self._stack = [other for other in core.changes_in_stack()
                                if other.topic == change.topic]
                 if STACK != self._focus:
@@ -3505,8 +3561,9 @@ class ChangeView:
         rows = self._comment_rows()
         if not rows:
             out(top, left, 'none yet', self._interface.dim(), left + width)
+        cursor = self._comment_index
         selected_row = next((row for row, (_path, index) in enumerate(rows)
-                             if index == self._comment_index), 0)
+                             if index == cursor), 0)
         first = max(0, min(selected_row - height + 1, len(rows) - height))
         # For clicks
         self._comments_first = first
@@ -3522,7 +3579,7 @@ class ChangeView:
                     curses.A_BOLD if current else self._interface.dim(), left + width)
                 continue
             comment = comments[index]
-            selected = index == self._comment_index
+            selected = index == cursor
             attributes = curses.A_REVERSE if selected and COMMENTS == self._focus else 0
             unchanged = comment.number not in touched
             # Grey all over: resolved and left as it was
