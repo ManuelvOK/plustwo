@@ -186,6 +186,9 @@ class Server:
                                            query.get('b') or 'latest', repository)
         except core.ChangeError:
             compared = None
+        # Threads the comparison leaves as they were are quiet on the page.
+        touched = core.touched_threads(change, query.get('a') or 'base',
+                                       query.get('b') or 'latest', repository)
         paths = [core.COMMIT_MSG] + sorted(core.files_of(change.commit, repository))
         files = []
         for path in paths:
@@ -202,9 +205,9 @@ class Server:
                 'verified_required': change.verified_required,
                 'problems': change.submit_problems(),
                 'files': files,
-                'comments': [comment_json(core, comment, core.message_patch_sets(
-                    change, comment, int(query['b']) if query.get('b', '').isdigit() else None))
-                    for comment in change.comments],
+                'comments': [{**comment_json(core, comment, core.message_patch_sets(
+                    change, comment, int(query['b']) if query.get('b', '').isdigit() else None)),
+                    'touched': comment.number in touched} for comment in change.comments],
                 # Drafts go with the patch set shown on the right
                 'history': history_list(core, core.patch_set_history(
                     change, int(query['b']) if query.get('b', '').isdigit() else None,

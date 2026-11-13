@@ -574,9 +574,14 @@ function threadView(comment) {
     if (comment.path === PATCHSET_LEVEL || comment.path === state.file) render();
     else openFile(comment.path);
   }}, ` show in PS${comment.patch_set}`) : null;
-  return el('div', {class: `thread ${comment.status}`, id: `thread-${number}`},
+  // A thread the comparison leaves as it was: a · before its place, resolved
+  // ones grey all over (style.css)
+  return el('div', {class: `thread ${comment.status}${comment.touched ? '' : ' untouched'}`,
+                    id: `thread-${number}`},
     el('div', {}, el('span', {class: `chip ${status === 'unresolved' ? 'warn' : ''}`},
                      `#${number} ${status}${pending}`), ' ',
+       comment.touched ? null : el('span', {class: 'dim', title: 'unchanged in this comparison'},
+                                   '· '),
        el('span', {class: 'dim thread-place'}, comment.place_label
           + (origin ? ` (${origin}${note ? ', ' + note : ''})` : '')), ownPatchSet),
     messages,

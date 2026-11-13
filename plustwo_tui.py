@@ -3436,6 +3436,18 @@ class ChangeView:
             compared = core.compared_files(self._change, *self._compare)
         except core.ChangeError:
             compared = self._counts
+        # Threads per file, as the diff shows them: N● with N unresolved
+        # ones, grey with the number of threads when all are resolved
+        counts = {}
+        for path, threads in self._groups():
+            unresolved = sum(comment.is_unresolved() for comment in threads)
+            total = counts.get(self._diff_path(path), (0, 0))
+            counts[self._diff_path(path)] = (total[0] + unresolved, total[1] + len(threads))
+        count_width = max((len(str(unresolved or total)) + 2
+                           for unresolved, total in counts.values()), default=0)
+        # Like Gerrit's size column: a short bar of added and removed lines
+        bar_width = 6 if any(sum(compared.get(path, (0, 0))) for path in self._files) else 0
+        name_width = max(width - 2 - count_width - bar_width, 1)
         for index, path in enumerate(self._files[:height]):
             selected = index == self._file_index
             attributes = curses.A_REVERSE if selected and FILES == self._focus else (
@@ -3443,69 +3455,133 @@ class ChangeView:
             name = file_label(core, path, self._renames)
             out(top + index, left, '✓ ' if reviewed[index] else '  ',
                 attributes | curses.color_pair(2), left + width)
-            if path not in compared:
-                out(top + index, left + 2, f'{name:<{width - 2}.{width - 2}}',
-                    attributes | self._interface.dim(attributes), left + width)
-                continue
-            # Like Gerrit's size column: a short bar of added and removed lines
-            added, removed = compared[path]
-            scale = max(added + removed, 1) / 5 if added + removed > 5 else 1
-            plus, minus = round(added / scale), round(removed / scale)
-            bar_width = 6 if added + removed else 0
-            out(top + index, left + 2, f'{name:<{width - 2 - bar_width}.{width - 2 - bar_width}}',
-                attributes, left + width)
-            if bar_width:
+            out(top + index, left + 2, ' ' * (width - 2), attributes, left + width)
+            changed = path in compared
+            out(top + index, left + 2, f'{name:<{name_width}.{name_width}}',
+                attributes | (0 if changed else self._interface.dim(attributes)), left + width)
+            unresolved, total = counts.get(path, (0, 0))
+            if total:
+                label = f'{unresolved or total}●'.rjust(count_width)
+                out(top + index, left + 2 + name_width, label,
+                    attributes | (0 if unresolved else self._interface.dim(attributes)),
+                    left + width)
+            added, removed = compared.get(path, (0, 0))
+            if added + removed:
+                scale = max(added + removed, 1) / 5 if added + removed > 5 else 1
+                plus, minus = round(added / scale), round(removed / scale)
                 out(top + index, left + width - 5, '+' * plus, curses.color_pair(2), left + width)
                 out(top + index, left + width - 5 + plus, '-' * minus, curses.color_pair(1),
                     left + width)
 
     def _draw_comments(self):
-        """Draws the thread list: unresolved first, each with ↩ when the
-        author answered last and the start of its last message.
+        """Draws the thread list, grouped by file in the file list's order,
+        each group under a header (▶ for the file in the diff). A thread
+        has ↩ when the author answered last and the start of its last
+        message. Threads the comparison leaves as they were (see
+        core.is_touched()) get a · and a grey place, resolved ones go grey
+        all over. Unresolved ones keep their text.
         """
         out = self._interface.text
         core = self._interface.core
         self._frame(COMMENTS, 'Comments')
         top, left, height, width = self._layout[COMMENTS]
-        comments = self._comments()
-        if not comments:
+        rows = self._comment_rows()
+        if not rows:
             out(top, left, 'none yet', self._interface.dim(), left + width)
-        first = max(0, min(self._comment_index - height + 1, len(comments) - height))
+        selected_row = next((row for row, (_path, index) in enumerate(rows)
+                             if index == self._comment_index), 0)
+        first = max(0, min(selected_row - height + 1, len(rows) - height))
         # For clicks
         self._comments_first = first
-        for row, comment in enumerate(comments[first:first + height]):
-            index = first + row
+        touched = self._touched()
+        open_group = self._diff_path(self._selected_file()) if self._selected_file() else None
+        comments = self._comments()
+        for row, (path, index) in enumerate(rows[first:first + height]):
+            if index is None:
+                current = self._diff_path(path) == open_group
+                name = core.CHANGE_PLACE if core.PATCHSET_LEVEL == path else file_label(
+                    core, path, self._renames)
+                out(top + row, left, f'{"▶" if current else " "} {name}'[:width],
+                    curses.A_BOLD if current else self._interface.dim(), left + width)
+                continue
+            comment = comments[index]
             selected = index == self._comment_index
             attributes = curses.A_REVERSE if selected and COMMENTS == self._focus else 0
-            label = comment_label(comment)
+            unchanged = comment.number not in touched
+            # Grey all over: resolved and left as it was
+            quiet = unchanged and not comment.is_unresolved()
+            grey = self._interface.dim(attributes)
+            plain = attributes | grey if quiet else attributes
             out(top + row, left, ' ' * width, attributes, left + width)
             column = left
             answered = core.answered_by_author(comment)
-            parts = [(f'#{comment.number}'.ljust(4), attributes),
+            status = 'draft' if comment.is_draft() else comment.status
+            parts = [(f' #{comment.number}'.ljust(4), plain),
+                     ('·' if unchanged else ' ', attributes | grey),
                      ('↩ ' if answered else '  ',
-                      attributes | curses.color_pair(3)
-                      if answered else attributes),
-                     (f'[{label}]', attributes | status_attribute(
-                         'draft' if comment.is_draft() else comment.status))]
+                      attributes | curses.color_pair(3) if answered and not quiet else plain),
+                     (f'[{comment_label(comment)}]',
+                      plain if quiet else attributes | status_attribute(status))]
             shown = self._place_of(comment)
-            place = comment.place_label().rsplit('/', 1)[-1]
             if core.PATCHSET_LEVEL == shown.path != comment.place:
                 # Like in Gerrit, a thread on a gone file is on the whole change.
-                place = f'{core.CHANGE_PLACE} ({shown.origin}, {shown.note})'
-            parts.append((f' {place}', attributes))
+                place = f' ({shown.origin}, {shown.note})'
+            elif shown.line is not None:
+                place = f' {"old " if core.OLD_SIDE == comment.side else ""}:{shown.line}'
+            else:
+                place = '' if core.PATCHSET_LEVEL == shown.path else ' file'
+            parts.append((place, attributes | grey if unchanged else attributes))
             # The last message with text, not one that only changed the status
             text = next((' '.join(message.text.split()) for message in reversed(comment.messages)
                          if message.text.strip()), '')
             if text:
-                parts.append((f'  {text}', attributes | self._interface.dim(attributes)))
+                parts.append((f'  {text}', attributes | grey))
             for text, attribute in parts:
                 out(top + row, column, text, attribute, left + width)
                 column += len(text)
 
+    def _cached(self, name, compute):
+        """A value of the shown change and comparison, computed once for
+        them: the drawing needs it on every frame.
+        """
+        key = (name, self._compare, tuple(self._files))
+        change, cache = getattr(self, '_cache', (None, {}))
+        if change is not self._change:
+            cache = {}
+            self._cache = (self._change, cache)
+        if key not in cache:
+            cache[key] = compute()
+        return cache[key]
+
+    def _touched(self):
+        """The numbers of the threads the comparison touches."""
+        return self._cached('touched', lambda: self._interface.core.touched_threads(
+            self._change, *self._compare))
+
+    def _groups(self):
+        """The threads by file, see core.threads_by_file()."""
+        if not self._change:
+            return []
+        return self._cached('groups', lambda: self._interface.core.threads_by_file(
+            self._change, self._files, *self._compare))
+
+    def _comment_rows(self):
+        """The rows of the comments pane: (path, None) for a file's header,
+        (path, index into _comments()) for a thread.
+        """
+        rows, index = [], 0
+        for path, threads in self._groups():
+            rows.append((path, None))
+            for _comment in threads:
+                rows.append((path, index))
+                index += 1
+        return rows
+
     def _comments(self):
-        """The threads in the comments pane's order."""
-        return self._interface.core.threads_in_list_order(self._change.comments) \
-            if self._change else []
+        """The threads in the comments pane's order: by file, see
+        _groups().
+        """
+        return [comment for _path, threads in self._groups() for comment in threads]
 
     def _markers(self):
         """Threads on the shown file: (side, line) -> numbers of threads."""
@@ -4108,9 +4184,14 @@ class ChangeView:
                     self._stack_index = self._stack_first(height) + offset
                 elif FILES == pane and offset < len(self._files):
                     self._file_index = offset
-                elif COMMENTS == pane and offset + getattr(self, '_comments_first', 0) < len(
-                        self._change.comments):
-                    self._comment_index = offset + getattr(self, '_comments_first', 0)
+                elif COMMENTS == pane:
+                    rows = self._comment_rows()
+                    row = offset + getattr(self, '_comments_first', 0)
+                    if row >= len(rows):
+                        return
+                    # A header picks its first thread
+                    self._comment_index = rows[row][1] if rows[row][1] is not None else \
+                        rows[min(row + 1, len(rows) - 1)][1]
                     self._show_comment_in_diff(self._selected_comment())
                 elif DIFF == pane:
                     self._diff.cursor = self._diff.stop_of(min(self._diff.scroll + offset,

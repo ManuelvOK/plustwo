@@ -131,6 +131,8 @@ class WebTest(unittest.TestCase):
         thread = next(comment for comment in change['comments'] if comment['number'] == number)
         self.assertEqual('resolved', thread['status'])
         self.assertEqual('old', thread['side'])
+        # Answered since the patch set: touched in base -> latest
+        self.assertTrue(thread['touched'])
         self.assertEqual('+2', change['code_review'])
         self.assertTrue(change['files'][1]['reviewed'])
         self.assertTrue(any(comment['path'] == '/PATCHSET_LEVEL'

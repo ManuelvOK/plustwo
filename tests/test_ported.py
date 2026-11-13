@@ -160,6 +160,45 @@ class PortTest(unittest.TestCase):
         # A newer thread shown on an older patch set moves back
         self.assertEqual(shown(4, 'base', '2'), core.ShownThread('a.txt', 11, new, 'PS3'))
 
+    def test_touched_threads(self):
+        first = self.commit({'a.txt': LINES.replace('line 5', 'line five')}, 'PS1', self.base)
+        second = self.commit({'a.txt': LINES.replace('line 5', 'line five')
+                              .replace('line 15', 'line fifteen')}, 'PS2', self.base)
+
+        def thread(number, place, *messages):
+            return core.Comment(number=number, place=place, patch_set=1,
+                                messages=[core.Message(*message) for message in messages])
+
+        reviewer, author = core.REVIEWER, core.AUTHOR
+        threads = [thread(1, 'a.txt:5', (reviewer, 'x', True, None, 50)),
+                   thread(2, 'a.txt:15', (reviewer, 'x', True, None, 50)),
+                   # Answered after PS2's upload
+                   thread(3, 'a.txt:3', (reviewer, 'x', True, None, 50),
+                          (author, 'y', True, None, 250)),
+                   thread(4, 'b.txt', (reviewer, 'x', True, None, 50)),
+                   thread(5, core.PATCHSET_LEVEL, (reviewer, 'x', True, None, 50)),
+                   # Waits for the reviewer, on an unchanged line
+                   thread(6, 'a.txt:8', (reviewer, 'x', True, True, 50),
+                          (author, 'y', True, None, 90)),
+                   thread(7, 'a.txt', (reviewer, 'x', True, None, 50))]
+        change = core.Change(change_id='I' + '0' * 40, commit=second, subject='', topic='t',
+                             comments=threads, patch_sets={1: first, 2: second},
+                             uploads={1: 100, 2: 200})
+        self.assertEqual({2, 3, 7}, core.touched_threads(change, '1', '2', self.directory))
+        self.assertEqual({2, 3, 6, 7}, core.relevant_threads(change, '1', '2',
+                                                             repository=self.directory))
+        # Against base: the change's code, the messages since PS1
+        self.assertEqual({1, 2, 3, 7}, core.touched_threads(change, 'base', '2', self.directory))
+        self.assertEqual({1, 2, 3, 4, 5, 6, 7}, core.touched_threads(change, 'base', '1',
+                                                                     self.directory))
+        self.assertEqual(set(), core.touched_threads(change, '2', '2', self.directory) - {3})
+        groups = core.threads_by_file(change, [core.COMMIT_MSG, 'a.txt', 'b.txt'], '1', '2',
+                                      self.directory)
+        self.assertEqual([(core.PATCHSET_LEVEL, [5]), ('a.txt', [1, 2, 3, 6, 7]),
+                          ('b.txt', [4])],
+                         [(path, [comment.number for comment in comments])
+                          for path, comments in groups])
+
     def test_new_thread_in_left_pane(self):
         first = self.commit({'a.txt': LINES + 'x\n'}, 'PS1', self.base)
         second = self.commit({'a.txt': LINES + 'y\n'}, 'PS2', self.base)

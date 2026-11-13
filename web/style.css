@@ -121,6 +121,8 @@ tr.gap td { text-align: center; color: var(--dim); background: var(--panel); cur
 .thread .chip { font-weight: 600; }
 .thread .actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
 .thread.resolved { opacity: 0.75; }
+/* Resolved and left as it was by the comparison */
+.thread.resolved.untouched { color: var(--dim); }
 .editor { margin: 4px 8px 8px; }
 .editor .actions { display: flex; gap: 6px; margin-top: 4px; }
 dialog { border: 1px solid var(--line); border-radius: 8px; background: var(--bg);
