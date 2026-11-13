@@ -264,6 +264,62 @@ class FlowTest(unittest.TestCase):
         self.assertIn('(Submitted)', show)
         self.assertIn('Keep the text as is', show)
 
+    def test_stack_keeps_its_base(self):
+        # Uploaded from a worktree whose base is spec, reviewed from one
+        # whose base is main
+        repo = self.repo
+        repo.git('switch', '--quiet', '-c', 'spec')
+        repo.commit('spec.txt', 'spec\n', 'Spec')
+        repo.git('switch', '--quiet', '-c', 'feature')
+        repo.commit('a.txt', 'a\n', 'Add a')
+        repo.commit('b.txt', 'b\n', 'Add b')
+        repo.change('config', 'review.base', 'spec')
+        repo.change('upload')
+        self.assertEqual(repo.git('symbolic-ref', 'refs/plustwo/bases/feature'),
+                         'refs/heads/spec')
+        repo.change('config', '--unset', 'review.base')
+        listing = repo.change('list')
+        self.assertIn('→ spec', listing)
+        self.assertNotIn('Spec', listing)
+        # Without a recorded base, the setting's: the spec commit is in it
+        repo.git('symbolic-ref', '--delete', 'refs/plustwo/bases/feature')
+        self.assertIn('Spec', repo.change('list'))
+        repo.change('config', 'review.base', 'spec')
+        repo.change('upload')
+        repo.change('config', '--unset', 'review.base')
+        self.assertNotIn('Spec', repo.change('list'))
+        # spec moves on: the stack needs a rebase onto spec, not main
+        repo.git('switch', '--quiet', 'spec')
+        repo.commit('spec.txt', 'spec 2\n', 'Spec 2')
+        repo.git('switch', '--quiet', 'feature')
+        self.assertIn('rebased, 2 new', repo.change('rebase', '--topic', 'feature'))
+        self.assertEqual(repo.git('rev-parse', f'{repo.stack("feature")}~2'),
+                         repo.git('rev-parse', 'spec'))
+        repo.approve('1')
+        repo.approve('2')
+        main = repo.git('rev-parse', 'main')
+        self.assertIn('Submitted', repo.change('submit', '2'))
+        self.assertEqual(repo.git('rev-parse', 'main'), main)
+        self.assertEqual(repo.git('log', '-1', '--format=%s', 'spec'), 'Add b')
+        self.assertIn('(Submitted)', repo.change('show', repo.git(
+            'log', '-1', '--format=%(trailers:key=Change-Id,valueonly)', 'spec')[:8]))
+
+    def test_upload_moves_stack_to_new_base(self):
+        repo = self.repo
+        repo.git('switch', '--quiet', '-c', 'spec')
+        repo.commit('spec.txt', 'spec\n', 'Spec')
+        repo.git('switch', '--quiet', '-c', 'feature')
+        repo.commit('a.txt', 'a\n', 'Add a')
+        repo.change('config', 'review.base', 'spec')
+        repo.change('upload')
+        repo.change('config', '--unset', 'review.base')
+        # Same commits, base main: the spec commit joins the stack
+        output = repo.change('upload')
+        self.assertIn('feature: moved from spec to main', output)
+        self.assertIn('Spec', repo.change('list'))
+        self.assertEqual(repo.git('symbolic-ref', 'refs/plustwo/bases/feature'),
+                         'refs/heads/main')
+
     def test_old_layout_is_migrated(self):
         repo = self.repo
         self.two_changes('review/old')

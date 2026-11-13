@@ -10,7 +10,9 @@ a real Gerrit later, and Gerrit sees it as the same change.
 Like with a Gerrit server, the review has its own place, refs/plustwo/,
 apart from the author's branches. The author works on any local branch and
 uploads its stack: the commits not on the base branch yet (main, or the
-setting review.base), as refs/plustwo/stacks/<topic>. The
+setting review.base), as refs/plustwo/stacks/<topic>. Like the target
+branch of a Gerrit change, that base branch is recorded with the stack,
+so stacks from worktrees with other bases are reviewed side by side. The
 reviewer's actions (a rebase, a submit) change only that place and the
 base branch, never a checkout. plustwo pull brings them into the
 author's branch. Submitting a change moves the base branch forward to it,
@@ -59,7 +61,7 @@ Usage:
     plustwo pull                        brings the reviewer's rebase or submit
                                         into the checked out branch
     plustwo rebase CHANGE|--topic TOPIC
-                                        rebases a stack onto the base branch,
+                                        rebases a stack onto its base branch,
                                         without a checkout. On a conflict the
                                         author is asked to do it.
     plustwo submit CHANGE               moves the base branch to the change,
@@ -148,7 +150,9 @@ Settings are kept in files of their own, in git config syntax, not in
 git's config: ~/.config/plustwo/config for the user ($XDG_CONFIG_HOME
 moves it) and .git/plustwo/config for a repository, which wins.
 plustwo config changes them, git config --file works too. Settings:
-    review.base                         the base branch, default main.
+    review.base                         the base branch of uploads, default
+                                        main. A stack keeps the one it was
+                                        uploaded with.
                                         Older versions used the git config
                                         change.base, still read, which init
                                         moves out of .git/config.
@@ -201,6 +205,11 @@ NOTES_REF = 'refs/notes/review'
 # stacks and the patch sets. The author's local branches stay apart.
 PLUSTWO_PREFIX = 'refs/plustwo/'
 STACK_PREFIX = 'refs/plustwo/stacks/'
+# The base branch of each stack, a symbolic ref to it (refs/heads/<base>),
+# like the target branch of a change in Gerrit. It stays after a submit or
+# abandon, so submitted changes are found on it. Delete one with git
+# symbolic-ref --delete, git update-ref -d would delete the branch.
+STACK_BASE_PREFIX = 'refs/plustwo/bases/'
 PATCH_SET_PREFIX = 'refs/plustwo/patchsets/'
 # Where older versions kept patch sets and stacks (local review/ branches)
 OLD_PATCH_SET_PREFIX = 'refs/patchsets/'
@@ -425,6 +434,8 @@ class Change:
     # The repository's working tree and its name, for showing several
     repository: str | None = None
     repo: str = ''
+    # The base branch of the change's stack, see stack_base()
+    base: str = ''
 
     def uploader(self):
         """Who uploaded the latest patch set, '' if unknown."""
@@ -1059,16 +1070,51 @@ def commits_between(start, end, repository=None):
     return output.split('\n') if output else []
 
 
+def stack_bases(repository=None):
+    """The recorded base branches of the stacks: topic -> branch. Stacks
+    uploaded by older versions have none.
+    """
+    output = git('for-each-ref', '--format=%(refname) %(symref)', STACK_BASE_PREFIX, check=False,
+                 repository=repository)
+    bases = {}
+    for line in filter(None, output.split('\n')):
+        ref, _, target = line.partition(' ')
+        if target.startswith('refs/heads/'):
+            bases[ref[len(STACK_BASE_PREFIX):]] = target[len('refs/heads/'):]
+    return bases
+
+
+def stack_base(topic, repository=None):
+    """The base branch of a stack: the one recorded at its upload, else the
+    setting review.base.
+    """
+    target = git('symbolic-ref', '--quiet', STACK_BASE_PREFIX + topic, check=False,
+                 repository=repository)
+    if target.startswith('refs/heads/'):
+        return target[len('refs/heads/'):]
+    return base_branch(repository)
+
+
+def set_stack_base(topic, base, repository=None):
+    """Records the base branch of a stack."""
+    git('symbolic-ref', STACK_BASE_PREFIX + topic, f'refs/heads/{base}', repository=repository)
+
+
+def base_branches(repository=None):
+    """Every base branch in use: the setting's and the stacks' ones."""
+    return sorted({base_branch(repository), *stack_bases(repository).values()})
+
+
 def needs_rebase(topic, repository=None):
-    """Whether the base branch moved on since the stack's last rebase."""
-    return not is_ancestor(base_branch(repository), stack_ref(topic), repository)
+    """Whether the stack's base branch moved on since its last rebase."""
+    return not is_ancestor(stack_base(topic, repository), stack_ref(topic), repository)
 
 
 def stack_commits(topic, repository=None):
-    """Commits of an uploaded stack that are not on the base branch, oldest
+    """Commits of an uploaded stack that are not on its base branch, oldest
     first.
     """
-    return commits_between(base_branch(repository), stack_ref(topic), repository)
+    return commits_between(stack_base(topic, repository), stack_ref(topic), repository)
 
 
 def topic_of_branch(branch):
@@ -1108,6 +1154,8 @@ def stack_version(repository=None):
     every upload, rebase, submit and note write, so a viewer knows when to
     reload.
     """
+    # The stacks' base branches are in it too, by their refs in
+    # refs/plustwo/bases/.
     return git('for-each-ref', '--format=%(refname) %(objectname)',
                f'refs/heads/{base_branch(repository)}', NOTES_REF, PLUSTWO_PREFIX, check=False,
                repository=repository)
@@ -1469,8 +1517,10 @@ def changes_in_stack(repository=None):
         change_id, number = ref[len(PATCH_SET_PREFIX):].rsplit('/', 1)
         all_patch_sets.setdefault(change_id, {})[int(number)] = commit
     stacks = []
-    base = base_branch(repository)
+    default = base_branch(repository)
+    bases = stack_bases(repository)
     for topic in topics(repository):
+        base = bases.get(topic, default)
         output = git('log', '--reverse', '--format=%H%x1f%s%x1f%B%x1e',
                      f'{base}..{stack_ref(topic)}', check=False, repository=repository)
         for entry in filter(str.strip, output.split('\x1e')):
@@ -1486,6 +1536,7 @@ def changes_in_stack(repository=None):
     for change in changes:
         change.repository = root
         change.repo = Path(root).name if root else ''
+        change.base = bases.get(change.topic, default)
     return changes
 
 
@@ -1564,10 +1615,13 @@ def submitted_change(reference, repository=None):
         path, change_id = found[0]
         patch_sets = patch_sets_of(change_id, path)
         commit = patch_sets[max(patch_sets)]
-        if is_ancestor(commit, base_branch(path), path):
+        base = next((branch for branch in base_branches(path)
+                     if is_ancestor(commit, branch, path)), None)
+        if base is not None:
             change = change_from(commit, '', read_note(commit, path), path, change_id,
                                  patch_sets=patch_sets)
             change.submitted = True
+            change.base = base
             change.repository = toplevel(path)
             change.repo = Path(change.repository).name
             return change
@@ -1717,8 +1771,13 @@ def upload(branch=None, topic=None, repository=None, wip=None):
     A branch on top of another stack makes that stack bigger, under its
     topic, like a longer relation chain in Gerrit. wip True or False marks
     every change of the stack work in progress or ready, like Gerrit's %wip
-    and %ready. Returns ([(change, patch set number, kind)] of the new
-    patch sets, the topic, whether an existing stack grew).
+    and %ready.
+
+    The uploader's base branch is recorded as the stack's, like the target
+    branch of a Gerrit change. An upload from a branch on another base
+    moves the stack there. Returns ([(change, patch set number, kind)] of
+    the new patch sets, the topic, whether an existing stack grew, the base
+    the stack moved away from or None).
     """
     with review_lock(repository):
         ensure_layout(repository)
@@ -1776,10 +1835,13 @@ def upload(branch=None, topic=None, repository=None, wip=None):
             write_note(commit, note_of(change), repository)
         old_top = git('rev-parse', '--verify', '--quiet', stack_ref(topic), check=False,
                       repository=repository)
-        if not uploaded and old_top == tip and not marked:
+        old_base = stack_bases(repository).get(topic)
+        if not uploaded and old_top == tip and not marked and base == old_base:
             raise ChangeError(f'{topic} is uploaded already, nothing changed')
         git('update-ref', stack_ref(topic), tip, repository=repository)
-        return uploaded, topic, grown
+        set_stack_base(topic, base, repository)
+        moved = old_base if old_top and old_base and old_base != base else None
+        return uploaded, topic, grown, moved
 
 
 def branch_with_change(reference, repository=None):
@@ -1828,7 +1890,7 @@ def submittable_in(stack, repository=None):
     would submit now without force: they and the changes below them have
     their votes and nothing unresolved, and the base branch didn't move.
     """
-    base = base_branch(repository)
+    base = stack[0].base if stack else None
     result = set()
     for change in stack:
         if change.submit_problems() or change.unfinished_comments():
@@ -1877,7 +1939,7 @@ def submit(change_id, force=False, repository=None):
         if unfinished and not force:
             raise ChangeError(f'unresolved threads: {", ".join(unfinished)}')
 
-        base = base_branch(repository)
+        base = change.base
         if not is_ancestor(base, change.commit, repository):
             raise ChangeError(f'{base} moved on, rebase the stack {change.topic} onto it first')
 
@@ -1896,6 +1958,8 @@ def submit(change_id, force=False, repository=None):
 
         top = git('rev-parse', stack_ref(change.topic), repository=repository)
         if top == change.commit:
+            # The stack's base ref stays, so show still finds the
+            # submitted changes on that branch.
             git('update-ref', '-d', stack_ref(change.topic), top, repository=repository)
         return submitted
 
@@ -1954,7 +2018,7 @@ def raw_commit(commit, repository=None):
 
 
 def rebase_stack(topic, repository=None):
-    """The reviewer's rebase of a stack onto the base branch, like Gerrit's
+    """The reviewer's rebase of a stack onto its base branch, like Gerrit's
     Rebase button. It needs no worktree: each commit is merged onto the new
     parent with git merge-tree. Every change gets a new patch set with its
     review, and the stack moves. The local branches stay, the author's
@@ -1965,7 +2029,7 @@ def rebase_stack(topic, repository=None):
     patch sets [(change, number, kind)], or None after a conflict.
     """
     with review_lock(repository):
-        base = base_branch(repository)
+        base = stack_base(topic, repository)
         top = git('rev-parse', '--verify', '--quiet', stack_ref(topic), check=False,
                   repository=repository)
         if not top:
@@ -2099,7 +2163,7 @@ def pull(repository=None):
     worktree. The branch is never deleted.
     """
     branch = current_branch(repository)
-    base = base_branch(repository)
+    base = stack_base(topic_of_branch(branch or ''), repository)
     if branch is None:
         raise ChangeError('HEAD is detached, check out the branch to pull into')
     if base == branch:
@@ -3797,7 +3861,7 @@ def inbox_lines(repositories, topic=None):
                 continue
             if change.rebase_requested:
                 lines.append(f'rebase {name} {change.topic}: conflicts with '
-                             f'{base_branch(repository)}, rebase locally and upload')
+                             f'{change.base}, rebase locally and upload')
             for label in LABEL_RANGES:
                 for vote in change.current_votes(label):
                     if vote.value < 0:
@@ -3892,6 +3956,8 @@ def watch(repositories, output=sys.stdout, topic=None):
     versions = {repository: stack_version(repository) for repository in repositories}
     known = {repository: events_of(repository, topic) for repository in repositories}
     stacks = {repository: stacks_of(repository, topic) for repository in repositories}
+    # The stacks' base branches, as they were before a submit removed them
+    bases = {repository: stack_bases(repository) for repository in repositories}
     while True:
         time.sleep(WATCH_INTERVAL_SECONDS)
         for repository in repositories:
@@ -3908,8 +3974,11 @@ def watch(repositories, output=sys.stdout, topic=None):
             # Changes that left a stack and are on the base branch now
             now = stacks_of(repository, topic)
             stacks_before = stacks[repository]
-            base = base_branch(repository)
+            default = base_branch(repository)
+            bases_before = bases[repository]
+            bases[repository] = {**bases_before, **stack_bases(repository)}
             for stack_topic, before in stacks_before.items():
+                base = bases_before.get(stack_topic, default)
                 left = [commit for change_id, commit in before.items()
                         if change_id not in now.get(stack_topic, {})]
                 gone = [commit for commit in left if is_ancestor(commit, base, repository)]
@@ -3924,7 +3993,8 @@ def watch(repositories, output=sys.stdout, topic=None):
             # The submitted changes' last messages and votes, e.g. a reply
             # sent together with the submit, are in their commits' notes.
             submitted = []
-            for before in stacks_before.values():
+            for stack_topic, before in stacks_before.items():
+                base = bases_before.get(stack_topic, default)
                 for change_id, commit in before.items():
                     if change_id not in {change.change_id for change in current} and \
                             is_ancestor(commit, base, repository):
@@ -4049,7 +4119,7 @@ def print_overview(arguments):
             print('     (none)')
         for number, change in rows:
             print(f'{number:>4}  {change.short_id()}  {change.repo:<12.12} {change.topic:<14.14} '
-                  f'{change.subject:<40.40}  {vote_label(change, CODE_REVIEW):>2} '
+                  f'{"→ " + change.base:<12.12} {change.subject:<40.40}  {vote_label(change, CODE_REVIEW):>2} '
                   f'{vote_label(change, VERIFIED):>2}  {change.turn():<11}  '
                   f'{comment_counts(change)}')
 
@@ -4141,11 +4211,13 @@ def parse_arguments(argv):
     def upload_command(arguments):
         branch = branch_with_change(arguments.change) if arguments.change else None
         wip = True if arguments.wip else False if arguments.ready else None
-        uploaded, topic, grown = upload(branch, arguments.topic, wip=wip)
+        uploaded, topic, grown, moved = upload(branch, arguments.topic, wip=wip)
         if start_check(topic):
             print(f'{topic}: check started, it votes Verified')
         if grown:
             print(f'added to stack {topic}')
+        if moved:
+            print(f'{topic}: moved from {moved} to {stack_base(topic)}')
         if wip is not None:
             print(f'{topic}: ' + ('work in progress' if wip else 'ready for review'))
         for other, number, kind in uploaded:

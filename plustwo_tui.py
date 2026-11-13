@@ -1574,8 +1574,8 @@ class StackView:
         right = f'{len(self._changes)} in review in {repositories} repo(s)' + (
             f', your turn on {mine}' if mine else '') + ' '
         out(0, max(area.width - len(right), 1), right, bar)
-        subject_width = max(area.width - 104, 16)
-        out(2, 1, f'{"#":>3}  {"Change":<9} {"Repo":<12} {"Topic":<14} '
+        subject_width = max(area.width - 115, 16)
+        out(2, 1, f'{"#":>3}  {"Change":<9} {"Repo":<12} {"Topic":<14} {"Base":<10} '
             f'{"Subject":<{subject_width}} {"PS":<5} {"CR":<7} {"V":<7} {"Turn":<10} Comments',
             self._interface.dim() | curses.A_UNDERLINE)
         height = area.height - self.TOP
@@ -1609,8 +1609,9 @@ class StackView:
             behind = (change.repository, change.topic) in self._behind
             out(row, 29, f'{("↻ " if behind else "") + change.topic:<14.14} ',
                 attributes | (curses.color_pair(3) if behind else secondary_text))
-            out(row, 44, f'{change.subject:<{subject_width}.{subject_width}} ', attributes | dim)
-            column = 45 + subject_width
+            out(row, 44, f'{change.base:<10.10} ', attributes | secondary_text)
+            out(row, 55, f'{change.subject:<{subject_width}.{subject_width}} ', attributes | dim)
+            column = 56 + subject_width
             out(row, column, f'{core.version_label(change):<5} ', attributes | secondary_text)
             column += 6
             for label, short in ((core.CODE_REVIEW, 'CR'), (core.VERIFIED, 'V')):
@@ -1714,26 +1715,15 @@ def approve(interface, change):
     interface.say(f'Code-Review+2 on PS{number}' + (f', {sent} draft(s) sent.' if sent else '.'), OK)
 
 
-def stack_heading(core, topic, changes, rebase_key='B'):
-    """A stack's heading in the list: its topic and whether it needs a
-    rebase, which rebase_key does.
-    """
-    if any(change.rebase_requested for change in changes if change.topic == topic):
-        return f'{topic}  (conflicts with {core.base_branch()}, the author rebases)'
-    if core.needs_rebase(topic):
-        return f'{topic}  ({core.base_branch()} moved on, {rebase_key} rebases)'
-    return topic
-
-
 def rebase_with_confirmation(interface, change):
     """B: rebases the change's stack onto the base branch, after asking.
     On a conflict the author is asked to do it.
     """
     core = interface.core
     if not core.needs_rebase(change.topic):
-        interface.say(f'{change.topic} is on {core.base_branch()} already.')
+        interface.say(f'{change.topic} is on {change.base} already.')
         return
-    if not interface.confirm([f'Rebase the stack {change.topic} onto {core.base_branch()}.',
+    if not interface.confirm([f'Rebase the stack {change.topic} onto {change.base}.',
                               'Every change gets a new patch set.'], 'Rebase?'):
         return
     rebased = core.rebase_stack(change.topic)
@@ -1785,7 +1775,7 @@ def submit_with_confirmation(interface, change):
                              + ['', f'{interface.keymap.label("approve")} gives Code-Review+2. '
                                 'Verified comes from a check.'])
         return
-    lines = [f'Submit to {core.base_branch()}:']
+    lines = [f'Submit to {change.base}:']
     lines += [f'  {other.short_id()}  {other.subject}' for other in submitted]
     unfinished = [(other, comment) for other in submitted
                   for comment in other.unfinished_comments()]
@@ -3262,7 +3252,7 @@ class ChangeView:
         bar = self._interface.colour_pairs.attribute(15, tone(HEADER_BACKGROUND))
         header_dim = self._interface.dim(background=tone(HEADER_BACKGROUND))
         out(0, 0, ' ' * area.width, bar)
-        place = f'{change.repo} › {change.topic} ›' if change.repo else f'{change.topic} ›'
+        place = (f'{change.repo} › ' if change.repo else '') + f'{change.topic} on {change.base} ›'
         out(0, 1, place, header_dim)
         out(0, 2 + len(place), change.subject, bar | curses.A_BOLD)
         state = f' {change.state()} '
@@ -3321,7 +3311,8 @@ class ChangeView:
         chain, this one marked, the cursor row highlighted while focused.
         """
         out = self._interface.text
-        self._frame(STACK, f'Stack ({len(self._stack)})')
+        base = self._change.base
+        self._frame(STACK, f'Stack ({len(self._stack)}) on {base}')
         top, left, height, width = self._layout[STACK]
         shown = list(reversed(self._stack))
         first = self._stack_first(height)

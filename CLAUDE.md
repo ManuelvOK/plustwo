@@ -45,6 +45,13 @@ every command.
 - `refs/plustwo/stacks/<topic>`: the uploaded stacks, the "server". The
   reviewer's actions change only these refs and the base branch, never a
   local branch or checkout. `plustwo pull` brings them to the author.
+- `refs/plustwo/bases/<topic>`: the base branch of a stack, a symbolic
+  ref to `refs/heads/<base>`, like Gerrit's target branch. upload records
+  the uploader's `review.base`, an upload with another base moves the
+  stack. Listing, rebase checks, rebase and submit use it, stacks without
+  one the setting. It stays after a submit, so `show` finds submitted
+  changes on it. Delete it with `git symbolic-ref --delete`, never
+  `update-ref -d` (that deletes the branch).
 - `refs/plustwo/patchsets/<Change-Id>/<n>`: the patch sets.
 - Older repositories (`refs/patchsets/`, local `review/*` branches) are
   migrated on first use, `plustwo init` removes the old patch set refs.

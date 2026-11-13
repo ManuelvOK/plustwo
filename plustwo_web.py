@@ -88,7 +88,7 @@ def vote_json(vote):
 
 def change_summary(core, change, repository):
     return {'id': change.change_id, 'short_id': change.short_id(), 'subject': change.subject,
-            'topic': change.topic, 'state': change.state(),
+            'topic': change.topic, 'base': change.base, 'state': change.state(),
             'patch_set': change.latest_patch_set(), 'turn': change.turn(),
             'code_review': core.vote_label(change, core.CODE_REVIEW),
             'verified': core.vote_label(change, core.VERIFIED),
@@ -145,7 +145,8 @@ class Server:
         for change in core.changes_in_stack(repository):
             stacks.setdefault(change.topic, []).append(change_summary(core, change, repository))
         return {'base': core.base_branch(repository),
-                'stacks': [{'topic': topic, 'needs_rebase': core.needs_rebase(topic, repository),
+                'stacks': [{'topic': topic, 'base': changes[0]['base'],
+                            'needs_rebase': core.needs_rebase(topic, repository),
                             'changes': changes} for topic, changes in stacks.items()]}
 
     def dashboard(self, _query):
