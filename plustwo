@@ -1911,6 +1911,31 @@ def submittable_in(stack, repository=None):
     return result
 
 
+# The marks of a stack's changes, see stack_marks()
+SUBMITTABLE_MARK = '✓'
+APPROVED_MARK = '+2'
+
+
+def is_review_finished(change):
+    """Whether the reviewer is done with a change: the highest Code-Review
+    on its latest patch set, no -2, and no thread unresolved.
+    """
+    return change.is_approved(CODE_REVIEW) and not change.unfinished_comments()
+
+
+def stack_marks(stack, repository=None):
+    """Marks for the changes of a stack (oldest first): Change-Id ->
+    SUBMITTABLE_MARK for those submit would take now, APPROVED_MARK for
+    those whose review is finished but which can't be submitted yet, e.g.
+    because a change below isn't ready, Verified is missing or the stack
+    needs a rebase. Changes without a mark are left out.
+    """
+    submittable = submittable_in(stack, repository)
+    return {change.change_id: SUBMITTABLE_MARK if change.change_id in submittable
+            else APPROVED_MARK for change in stack
+            if change.change_id in submittable or is_review_finished(change)}
+
+
 def worktrees_with(branch, repository=None):
     """Paths of the worktrees that have a branch checked out."""
     output = git('worktree', 'list', '--porcelain', repository=repository)

@@ -3078,9 +3078,9 @@ class ChangeView:
         # is scrolled
         self._message = ('', '', [])
         self._message_scroll = 0
-        # The Change-Ids of the stack that could be submitted now, and those
-        # where it is the user's turn
-        self._submittable = set()
+        # The marks of the stack's changes (core.stack_marks()), and the
+        # Change-Ids where it is the user's turn
+        self._marks = {}
         self._yours = set()
         self._behind = None
 
@@ -3176,7 +3176,7 @@ class ChangeView:
                                if other.topic == change.topic]
                 if STACK != self._focus:
                     self._stack_index = self._current_in_stack()
-                self._submittable = core.submittable_in(self._stack)
+                self._marks = core.stack_marks(self._stack)
                 self._message = core.commit_message_parts(change.commit)
                 # Where it is the user's turn, like the dashboard's "▶ you"
                 user = core.current_user()
@@ -3306,7 +3306,9 @@ class ChangeView:
 
     def _draw_stack(self):
         """The changes of the stack, newest on top like Gerrit's relation
-        chain, this one marked, the cursor row highlighted while focused.
+        chain: a green mark for submittable (✓) or finished (+2), grey
+        where it isn't the user's turn, this one bold. The cursor row is
+        highlighted while focused, else this one.
         """
         out = self._interface.text
         base = self._change.base
@@ -3314,27 +3316,34 @@ class ChangeView:
         top, left, height, width = self._layout[STACK]
         shown = list(reversed(self._stack))
         first = self._stack_first(height)
+        pairs = self._interface.colour_pairs
+        focused = STACK == self._focus
+        # The one whole-line highlight: the cursor while the pane has the
+        # focus, else the shown change, tinted like the diff's cursor line
+        tint = (cursor_tint(-1) if TRUE_COLOUR else CURSOR_LINE_GREY) \
+            if curses.COLORS >= 256 else None
         for row, other in enumerate(shown[first:first + height]):
             is_current = other.change_id == self._change_id
-            attributes = curses.A_BOLD if is_current else self._interface.dim()
-            if other.change_id in self._yours:
-                # In the turn colour of the dashboard
-                attributes = curses.A_BOLD | curses.color_pair(3)
-            if first + row == self._stack_index and STACK == self._focus:
-                attributes = curses.A_REVERSE | (curses.A_BOLD if is_current else 0)
-                out(top + row, left, ' ' * width, attributes, left + width)
-            marker = ''
-            if other.change_id in self._submittable:
-                # The subject gets shorter, not the marker
-                marker = (' (submittable)' if width >= 30 else ' (sub)' if width >= 16 else ' ✓')
-            subject = other.subject[:max(width - 2 - len(marker), 0)]
-            mark = '▶ ' if is_current else '› ' if other.change_id in self._yours else '  '
-            out(top + row, left, mark + subject, attributes, left + width)
-            if marker:
-                # Always green, at the right end. Its own colour pair, not
-                # added to the row's, which would mix the two.
-                own = (attributes & (curses.A_BOLD | curses.A_REVERSE)) | curses.color_pair(2)
-                out(top + row, left + width - len(marker), marker, own, left + width)
+            mine = other.change_id in self._yours
+            background = -1
+            if focused and first + row == self._stack_index:
+                attributes = curses.A_REVERSE
+                mark_attributes = attributes | curses.color_pair(2)
+            else:
+                if is_current and not focused and tint is not None:
+                    background = tint
+                # Grey where it is not the user's turn
+                attributes = pairs.attribute(-1 if mine else SECONDARY, background)
+                mark_attributes = pairs.attribute(2, background)
+            if is_current:
+                attributes |= curses.A_BOLD
+                mark_attributes |= curses.A_BOLD
+            out(top + row, left, ' ' * width, attributes, left + width)
+            # Like the file box's ✓: submittable, or +2 for a finished
+            # review that can't be submitted yet
+            mark = self._marks.get(other.change_id, '')
+            out(top + row, left, f'{mark:<2}', mark_attributes, left + width)
+            out(top + row, left + 3, other.subject[:max(width - 3, 0)], attributes, left + width)
 
     def _message_lines(self, width):
         """The commit message as rows of the box: (text, attributes), the

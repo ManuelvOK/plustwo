@@ -563,16 +563,24 @@ class SubmittableTest(unittest.TestCase):
                 return [change.subject for change in stack
                         if change.change_id in core.submittable_in(stack, directory)]
 
+            def marks():
+                stack = core.changes_in_stack(directory)
+                found = core.stack_marks(stack, directory)
+                return [found.get(change.change_id, '') for change in stack]
+
             self.assertEqual([], submittable())
             # The upper one alone isn't, the one below lacks its +2.
             repo.approve('2')
             self.assertEqual([], submittable())
+            self.assertEqual(['', '+2'], marks())
             repo.approve('1')
             self.assertEqual(['Add a', 'Add b'], submittable())
-            # Not after the base moved on
+            self.assertEqual(['✓', '✓'], marks())
+            # Not after the base moved on, but the review stays finished
             repo.git('switch', '--quiet', 'main')
             repo.commit('c.txt', 'c\n', 'Other work')
             self.assertEqual([], submittable())
+            self.assertEqual(['+2', '+2'], marks())
         finally:
             shutil.rmtree(directory)
 
