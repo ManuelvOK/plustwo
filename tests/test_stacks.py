@@ -24,6 +24,10 @@ ENVIRONMENT = dict(os.environ, PATH=f'{ROOT}:{os.environ["PATH"]}',
                    GIT_COMMITTER_NAME='Author', GIT_COMMITTER_EMAIL='author@example.org')
 
 
+# For watch: no catch-up with what earlier tests' watches left in the state
+FUTURE = '9999999999'
+
+
 class Repository:
     """A scratch repository with plustwo set up."""
 
@@ -210,7 +214,8 @@ class FlowTest(unittest.TestCase):
         repo.change('upload')
         repo.approve('1')
         repo.approve('2')
-        watch = subprocess.Popen([str(ROOT / 'plustwo'), 'watch', '.'], cwd=repo.path,
+        watch = subprocess.Popen([str(ROOT / 'plustwo'), 'watch', '.', '--since', FUTURE],
+                                 cwd=repo.path,
                                  env=ENVIRONMENT, stdout=subprocess.PIPE, text=True)
         try:
             time.sleep(1.5)
@@ -229,6 +234,43 @@ class FlowTest(unittest.TestCase):
         self.assertIn(f'submitted {name} feature: 2 changes', lines)
         self.assertFalse(any(line.startswith('vote') for line in lines), lines)
 
+    def watch(self, *arguments):
+        """Runs watch until it ends by itself, returns its lines."""
+        return self.repo.run(str(ROOT / 'plustwo'), 'watch', '.', *arguments).stdout.split('\n')
+
+    def test_watch_restart_loses_nothing(self):
+        repo = self.repo
+        self.two_changes()
+        repo.change('upload')
+        name = repo.path.name
+        ids = [repo.git('log', '-1', '--format=%(trailers:key=Change-Id,valueonly)', commit)[:8]
+               for commit in ('HEAD~1', 'HEAD')]
+        watch = subprocess.Popen([str(ROOT / 'plustwo'), 'watch', '.', '--for', '0.05'],
+                                 cwd=repo.path, env=ENVIRONMENT, stdout=subprocess.PIPE, text=True)
+        time.sleep(1)
+        repo.change('comment', '1', 'a.txt:1', 'First', '--status', 'unresolved')
+        repo.change('done', '1', '1')
+        lines = watch.communicate()[0].split('\n')
+        self.assertIn(f'fyi {name} {ids[0]} #1 (resolved) a.txt:1', lines)
+        self.assertIn('watch ended, restart it to continue', lines)
+        # While no watch runs
+        time.sleep(1.1)
+        repo.change('comment', '2', 'b.txt:1', 'Second')
+        repo.approve('1')
+        repo.change('submit', '1')
+        # Times are in seconds: an event in the second a watch starts
+        # comes again on the next start, rather than never
+        time.sleep(1.1)
+        lines = self.watch('--for', '0.01')
+        self.assertIn(f'review {name} {ids[1]}: 1 new', lines)
+        self.assertIn(f'vote {name} {ids[0]} Code-Review+2 PS1 by reviewer', lines)
+        self.assertIn(f'submitted {name} feature: 1 change', lines)
+        # Reported once: the next start has nothing new
+        self.assertEqual(['watch ended, restart it to continue', ''], self.watch('--for', '0.01'))
+        # --since goes further back
+        self.assertIn(f'fyi {name} {ids[0]} #1 (resolved) a.txt:1',
+                      self.watch('--since', '0', '--for', '0.01'))
+
     def test_resolved_reply_reaches_author(self):
         # A resolved reply sent together with the submit: watch prints it,
         # and show still finds the submitted change.
@@ -245,7 +287,8 @@ class FlowTest(unittest.TestCase):
         time.sleep(1.1)
         repo.change('reply', change_id[:8], '1', 'Thanks.')
         self.assertNotIn('Noted for later', repo.change('inbox'))
-        watch = subprocess.Popen([str(ROOT / 'plustwo'), 'watch', '.'], cwd=repo.path,
+        watch = subprocess.Popen([str(ROOT / 'plustwo'), 'watch', '.', '--since', FUTURE],
+                                 cwd=repo.path,
                                  env=ENVIRONMENT, stdout=subprocess.PIPE, text=True)
         try:
             time.sleep(1.5)

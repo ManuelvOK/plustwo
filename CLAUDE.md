@@ -63,12 +63,15 @@ every command.
   never change. Messages and votes carry a `time`, `uploads` the patch
   sets' upload times: whose turn it is follows from them. `reviewed` maps
   files to a hash of their own diff. `/PATCHSET_LEVEL` threads are
-  messages on the whole change. `plustwo init` sets `notes.rewriteRef`, so
-  notes follow amends and rebases.
+  messages on the whole change. `submit` (time, topic, base) is written
+  on the submitted patch sets, so a restarted `watch` finds submits it
+  missed. `plustwo init` sets `notes.rewriteRef`, so notes follow amends
+  and rebases.
 - State (not settings): registered repositories and lists
   (`$XDG_STATE_HOME/plustwo/repos`), the dashboard's section order and
-  folding (`.../dashboard`) and the diff's follow-latest switch
-  (`.../view`), git config syntax. `make test` points
+  folding (`.../dashboard`), the diff's follow-latest switch
+  (`.../view`) and when each user's `watch` last reported something
+  (`.../watch`, `watch.<user>[ <topic>].time`), git config syntax. `make test` points
   XDG_STATE_HOME into `.test/`, tests never touch the real state.
 - Settings: own files in git config syntax, read with `git config --file`:
   `~/.config/plustwo/config` (user) and `.git/plustwo/config` (repository,

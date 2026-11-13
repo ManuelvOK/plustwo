@@ -100,11 +100,17 @@ Usage:
                                         this repository (all registered ones
                                         outside of one or with --all), and
                                         new replies on resolved threads (fyi)
-    plustwo watch [REPO...]             prints one line per change with new
+    plustwo watch [REPO...] [--since TIME] [--for MINUTES]
+                                        prints one line per change with new
                                         sent messages, per vote, and per stack
                                         submitted, rebased or to rebase, and
                                         the text of replies on resolved
-                                        threads (fyi), until stopped
+                                        threads (fyi), until stopped or for
+                                        MINUTES. It starts with what happened
+                                        since the user's last watch reported
+                                        something (or since TIME, like
+                                        2026-11-13T10:00 or 10:00), so a
+                                        restart loses nothing.
     plustwo serve [--port N] [REPO...]  web interface for the reviewer, on
                                         127.0.0.1 only (port 8022)
     plustwo check [TOPIC]               runs the check (checks.command) of a
@@ -1961,6 +1967,13 @@ def submit(change_id, force=False, repository=None):
         else:
             git('update-ref', f'refs/heads/{base}', change.commit, repository=repository)
 
+        # When and from which stack, for a watch started later, see
+        # submitted_since()
+        moment = int(time.time())
+        for other in submitted:
+            note = read_note(other.commit, repository)
+            note['submit'] = {'time': moment, 'topic': other.topic, 'base': base}
+            write_note(other.commit, note, repository)
         top = git('rev-parse', stack_ref(change.topic), repository=repository)
         if top == change.commit:
             # The stack's base ref stays, so show still finds the
@@ -4018,33 +4031,169 @@ def stacks_of(repository, topic=None):
     return stacks
 
 
-def watch(repositories, output=sys.stdout, topic=None):
+def watch_key(topic=None):
+    """The key of the watch state file that keeps when the current user's
+    watch (of one topic, if given) last reported something.
+    """
+    return f'watch.{current_user()}{" " + topic if topic else ""}.time'
+
+
+def last_watched(topic=None):
+    """When the user's last watch reported its last event, seconds since
+    1970, None if never.
+    """
+    values = state_values('watch', watch_key(topic))
+    return int(values[-1]) if values and values[-1].isdigit() else None
+
+
+def parse_time(text):
+    """A time like 1763030000 (seconds since 1970), 2026-11-13T10:00 or
+    10:00 (today), as seconds since 1970.
+    """
+    if text.isdigit():
+        return int(text)
+    import datetime  # pylint: disable=import-outside-toplevel
+    try:
+        if re.fullmatch(r'\d{1,2}:\d{2}(:\d{2})?', text):
+            moment = datetime.datetime.combine(datetime.date.today(),
+                                               datetime.time.fromisoformat(text.zfill(5)))
+        else:
+            moment = datetime.datetime.fromisoformat(text)
+    except ValueError as error:
+        raise ChangeError(f'not a time: {text}, give e.g. 2026-11-13T10:00 or 10:00') from error
+    return int(moment.timestamp())
+
+
+def submitted_since(repository, since, topic=None, changes=None):
+    """Changes submitted at or after since, by the submit record in their
+    notes, see submit(). changes are the stacks' changes if read already,
+    which are left out.
+    """
+    if changes is None:
+        changes = changes_in_stack(repository)
+    in_review = {change.change_id for change in changes}
+    latest = {}
+    for ref, commit in refs_with_prefix(PATCH_SET_PREFIX, repository=repository).items():
+        change_id, number = ref[len(PATCH_SET_PREFIX):].rsplit('/', 1)
+        if change_id not in in_review and int(number) > latest.get(change_id, (0, ''))[0]:
+            latest[change_id] = (int(number), commit)
+    notes = read_notes([commit for _, commit in latest.values()], repository)
+    submitted = []
+    for change_id, (_, commit) in latest.items():
+        record = notes.get(commit, {}).get('submit') or {}
+        if record.get('time', 0) >= since and (not topic or topic == record.get('topic')):
+            change = change_from(commit, record.get('topic', ''), notes[commit], repository,
+                                 change_id)
+            change.submitted = True
+            submitted.append(change)
+    return submitted
+
+
+def event_time(event, by_id):
+    """When an event of events_of() happened, None if it doesn't say."""
+    if 'message' == event[0]:
+        return by_id[event[1]].comment(event[2]).messages[event[3]].time
+    if 'vote' == event[0]:
+        _, change_id, label, value, patch_set, by = event
+        return next((vote.time for vote in by_id[change_id].votes
+                     if (vote.label, vote.value, vote.patch_set, vote.by)
+                     == (label, value, patch_set, by)), None)
+    if 'rebased' == event[0]:
+        return by_id[event[2]].uploads.get(event[3])
+    return None
+
+
+def report_events(name, new, by_id, say):
+    """Says the new events of a repository, see watch()."""
+    new_messages = {}
+    for event in sorted(new, key=str):
+        if 'message' == event[0]:
+            change = by_id[event[1]]
+            comment = change.comment(event[2])
+            message = comment.messages[event[3]]
+            if comment.is_unresolved() or (PATCHSET_LEVEL == comment.place
+                                           and not says_nothing(message.text)):
+                new_messages[event[1]] = new_messages.get(event[1], 0) + 1
+            elif PATCHSET_LEVEL != comment.place and not says_nothing(message.text):
+                # Nothing to answer, and not in inbox once submitted
+                say(f'fyi {name} {change.short_id()} #{comment.number} (resolved) '
+                    + comment.place_label())
+                for line in message_text(message).split('\n'):
+                    say(f'    {line}')
+        elif 'vote' == event[0]:
+            _, change_id, label, value, patch_set, by = event
+            say(f'vote {name} {change_id[:8]} {label}{value:+d} PS{patch_set} by {by}')
+        else:
+            say(f'{event[0]} {name} {event[1]}')
+    for change_id, count in new_messages.items():
+        say(f'review {name} {change_id[:8]}: {count} new')
+
+
+def submitted_line(name, topic, count):
+    """The line of watch() for a stack's submitted changes."""
+    return f'submitted {name} {topic}: {count} change' + ('s' if count > 1 else '')
+
+
+def watch(repositories, output=sys.stdout, topic=None, since=None, minutes=None):
     """Prints one line per change with new sent messages, one per vote, and
     one per stack that was submitted, rebased or needs a rebase.
 
-    Runs until stopped. It only looks closer when a ref of the review
-    changed, and it prints nothing else, so watching costs nothing while
-    nothing happens.
+    First it says what happened since the user's last watch ended (or
+    since, seconds since 1970), so a restart loses nothing: the time of
+    the last reported event is kept in the state file watch. A rebase
+    request still open is said again. Then it runs until stopped, or for
+    the given minutes, ending with a line that says so. It only looks
+    closer when a ref of the review changed, and it prints nothing else,
+    so watching costs nothing while nothing happens.
     """
-    versions = {repository: stack_version(repository) for repository in repositories}
-    known = {repository: events_of(repository, topic) for repository in repositories}
-    stacks = {repository: stacks_of(repository, topic) for repository in repositories}
-    # The stacks' base branches, as they were before a submit removed them
-    bases = {repository: stack_bases(repository) for repository in repositories}
-    while True:
+    end = time.time() + 60 * minutes if minutes else None
+    if since is None:
+        since = last_watched(topic)
+
+    def say(line):
+        print(line, file=output, flush=True)
+
+    def reported(moment):
+        set_state('watch', watch_key(topic), str(int(moment)))
+
+    versions, known, stacks, bases = {}, {}, {}, {}
+    for repository in repositories:
+        checked = time.time()
+        versions[repository] = stack_version(repository)
+        current = changes_in_stack(repository)
+        known[repository] = events_of(repository, topic, current)
+        stacks[repository] = stacks_of(repository, topic)
+        # The stacks' base branches, as they were before a submit
+        bases[repository] = stack_bases(repository)
+        if since is None:
+            continue
+        # What happened while no watch ran
+        submitted = submitted_since(repository, since, topic, current)
+        by_id = {change.change_id: change for change in current + submitted}
+        missed = {event for event in events_of(repository, topic, current, submitted)
+                  if 'rebase' == event[0] or (event_time(event, by_id) or 0) >= since}
+        name = repository_name(repository)
+        counts = {}
+        for change in submitted:
+            counts[change.topic] = counts.get(change.topic, 0) + 1
+        for stack_topic, count in counts.items():
+            say(submitted_line(name, stack_topic, count))
+        report_events(name, missed, by_id, say)
+        if missed or counts:
+            reported(checked)
+    while end is None or time.time() < end:
         time.sleep(WATCH_INTERVAL_SECONDS)
         for repository in repositories:
             version = stack_version(repository)
             if version == versions[repository]:
                 continue
+            checked = time.time()
             versions[repository] = version
             current = changes_in_stack(repository)
             name = repository_name(repository)
+            lines = []
 
-            def say(line):
-                print(line, file=output, flush=True)
-
-            # Changes that left a stack and are on the base branch now
+            # Changes that left a stack and are on its base branch now
             now = stacks_of(repository, topic)
             stacks_before = stacks[repository]
             default = base_branch(repository)
@@ -4058,10 +4207,9 @@ def watch(repositories, output=sys.stdout, topic=None):
                 if left and not gone and git('rev-parse', '--verify', '--quiet',
                                              f'{ABANDONED_PREFIX}{stack_topic}', check=False,
                                              repository=repository):
-                    say(f'abandoned {name} {stack_topic}')
+                    lines.append(f'abandoned {name} {stack_topic}')
                 if gone:
-                    say(f'submitted {name} {stack_topic}: {len(gone)} change'
-                        + ('s' if len(gone) > 1 else ''))
+                    lines.append(submitted_line(name, stack_topic, len(gone)))
             stacks[repository] = now
             # The submitted changes' last messages and votes, e.g. a reply
             # sent together with the submit, are in their commits' notes.
@@ -4079,29 +4227,12 @@ def watch(repositories, output=sys.stdout, topic=None):
             new = events - known[repository]
             known[repository] = events
             by_id = {change.change_id: change for change in current + submitted}
-
-            new_messages = {}
-            for event in sorted(new, key=str):
-                if 'message' == event[0]:
-                    change = by_id[event[1]]
-                    comment = change.comment(event[2])
-                    message = comment.messages[event[3]]
-                    if comment.is_unresolved() or (PATCHSET_LEVEL == comment.place
-                                                   and not says_nothing(message.text)):
-                        new_messages[event[1]] = new_messages.get(event[1], 0) + 1
-                    elif PATCHSET_LEVEL != comment.place and not says_nothing(message.text):
-                        # Nothing to answer, and not in inbox once submitted
-                        say(f'fyi {name} {change.short_id()} #{comment.number} (resolved) '
-                            + comment.place_label())
-                        for line in message_text(message).split('\n'):
-                            say(f'    {line}')
-                elif 'vote' == event[0]:
-                    _, change_id, label, value, patch_set, by = event
-                    say(f'vote {name} {change_id[:8]} {label}{value:+d} PS{patch_set} by {by}')
-                else:
-                    say(f'{event[0]} {name} {event[1]}')
-            for change_id, count in new_messages.items():
-                say(f'review {name} {change_id[:8]}: {count} new')
+            report_events(name, new, by_id, lines.append)
+            for line in lines:
+                say(line)
+            if lines:
+                reported(checked)
+    say('watch ended, restart it to continue')
 
 
 # ── command line ──────────────────────────────────────────────────────────
@@ -4387,8 +4518,10 @@ def parse_arguments(argv):
               or 'Nothing to answer.')
 
     def watch_command(arguments):
+        since = parse_time(arguments.since) if arguments.since else None
         with contextlib.suppress(KeyboardInterrupt):
-            watch(author_repositories(arguments), topic=arguments.topic)
+            watch(author_repositories(arguments), topic=arguments.topic, since=since,
+                  minutes=arguments.minutes)
 
     def register_command(arguments):
         print(f'registered as {register_repository(arguments.path, arguments.name, arguments.list)}')
@@ -4473,6 +4606,11 @@ def parse_arguments(argv):
         sub.add_argument('--topic', help='only this stack, e.g. for one of several agents')
         sub.add_argument('--all', action='store_true', help='all registered repositories')
         sub.add_argument('--list', help='the repositories of this list', default=argparse.SUPPRESS)
+        if 'watch' == name:
+            sub.add_argument('--since', help='report events from this time on (seconds since '
+                             '1970, 2026-11-13T10:00 or 10:00), instead of since the last watch')
+            sub.add_argument('--for', dest='minutes', type=float,
+                             help='end after this many minutes')
     register = command('register', register_command, 'show a repository in the dashboard',
                        ('path', {'nargs': '?', 'default': '.'}))
     register.add_argument('--name')

@@ -41,7 +41,11 @@ touches your branch. `plustwo pull` brings it in.
 
 ## The loop
 
-1. Run `plustwo watch <REPO>...` as a background monitor. It prints one
+1. Run `plustwo watch --for 29 <REPO>...` as a background monitor. It
+   ends by itself after 29 minutes, before a monitor's time limit, with
+   `watch ended, restart it to continue`: then just start it again. It
+   begins with what happened since your last watch reported something,
+   so a restart loses nothing and needs no extra `inbox`. It prints one
    short line per event and nothing else:
    - `review <repo> <change>: <n> new` when the reviewer sent comments
    - `fyi <repo> <change> #<n> (resolved) <place>` and the message,
