@@ -3276,6 +3276,13 @@ class ChangeView:
         """
         return max(0, min(self._stack_index - height // 2, len(self._stack) - height))
 
+    def _files_first(self, height):
+        """The first row of the file list the pane shows, like
+        _stack_first().
+        """
+        index = self._file_index or 0
+        return max(0, min(index - height // 2, len(self._files) - height))
+
     def _compute_layout(self, area):
         """Positions of the four panes: (top, left, height, width) each,
         the inside without the frame.
@@ -3302,17 +3309,28 @@ class ChangeView:
                            left_width - 2),
                 DIFF: (3, left_width + 1, area.height - 4, area.width - left_width - 3)}
 
-    def _frame(self, pane, title):
-        """Draws the frame around a pane, with its title."""
+    def _frame(self, pane, title, above=0, below=0):
+        """Draws the frame around a pane, with its title. When the content
+        doesn't fit, ↑N at the top border's end says N rows are above,
+        ↓N at the bottom border's end N rows below. The title is cut for ↑N.
+        """
         out = self._interface.text
         top, left, height, width = self._layout[pane]
         attributes = curses.A_BOLD if pane == self._focus else self._interface.dim()
+        grey = self._interface.dim()
+        up = f' ↑{above} ' if above > 0 else ''
+        down = f' ↓{below} ' if below > 0 else ''
         out(top - 1, left - 1, '┌' + '─' * width + '┐', attributes)
-        out(top - 1, left + 1, f' {title} '[:max(width - 2, 0)], attributes)
+        title_room = width - 2 - (len(up) + 1 if up else 0)
+        out(top - 1, left + 1, f' {title} '[:max(title_room, 0)], attributes)
+        if up:
+            out(top - 1, left + width - len(up), up, grey)
         for row in range(top, top + height):
             out(row, left - 1, '│', attributes)
             out(row, left + width, '│', attributes)
         out(top + height, left - 1, '└' + '─' * width + '┘', attributes)
+        if down:
+            out(top + height, left + width - len(down), down, grey)
 
     def draw(self, area):
         """Draws the header and the three panes."""
@@ -3385,10 +3403,11 @@ class ChangeView:
         """
         out = self._interface.text
         base = self._change.base
-        self._frame(STACK, f'Stack ({len(self._stack)}) on {base}')
         top, left, height, width = self._layout[STACK]
         shown = list(reversed(self._stack))
         first = self._stack_first(height)
+        self._frame(STACK, f'Stack ({len(self._stack)}) on {base}', first,
+                    len(shown) - first - height)
         pairs = self._interface.colour_pairs
         focused = STACK == self._focus
         # The one whole-line highlight: the cursor while the pane has the
@@ -3440,9 +3459,8 @@ class ChangeView:
         top, left, height, width = self._layout[MESSAGE]
         lines = self._message_lines(width)
         self._message_scroll = max(0, min(self._message_scroll, len(lines) - height))
-        more = len(lines) - height
-        self._frame(MESSAGE, 'Commit message' + (f'  ({self._message_scroll + height}/'
-                                                 f'{len(lines)})' if more > 0 else ''))
+        self._frame(MESSAGE, 'Commit message', self._message_scroll,
+                    len(lines) - self._message_scroll - height)
         for row, (text, attributes) in enumerate(
                 lines[self._message_scroll:self._message_scroll + height]):
             out(top + row, left, text, attributes, left + width)
@@ -3501,8 +3519,10 @@ class ChangeView:
         out = self._interface.text
         core = self._interface.core
         reviewed = [core.is_reviewed(self._change, path) for path in self._files]
-        self._frame(FILES, f'Files  {sum(reviewed)}/{len(self._files)} reviewed')
         top, left, height, width = self._layout[FILES]
+        first = self._files_first(height)
+        self._frame(FILES, f'Files  {sum(reviewed)}/{len(self._files)} reviewed', first,
+                    len(self._files) - first - height)
         # The counts between the compared versions. Files the comparison
         # doesn't change are grey.
         try:
@@ -3521,29 +3541,30 @@ class ChangeView:
         # Like Gerrit's size column: a short bar of added and removed lines
         bar_width = 6 if any(sum(compared.get(path, (0, 0))) for path in self._files) else 0
         name_width = max(width - 2 - count_width - bar_width, 1)
-        for index, path in enumerate(self._files[:height]):
+        for row, path in enumerate(self._files[first:first + height]):
+            index = first + row
             selected = index == self._file_index
             attributes = curses.A_REVERSE if selected and FILES == self._focus else (
                 curses.A_BOLD if selected else 0)
             name = file_label(core, path, self._renames)
-            out(top + index, left, '✓ ' if reviewed[index] else '  ',
+            out(top + row, left, '✓ ' if reviewed[index] else '  ',
                 attributes | curses.color_pair(2), left + width)
-            out(top + index, left + 2, ' ' * (width - 2), attributes, left + width)
+            out(top + row, left + 2, ' ' * (width - 2), attributes, left + width)
             changed = path in compared
-            out(top + index, left + 2, f'{name:<{name_width}.{name_width}}',
+            out(top + row, left + 2, f'{name:<{name_width}.{name_width}}',
                 attributes | (0 if changed else self._interface.dim(attributes)), left + width)
             unresolved, total = counts.get(path, (0, 0))
             if total:
                 label = f'{unresolved or total}●'.rjust(count_width)
-                out(top + index, left + 2 + name_width, label,
+                out(top + row, left + 2 + name_width, label,
                     attributes | (0 if unresolved else self._interface.dim(attributes)),
                     left + width)
             added, removed = compared.get(path, (0, 0))
             if added + removed:
                 scale = max(added + removed, 1) / 5 if added + removed > 5 else 1
                 plus, minus = round(added / scale), round(removed / scale)
-                out(top + index, left + width - 5, '+' * plus, curses.color_pair(2), left + width)
-                out(top + index, left + width - 5 + plus, '-' * minus, curses.color_pair(1),
+                out(top + row, left + width - 5, '+' * plus, curses.color_pair(2), left + width)
+                out(top + row, left + width - 5 + plus, '-' * minus, curses.color_pair(1),
                     left + width)
 
     def _draw_comments(self):
@@ -3556,7 +3577,6 @@ class ChangeView:
         """
         out = self._interface.text
         core = self._interface.core
-        self._frame(COMMENTS, 'Comments')
         top, left, height, width = self._layout[COMMENTS]
         rows = self._comment_rows()
         if not rows:
@@ -3567,6 +3587,7 @@ class ChangeView:
         first = max(0, min(selected_row - height + 1, len(rows) - height))
         # For clicks
         self._comments_first = first
+        self._frame(COMMENTS, 'Comments', first, len(rows) - first - height)
         touched = self._touched()
         open_group = self._diff_path(self._selected_file()) if self._selected_file() else None
         comments = self._comments()
@@ -4281,8 +4302,8 @@ class ChangeView:
                 offset = row - top
                 if STACK == pane and self._stack_first(height) + offset < len(self._stack):
                     self._stack_index = self._stack_first(height) + offset
-                elif FILES == pane and offset < len(self._files):
-                    self._file_index = offset
+                elif FILES == pane and self._files_first(height) + offset < len(self._files):
+                    self._file_index = self._files_first(height) + offset
                 elif COMMENTS == pane:
                     rows = self._comment_rows()
                     row = offset + getattr(self, '_comments_first', 0)
