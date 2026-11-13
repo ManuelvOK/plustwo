@@ -248,8 +248,8 @@ class FlowTest(unittest.TestCase):
         watch = subprocess.Popen([str(ROOT / 'plustwo'), 'watch', '.', '--for', '0.05'],
                                  cwd=repo.path, env=ENVIRONMENT, stdout=subprocess.PIPE, text=True)
         time.sleep(1)
-        repo.change('comment', '1', 'a.txt:1', 'First', '--status', 'unresolved')
-        repo.change('done', '1', '1')
+        # One write, so the watch can't see the thread unresolved in between
+        repo.change('comment', '1', 'a.txt:1', 'First', '--resolved')
         lines = watch.communicate()[0].split('\n')
         self.assertIn(f'fyi {name} {ids[0]} #1 (resolved) a.txt:1', lines)
         self.assertIn('watch ended, restart it to continue', lines)
