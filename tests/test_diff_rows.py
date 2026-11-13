@@ -261,6 +261,27 @@ class FixtureTest(Checks, unittest.TestCase):
                          ([(2, 9)], [(2, 9)]))
 
 
+class ContrastTest(unittest.TestCase):
+    """Syntax colours on the diff's shades, see core.readable()."""
+
+    def test_comment_on_added_lines(self):
+        # Monokai Extended's comments on the added shade: 2.2 to 1 before
+        comment, added = (0x7c, 0x78, 0x65), (0x1f, 0x4d, 0x2a)
+        self.assertLess(core.contrast(comment, added), 3)
+        lifted = core.readable(comment, added)
+        self.assertGreaterEqual(core.contrast(lifted, added), core.MIN_CONTRAST)
+        self.assertTrue(all(new >= old for new, old in zip(lifted, comment)))
+        # Readable colours stay, on light shades they get darker
+        self.assertEqual(core.readable((255, 255, 255), added), (255, 255, 255))
+        dark = core.readable((0xaa, 0xaa, 0xaa), (0xe6, 0xff, 0xec))
+        self.assertGreaterEqual(core.contrast(dark, (0xe6, 0xff, 0xec)), core.MIN_CONTRAST)
+        self.assertLess(dark[0], 0xaa)
+
+    def test_web_map(self):
+        lifted = core.readable_colours({'#7c7865', '#ffffff'}, {'added': '#1f4d2a'})
+        self.assertEqual(list(lifted['added']), ['#7c7865'])
+
+
 class HistoryTest(Checks, unittest.TestCase):
     """The checks over the history of real repositories."""
 

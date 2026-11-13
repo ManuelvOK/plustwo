@@ -19,6 +19,8 @@ _loader = importlib.machinery.SourceFileLoader(
 _spec = importlib.util.spec_from_loader('plustwo', _loader)
 core = importlib.util.module_from_spec(_spec)
 _loader.exec_module(core)
+# run() hands the interface the core, for its colour math
+tui.CORE = core
 
 
 def feed(keymap, *keys):

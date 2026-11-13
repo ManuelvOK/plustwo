@@ -214,7 +214,7 @@ async function renderChange(id, file) {
        : (change.files[1] || change.files[0]).path);
   state.diff = await api('diff', {id, path: state.file, a: state.a, b: state.b,
                                   context: state.context, whitespace: state.whitespace,
-                                  theme: theme()});
+                                  theme: theme(), shades: shades()});
   const view = document.getElementById('view');
   sidebarWasShown = sidebarShown();
   // Without the file list, the toolbar says which file it is.
@@ -472,7 +472,7 @@ function diffView(change) {
                    half.number || ''),
                 el('td', {class: `text ${kind}${isCursorSide ? ' side' : ''}`,
                           onclick: () => { state.cursor = index; state.side = side; render(); }},
-                   halfText(half)));
+                   halfText(half, kind)));
     }
     body.append(tr);
     // Like in Gerrit, a line's threads and comment box go into its side's
@@ -496,8 +496,25 @@ function diffView(change) {
   return wrap;
 }
 
+// The diff's shades of the current theme, from the style sheet, for the
+// server to make syntax colours readable on them (core.readable_colours)
+const SHADES = ['removed', 'added', 'below', 'partly', 'moved'];
+function shades() {
+  const style = getComputedStyle(document.documentElement);
+  const names = SHADES.flatMap((name) => [name, `${name}-emph`]);
+  return JSON.stringify(Object.fromEntries(
+    names.map((name) => [name, style.getPropertyValue(`--${name}`).trim()])));
+}
+
 // The text of a half with syntax colours and intraline edits as spans.
-function halfText(half) {
+// kind is the class of its cell, which gives its shade.
+function halfText(half, kind) {
+  const shade = kind.split(' ')[0];
+  const readable = (state.diff && state.diff.readable) || {};
+  const lifted = (colour, strong) => {
+    const map = readable[strong || kind.includes('whole') ? `${shade}-emph` : shade];
+    return (map && map[colour]) || colour;
+  };
   const text = half.text;
   if (!text) return '';
   const colours = new Array(text.length).fill(null);
@@ -518,7 +535,7 @@ function halfText(half) {
   for (let i = 1; i <= text.length; i++) {
     if (i < text.length && colours[i] === colours[start] && emph[i] === emph[start]
         && styles[i] === styles[start]) continue;
-    const style = [colours[start] ? `color:${colours[start]}` : '',
+    const style = [colours[start] ? `color:${lifted(colours[start], emph[start])}` : '',
                    styles[start].includes('bold') ? 'font-weight:600' : '',
                    styles[start].includes('italic') ? 'font-style:italic' : ''].filter(Boolean);
     spans.push(el('span', {class: emph[start] ? 'emph' : null,

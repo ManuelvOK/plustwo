@@ -13,6 +13,7 @@ Origin is not its own address.
 
 import hashlib
 import json
+import re
 import secrets
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -235,7 +236,16 @@ class Server:
             shown = core.thread_place(change, comment, first, second, repository)
             threads[comment.number] = {'path': shown.path, 'line': shown.line, 'side': shown.side,
                                        'origin': shown.origin, 'note': shown.note}
-        return {'binary': False, 'comparing': comparing, 'renamed_from': None if old_path == paths[0] else old_path,
+        # Syntax colours lifted on the page's shades, see core.readable()
+        used = {segment[1] for colours in (old_colours, new_colours) for line in colours or ()
+                for segment in line if segment[1]}
+        try:
+            shades = {name: colour for name, colour in json.loads(query.get('shades', '{}')).items()
+                      if re.fullmatch('#[0-9a-fA-F]{6}', colour)}
+        except (ValueError, AttributeError, TypeError):
+            shades = {}
+        return {'binary': False, 'comparing': comparing,
+                'readable': core.readable_colours(used, shades), 'renamed_from': None if old_path == paths[0] else old_path,
                 'threads': threads,
                 'from_below': [sorted(lines) for lines in from_below],
                 'partly': [sorted(lines) for lines in partly],

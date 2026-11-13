@@ -479,7 +479,8 @@ def run(core, list_name=None):
     """Starts the interface. core is the plustwo module. list_name limits
     the dashboard to a list of repositories.
     """
-    global TERMINAL_BACKGROUND  # pylint: disable=global-statement
+    global TERMINAL_BACKGROUND, CORE  # pylint: disable=global-statement
+    CORE = core
     TERMINAL_BACKGROUND = (parse_colour(core.setting('tui.background', '')) or query_background()
                            or (0, 0, 0))
     wanted = true_colour_terminal(core.setting('tui.colours', 'auto'))
@@ -1836,19 +1837,13 @@ def palette_index(red, green, blue):
 SECONDARY = -2
 # The grey of secondary text, the setting tui.dim-colour
 DIM_COLOUR = 246
-# The least contrast of secondary text, like WCAG's for normal text
-MIN_CONTRAST = 4.5
+# The core (the plustwo module), set by run(), for its colour math
+CORE = None
 
 
 def contrast(first, second):
     """The contrast ratio of two colours (palette or RGB), 1 to 21."""
-    def luminance(colour):
-        channels = [value / 255 for value in rgb_of(colour)]
-        channels = [value / 12.92 if value <= 0.03928 else ((value + 0.055) / 1.055) ** 2.4
-                    for value in channels]
-        return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
-    lighter_one, darker_one = sorted((luminance(first), luminance(second)), reverse=True)
-    return (lighter_one + 0.05) / (darker_one + 0.05)
+    return CORE.contrast(rgb_of(first), rgb_of(second))
 
 
 def secondary(background=-1):
@@ -1864,7 +1859,7 @@ def secondary(background=-1):
     # Lighter on a dark background, darker on a light one
     step = -1 if is_light(background) else 1
     while 232 < colour + step <= 255 and 232 <= colour <= 255 \
-            and contrast(colour, background) < MIN_CONTRAST:
+            and contrast(colour, background) < CORE.MIN_CONTRAST:
         colour += step
     return colour
 
@@ -2005,7 +2000,7 @@ def highlighted(core, lines, path):
     for each line a list of (foreground, styles) per character. None
     without bat, or if its output doesn't fit the lines.
     """
-    segments = core.syntax_segments(lines, path)
+    segments = core.syntax_segments(lines, path, core.setting('tui.theme'))
     if segments is None:
         return None
     colours = []
@@ -2065,6 +2060,9 @@ def half_cells(core, half, colours, marks, search=''):
         if index in found:
             styles |= curses.A_REVERSE
         background = backgrounds[index in changed]
+        if isinstance(foreground, tuple) and -1 != background:
+            # Syntax colours readable on the diff's shades
+            foreground = core.readable(foreground, rgb_of(background))
         if '\t' == character:
             cells += [(' ', foreground, background, styles)] * (TAB_WIDTH - len(cells) % TAB_WIDTH)
         elif ord(character) < 32 or 127 == ord(character):
