@@ -3421,6 +3421,12 @@ class ChangeView:
         reviewed = [core.is_reviewed(self._change, path) for path in self._files]
         self._frame(FILES, f'Files  {sum(reviewed)}/{len(self._files)} reviewed')
         top, left, height, width = self._layout[FILES]
+        # The counts between the compared versions. Files the comparison
+        # doesn't change are grey.
+        try:
+            compared = core.compared_files(self._change, *self._compare)
+        except core.ChangeError:
+            compared = self._counts
         for index, path in enumerate(self._files[:height]):
             selected = index == self._file_index
             attributes = curses.A_REVERSE if selected and FILES == self._focus else (
@@ -3428,8 +3434,12 @@ class ChangeView:
             name = file_label(core, path, self._renames)
             out(top + index, left, '✓ ' if reviewed[index] else '  ',
                 attributes | curses.color_pair(2), left + width)
+            if path not in compared:
+                out(top + index, left + 2, f'{name:<{width - 2}.{width - 2}}',
+                    attributes | self._interface.dim(attributes), left + width)
+                continue
             # Like Gerrit's size column: a short bar of added and removed lines
-            added, removed = self._counts.get(path, (0, 0))
+            added, removed = compared[path]
             scale = max(added + removed, 1) / 5 if added + removed > 5 else 1
             plus, minus = round(added / scale), round(removed / scale)
             bar_width = 6 if added + removed else 0

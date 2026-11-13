@@ -180,11 +180,18 @@ class Server:
         core = self.core
         change, repository = self.change(query)
         renames = core.renames_of(change.commit, repository)
-        files = [{'path': core.COMMIT_MSG, 'added': 0, 'removed': 0,
-                  'reviewed': core.is_reviewed(change, core.COMMIT_MSG, repository),
-                  'renamed_from': None}]
-        for path, (added, removed) in sorted(core.files_of(change.commit, repository).items()):
+        # Counts between the compared versions, unchanged files greyed
+        try:
+            compared = core.compared_files(change, query.get('a') or 'base',
+                                           query.get('b') or 'latest', repository)
+        except core.ChangeError:
+            compared = None
+        paths = [core.COMMIT_MSG] + sorted(core.files_of(change.commit, repository))
+        files = []
+        for path in paths:
+            added, removed = (compared or {}).get(path, (0, 0))
             files.append({'path': path, 'added': added, 'removed': removed,
+                          'changed': compared is None or path in compared,
                           'reviewed': core.is_reviewed(change, path, repository),
                           'renamed_from': renames.get(path)})
         return {**change_summary(core, change, repository),

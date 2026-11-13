@@ -184,7 +184,8 @@ async function renderList() {
 
 async function renderChange(id, file) {
   const same = state.change && state.change.id.startsWith(id);
-  const change = await api('change', {id, b: same ? state.b : 'latest'});
+  const change = await api('change', {id, a: same ? state.a : 'base',
+                                      b: same ? state.b : 'latest'});
   if (!state.change || state.change.id !== change.id) {
     // Like in Gerrit, every change opens with its default comparison.
     state.a = 'base'; state.b = 'latest'; state.cursor = 0; state.editor = null;
@@ -379,7 +380,9 @@ function fileList(change) {
   const rows = change.files.map((file) => {
     const threads = change.comments.filter((comment) => comment.path === file.path).length;
     const width = (count) => `${Math.ceil(40 * count / largest)}px`;
-    return el('tr', {class: file.path === state.file ? 'current' : ''},
+    // Files the compared versions don't change are grey.
+    return el('tr', {class: (file.path === state.file ? 'current' : '')
+                            + (file.changed ? '' : ' unchanged')},
       el('td', {}, el('input', {type: 'checkbox', checked: file.reviewed, title: 'reviewed',
                                 onchange: () => act('reviewed', {path: file.path})})),
       el('td', {class: 'path', onclick: () => openFile(file.path)},

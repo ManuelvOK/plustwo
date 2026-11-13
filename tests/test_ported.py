@@ -523,6 +523,30 @@ class CompareTest(unittest.TestCase):
         self.assertIn('gone', interface.messages[-1])
 
 
+class ComparedFilesTest(unittest.TestCase):
+    """The file box's counts follow the compared versions."""
+
+    def test_counts_between_patch_sets(self):
+        directory = tempfile.mkdtemp(prefix='plustwo-compared-')
+        try:
+            repo = test_stacks.Repository(directory)
+            repo.git('switch', '--quiet', '-c', 'feature')
+            repo.write('a.txt', 'a\n')
+            repo.write('b.txt', 'b\n')
+            repo.git('add', 'a.txt', 'b.txt')
+            repo.git('commit', '--quiet', '-m', 'Add a and b')
+            repo.change('upload')
+            repo.write('b.txt', 'b\nmore\nlines\n')
+            repo.git('commit', '--quiet', '--amend', '--no-edit', '-a')
+            repo.change('upload')
+            change = core.changes_in_stack(directory)[0]
+            self.assertEqual({'b.txt': (2, 0)}, core.compared_files(change, '1', '2', directory))
+            self.assertEqual({'a.txt': (1, 0), 'b.txt': (3, 0), core.COMMIT_MSG: (0, 0)},
+                             core.compared_files(change, 'base', 'latest', directory))
+        finally:
+            shutil.rmtree(directory)
+
+
 class SubmittableTest(unittest.TestCase):
 
     def test_submittable_in_stack(self):

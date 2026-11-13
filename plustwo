@@ -2656,6 +2656,44 @@ def diff_endpoints(change, first=None, second=None, path=None, repository=None):
     return old, new, sorted(files)
 
 
+# git's empty tree, the same in every repository
+EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+
+
+@cached_for_objects(0, 1)
+def numstat(old, new, repository=None):
+    """Files that differ between two commits, with added and removed line
+    counts: path -> (added, removed). Binary files count as 0. /COMMIT_MSG
+    is in it too, with (0, 0), when the messages differ.
+    """
+    # The parent of a root commit: nothing
+    exists = git('rev-parse', '--verify', '--quiet', old, check=False, repository=repository)
+    output = git('diff', '--numstat', '--no-renames', old if exists else EMPTY_TREE, new,
+                 repository=repository)
+    files = {}
+    for line in filter(None, output.split('\n')):
+        added, removed, path = line.split('\t', 2)
+        files[path] = (int(added) if added.isdigit() else 0,
+                       int(removed) if removed.isdigit() else 0)
+    if not exists or commit_message(old, repository) != commit_message(new, repository):
+        files[COMMIT_MSG] = (0, 0)
+    return files
+
+
+def compared_files(change, first=None, second=None, repository=None):
+    """The files that differ between the two compared versions of a change,
+    with the added and removed lines between them: path -> (added,
+    removed). The file box shows these counts, and the change's other
+    files as unchanged. /COMMIT_MSG is in it, with (0, 0), when the
+    message differs (always against base).
+    """
+    (first, old), (_second, new) = versions_to_compare(change, first, second)
+    files = dict(numstat(old, new, repository))
+    if BASE == first:
+        files[COMMIT_MSG] = (0, 0)
+    return files
+
+
 def diff_command(change, first=None, second=None, tool=False, path=None):
     """The git command showing the diff between two versions of a change."""
     old, new, files = diff_endpoints(change, first, second, path)

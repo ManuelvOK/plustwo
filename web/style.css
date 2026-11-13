@@ -70,6 +70,7 @@ table.list tr.selected td { background: var(--cursor); }
 .files .message .body, .files .message .trailers { margin-top: 0.7em; }
 .files td { padding: 2px 4px; }
 .files tr.current td { background: var(--cursor); }
+.files tr.unchanged td.path { color: var(--dim); }
 .files .path { word-break: break-all; cursor: pointer; }
 .bar { display: inline-block; height: 8px; vertical-align: middle; }
 .bar.add { background: var(--good); } .bar.del { background: var(--bad); }
