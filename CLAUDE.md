@@ -14,7 +14,7 @@ every command.
 | `plustwo_web.py` | web interface (`plustwo serve`), stdlib HTTP server, JSON API |
 | `web/`           | the page: index.html, app.js, style.css, no build step        |
 | `AGENTS.md`      | guide for agents as authors, printed by `plustwo guide`       |
-| `tests/`         | `make test`: diff rows, flows, settings, keys and web API     |
+| `tests/`         | `make test`: diff rows, flows, settings, web, edits by hand   |
 | `TESTING.md`     | manual walkthrough for the user, in a throwaway repository    |
 | `LICENSE`        | zlib, SPDX line (`Zlib`) in every source file                 |
 | `Makefile`       | `check`, `test`, `install`, `link`, `uninstall`               |

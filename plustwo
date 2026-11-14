@@ -1178,7 +1178,18 @@ def stack_version(repository=None):
 def read_note(commit, repository=None):
     """The review note of a commit as a dict, empty if it has none."""
     text = git('notes', f'--ref={NOTES_REF}', 'show', commit, check=False, repository=repository)
-    return json.loads(text) if text else {}
+    return parse_note(text)
+
+
+def parse_note(text):
+    """A review note's text as a dict. A note broken by hand (no JSON, or
+    no object) counts as empty, so it can't stop the review of the rest.
+    """
+    try:
+        note = json.loads(text) if text.strip() else {}
+    except ValueError:
+        return {}
+    return note if isinstance(note, dict) else {}
 
 
 def read_notes(commits, repository=None):
@@ -1202,7 +1213,7 @@ def read_notes(commits, repository=None):
     for commit, _ in wanted:
         header, data = data.split(b'\n', 1)
         size = int(header.split()[2])
-        notes[commit] = json.loads(data[:size].decode('utf-8', errors='replace') or '{}')
+        notes[commit] = parse_note(data[:size].decode('utf-8', errors='replace'))
         data = data[size + 1:]
     return notes
 
@@ -1464,11 +1475,22 @@ def add_change_id(message_path):
 def change_from(commit, topic, note, repository=None, change_id=None, subject=None,
                 patch_sets=None):
     """Builds a Change from a commit of a stack and its note. change_id,
-    subject and patch_sets are read from git unless given.
+    subject and patch_sets are read from git unless given. A note whose
+    fields were broken by hand counts as empty, see parse_note().
     """
+    try:
+        return _change_from(commit, topic, note, repository, change_id, subject, patch_sets)
+    except (TypeError, ValueError, KeyError, AttributeError):
+        return _change_from(commit, topic, {}, repository, change_id, subject, patch_sets)
+
+
+def _change_from(commit, topic, note, repository, change_id, subject, patch_sets):
+    """See change_from()."""
     change_id = change_id or change_id_of(commit, repository)
     comments = []
     for comment in note.get('comments', []):
+        # A copy: one note can be read for several copies of a change
+        comment = dict(comment)
         messages = [Message(**message) for message in comment.pop('messages', [])]
         # Notes of older versions keep a status per thread instead
         old_status = OLD_STATUSES.get(comment.pop('status', None))
