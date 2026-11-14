@@ -4252,17 +4252,41 @@ def submitted_since(repository, since, topic=None, changes=None):
     return submitted
 
 
+def changes_by_id(changes):
+    """Change-Id -> every copy of the change, see event_message(). One
+    change can be in several stacks, e.g. an old commit that stayed the
+    base of other branches, and only some copies have all its messages.
+    """
+    by_id = {}
+    for change in changes:
+        by_id.setdefault(change.change_id, []).append(change)
+    return by_id
+
+
+def event_message(event, by_id):
+    """The change, thread and message of a message event of events_of(),
+    from the first copy of the change that has it.
+    """
+    _, change_id, number, index = event
+    for change in by_id[change_id]:
+        comment = change.comment(number)
+        if comment is not None and index < len(comment.messages):
+            return change, comment, comment.messages[index]
+    raise ChangeError(f'{change_id[:8]} has no message {index} in thread #{number}')
+
+
 def event_time(event, by_id):
     """When an event of events_of() happened, None if it doesn't say."""
     if 'message' == event[0]:
-        return by_id[event[1]].comment(event[2]).messages[event[3]].time
+        return event_message(event, by_id)[2].time
     if 'vote' == event[0]:
         _, change_id, label, value, patch_set, by = event
-        return next((vote.time for vote in by_id[change_id].votes
+        return next((vote.time for change in by_id[change_id] for vote in change.votes
                      if (vote.label, vote.value, vote.patch_set, vote.by)
                      == (label, value, patch_set, by)), None)
     if 'rebased' == event[0]:
-        return by_id[event[2]].uploads.get(event[3])
+        return next((change.uploads[event[3]] for change in by_id[event[2]]
+                     if event[3] in change.uploads), None)
     return None
 
 
@@ -4271,9 +4295,7 @@ def report_events(name, new, by_id, say):
     new_messages = {}
     for event in sorted(new, key=str):
         if 'message' == event[0]:
-            change = by_id[event[1]]
-            comment = change.comment(event[2])
-            message = comment.messages[event[3]]
+            change, comment, message = event_message(event, by_id)
             if comment.is_unresolved() or (PATCHSET_LEVEL == comment.place
                                            and not says_nothing(message.text)):
                 new_messages[event[1]] = new_messages.get(event[1], 0) + 1
@@ -4332,7 +4354,7 @@ def watch(repositories, output=sys.stdout, topic=None, since=None, minutes=None)
             continue
         # What happened while no watch ran
         submitted = submitted_since(repository, since, topic, current)
-        by_id = {change.change_id: change for change in current + submitted}
+        by_id = changes_by_id(current + submitted)
         missed = {event for event in events_of(repository, topic, current, submitted)
                   if 'rebase' == event[0] or (event_time(event, by_id) or 0) >= since}
         name = repository_name(repository)
@@ -4389,7 +4411,7 @@ def watch(repositories, output=sys.stdout, topic=None, since=None, minutes=None)
             events = events_of(repository, topic, current, submitted)
             new = events - known[repository]
             known[repository] = events
-            by_id = {change.change_id: change for change in current + submitted}
+            by_id = changes_by_id(current + submitted)
             report_events(name, new, by_id, lines.append)
             for line in lines:
                 say(line)

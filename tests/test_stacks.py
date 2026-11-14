@@ -271,6 +271,23 @@ class FlowTest(unittest.TestCase):
         self.assertIn(f'fyi {name} {ids[0]} #1 (resolved) a.txt:1',
                       self.watch('--since', '0', '--for', '0.01'))
 
+    def test_watch_change_in_several_stacks(self):
+        # An old commit of a change can stay in another stack, e.g. when a
+        # base branch moved. Its copy there lacks the newer messages.
+        repo = self.repo
+        repo.git('switch', '--quiet', '-c', 'feature')
+        old = repo.commit('a.txt', 'a\n', 'Add a')
+        repo.change('upload')
+        repo.write('a.txt', 'a2\n')
+        repo.git('commit', '--quiet', '--all', '--amend', '--no-edit')
+        repo.change('upload')
+        repo.change('comment', '1', 'a.txt:1', 'First')
+        repo.change('reply', '1', '1', 'Second')
+        repo.git('update-ref', 'refs/plustwo/stacks/zcopy', old)
+        lines = self.watch('--since', '0', '--for', '0.01')
+        self.assertIn('watch ended, restart it to continue', lines)
+        self.assertTrue(any(line.startswith('review ') for line in lines), lines)
+
     def test_resolved_reply_reaches_author(self):
         # A resolved reply sent together with the submit: watch prints it,
         # and show still finds the submitted change.
