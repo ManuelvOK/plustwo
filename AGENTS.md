@@ -31,6 +31,7 @@ topic. Its name is the stack's topic (a leading `review/` is dropped):
     git commit ...                  # gets a Change-Id
     plustwo upload               # PS1 of every change in the stack
     plustwo upload --wip         # or: not ready for review yet, --ready later
+    plustwo upload --ready <CHANGE>  # only it and the changes below it ready
 
 Keep one logical change per commit. The reviewer sees the stack commit by
 commit.

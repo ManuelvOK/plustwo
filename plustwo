@@ -52,12 +52,15 @@ Usage:
     plustwo diff CHANGE [A [B]]         diff between patch sets, shown by
                                         git's pager. --tool opens vimdiff.
     plustwo rdiff CHANGE [A [B]]        range-diff between patch sets
-    plustwo upload [CHANGE] [--topic TOPIC] [--wip | --ready]
+    plustwo upload [CHANGE] [--topic TOPIC] [--wip [C] | --ready [C]]
                                         uploads the stack of the checked out
                                         branch (or of the branch with CHANGE):
                                         every changed commit becomes the next
                                         patch set. TOPIC defaults to the
-                                        branch name without review/.
+                                        branch name without review/. --wip
+                                        and --ready mark the whole stack, or
+                                        C and the changes above it (--wip) or
+                                        below it (--ready).
     plustwo pull                        brings the reviewer's rebase or submit
                                         into the checked out branch
     plustwo rebase CHANGE|--topic TOPIC
@@ -1768,7 +1771,7 @@ def add_patch_set(change, repository=None):
     return number, kind
 
 
-def upload(branch=None, topic=None, repository=None, wip=None):
+def upload(branch=None, topic=None, repository=None, wip=None, at=None):
     """Uploads the stack of a local branch (the checked out one if None):
     its commits that are not on the base branch. Like a push to Gerrit's
     refs/for/, every commit that isn't its change's latest patch set yet
@@ -1782,7 +1785,9 @@ def upload(branch=None, topic=None, repository=None, wip=None):
     A branch on top of another stack makes that stack bigger, under its
     topic, like a longer relation chain in Gerrit. wip True or False marks
     every change of the stack work in progress or ready, like Gerrit's %wip
-    and %ready.
+    and %ready. With at (a change of the stack, see reference_change_id())
+    only at and the changes above it get wip True, or at and the changes
+    below it wip False. The others stay as they are.
 
     The uploader's base branch is recorded as the stack's, like the target
     branch of a Gerrit change. An upload from a branch on another base
@@ -1822,26 +1827,37 @@ def upload(branch=None, topic=None, repository=None, wip=None):
                 raise ChangeError(f'{change_id[:8]} is in review in the stack '
                                   f'{elsewhere[change_id]} already')
 
+        marks = [wip] * len(commits)
+        if wip is not None and at:
+            at_id = reference_change_id(at, repository)
+            index = next((index for index, change_id in enumerate(change_ids)
+                          if change_id.startswith(at_id)), None)
+            if index is None:
+                raise ChangeError(f'{at} is not in the stack of {branch or "HEAD"}')
+            # wip goes up the stack from at, ready down from it
+            marks = [wip if (position >= index if wip else position <= index) else None
+                     for position in range(len(commits))]
+
         uploaded = []
         marked = False
-        for commit, change_id in zip(commits, change_ids):
+        for commit, change_id, mark in zip(commits, change_ids, marks):
             patch_sets = patch_sets_of(change_id, repository)
             latest = max(patch_sets, default=0)
             if latest and patch_sets[latest] == commit:
                 note = read_note(commit, repository)
-                if note.get('rebase_requested') or (wip is not None and wip != note.get('wip',
-                                                                                        False)):
+                if note.get('rebase_requested') or (mark is not None
+                                                    and mark != note.get('wip', False)):
                     note['rebase_requested'] = False
-                    if wip is not None:
-                        note['wip'] = wip
+                    if mark is not None:
+                        note['wip'] = mark
                     write_note(commit, note, repository)
                     marked = True
                 continue
             note = read_note(patch_sets[latest] if latest else commit, repository)
             change = change_from(commit, topic, note, repository)
             change.rebase_requested = False
-            if wip is not None:
-                change.wip = wip
+            if mark is not None:
+                change.wip = mark
             uploaded.append((change, *add_patch_set(change, repository)))
             write_note(commit, note_of(change), repository)
         old_top = git('rev-parse', '--verify', '--quiet', stack_ref(topic), check=False,
@@ -1855,23 +1871,29 @@ def upload(branch=None, topic=None, repository=None, wip=None):
         return uploaded, topic, grown, moved
 
 
+def reference_change_id(reference, repository=None):
+    """The Change-Id (or its prefix) a reference of an upload names: an
+    overview number of an uploaded change, else the reference itself.
+    """
+    if reference.isdigit():
+        return find_change(reference, repository).change_id
+    return reference
+
+
 def branch_with_change(reference, repository=None):
     """The local branch holding a change, for an upload naming one: the
     checked out branch if it has it, else the only branch that has it.
     """
     base = base_branch(repository)
     current = current_branch(repository)
-    if reference.isdigit():
+    try:
+        change_id = reference_change_id(reference, repository)
+    except ChangeError:
         # Numbers count uploaded changes only. A new change has none yet,
         # so an old habit like "upload 3" uploads the checked out branch.
-        try:
-            change_id = find_change(reference, repository).change_id
-        except ChangeError:
-            if current and current != base:
-                return current
-            raise
-    else:
-        change_id = reference
+        if current and current != base:
+            return current
+        raise
 
     def has_change(branch):
         return any((change_id_of(commit, repository) or '').startswith(change_id)
@@ -4598,9 +4620,12 @@ def parse_arguments(argv):
             set_setting(arguments.key, arguments.value, arguments.user)
 
     def upload_command(arguments):
-        branch = branch_with_change(arguments.change) if arguments.change else None
-        wip = True if arguments.wip else False if arguments.ready else None
-        uploaded, topic, grown, moved = upload(branch, arguments.topic, wip=wip)
+        wip = True if arguments.wip is not None else False if arguments.ready is not None \
+            else None
+        at = arguments.wip or arguments.ready or None
+        reference = arguments.change or at
+        branch = branch_with_change(reference) if reference else None
+        uploaded, topic, grown, moved = upload(branch, arguments.topic, wip=wip, at=at)
         if start_check(topic):
             print(f'{topic}: check started, it votes Verified')
         if grown:
@@ -4608,7 +4633,9 @@ def parse_arguments(argv):
         if moved:
             print(f'{topic}: moved from {moved} to {stack_base(topic)}')
         if wip is not None:
-            print(f'{topic}: ' + ('work in progress' if wip else 'ready for review'))
+            print(f'{topic}: ' + (f'{at} and the changes ' + ('above' if wip else 'below')
+                                  + ' it ' if at else '')
+                  + ('work in progress' if wip else 'ready for review'))
         for other, number, kind in uploaded:
             kept = [f'{vote.label}{vote.value:+d}' for vote in other.current_votes(CODE_REVIEW)
                     + other.current_votes(VERIFIED)]
@@ -4754,8 +4781,10 @@ def parse_arguments(argv):
     upload_parser = command('upload', upload_command, 'upload the stack of a branch',
                             ('change', optional))
     upload_parser.add_argument('--topic')
-    upload_parser.add_argument('--wip', action='store_true', help='mark it work in progress')
-    upload_parser.add_argument('--ready', action='store_true', help='mark it ready for review')
+    upload_parser.add_argument('--wip', nargs='?', const='', metavar='CHANGE',
+                               help='mark it (or CHANGE and the ones above) work in progress')
+    upload_parser.add_argument('--ready', nargs='?', const='', metavar='CHANGE',
+                               help='mark it (or CHANGE and the ones below) ready for review')
     command('pull', pull_command, "bring the reviewer's rebase or submit into the branch")
     command('rebase', rebase_command, 'rebase a stack onto the base branch',
             ('change', optional)).add_argument('--topic')

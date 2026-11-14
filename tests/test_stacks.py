@@ -85,6 +85,37 @@ class FlowTest(unittest.TestCase):
         repo.commit('a.txt', 'a\n', 'Add a')
         repo.commit('b.txt', 'b\n', 'Add b')
 
+    def test_wip_per_change(self):
+        # --ready CHANGE marks it and the changes below, --wip CHANGE it and
+        # the changes above, the others stay as they are.
+        repo = self.repo
+        self.two_changes()
+        repo.commit('c.txt', 'c\n', 'Add c')
+        repo.change('upload', '--wip')
+        commits = [repo.git('rev-parse', f'HEAD~{n}') for n in (2, 1, 0)]
+        ids = [repo.git('log', '-1', '--format=%(trailers:key=Change-Id,valueonly)', commit)
+               for commit in commits]
+
+        def wip():
+            return [json.loads(repo.git('notes', '--ref=review', 'show', commit)).get('wip')
+                    for commit in commits]
+
+        repo.git('switch', '--quiet', 'main')
+        self.assertIn(f'{ids[1][:8]} and the changes below it ready for review',
+                      repo.change('upload', '--ready', ids[1][:8]))
+        self.assertEqual([False, False, True], wip())
+        repo.git('switch', '--quiet', 'feature')
+        repo.change('upload', '--wip', ids[0][:8])
+        self.assertEqual([True, True, True], wip())
+        repo.change('upload', '--ready', ids[0][:8])
+        self.assertEqual([False, True, True], wip())
+        repo.change('upload', '--wip', ids[2][:8], check=False)
+        self.assertEqual([False, True, True], wip())
+        self.assertIn('is not in the stack', repo.change('upload', ids[2][:8], '--ready',
+                                                          'Ifffffff', check=False))
+        repo.change('upload', '--ready')
+        self.assertEqual([False, False, False], wip())
+
     def test_upload_from_any_branch(self):
         repo = self.repo
         self.two_changes('feature/x')
