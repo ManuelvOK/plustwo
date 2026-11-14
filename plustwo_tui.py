@@ -714,7 +714,11 @@ class Interface:
     # ── main loop ─────────────────────────────────────────────────────────
 
     def loop(self):
-        """Draws, waits for a key or the reload interval, repeats."""
+        """Draws, waits for a key or the reload interval, repeats. Keys
+        typed while one was handled, like a held j, are all handled before
+        the next draw: over a slow connection the screen skips steps
+        instead of lagging behind.
+        """
         self._views[-1].reload()
         self._version = self.version()
         while True:
@@ -723,24 +727,38 @@ class Interface:
             if -1 == key:
                 self._reload_if_changed()
                 continue
-            self._message = ''
-            if curses.KEY_MOUSE == key:
-                self.keymap.reset()
-                self._handle_mouse()
-                continue
-            result = self.keymap.feed(self._with_meta(key))
-            if PENDING == result:
-                continue
-            action, count = result
-            if action is None:
-                continue
-            if not self._handle_global(action):
-                try:
-                    self._views[-1].action(action, count)
-                except self._core.ChangeError as error:
-                    self.say(str(error), ERROR)
-            if not self._views:
-                return
+            while -1 != key:
+                self._handle_key(key)
+                if not self._views:
+                    return
+                key = self._typed_ahead()
+
+    def _typed_ahead(self):
+        """The next key if one is waiting already, else -1."""
+        self._screen.timeout(0)
+        try:
+            return self._screen.getch()
+        finally:
+            self._screen.timeout(RELOAD_INTERVAL_MS)
+
+    def _handle_key(self, key):
+        """Does what a key from getch() asks for."""
+        self._message = ''
+        if curses.KEY_MOUSE == key:
+            self.keymap.reset()
+            self._handle_mouse()
+            return
+        result = self.keymap.feed(self._with_meta(key))
+        if PENDING == result:
+            return
+        action, count = result
+        if action is None:
+            return
+        if not self._handle_global(action):
+            try:
+                self._views[-1].action(action, count)
+            except self._core.ChangeError as error:
+                self.say(str(error), ERROR)
 
     def _with_meta(self, key):
         """Alt plus a key arrives as Esc and the key: then the key plus
@@ -1901,11 +1919,21 @@ class ColourPairs:
     def __init__(self):
         self._pairs = {}
         self._next = FIRST_DIFF_PAIR
+        # The attributes handed out, because a redraw asks for the same
+        # few hundred times and secondary() computes contrasts
+        self._attributes = {}
 
     def attribute(self, foreground, background):
         """The curses attribute for two palette colours (-1 is default).
         SECONDARY as foreground is the grey of secondary text.
         """
+        key = (foreground, background, DIM_COLOUR, TERMINAL_BACKGROUND, TRUE_COLOUR)
+        if key not in self._attributes:
+            self._attributes[key] = self._attribute(foreground, background)
+        return self._attributes[key]
+
+    def _attribute(self, foreground, background):
+        """See attribute()."""
         if SECONDARY == foreground:
             foreground = secondary(background)
         key = (curses_colour(foreground), curses_colour(background))
