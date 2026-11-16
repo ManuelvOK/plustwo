@@ -43,7 +43,7 @@ def _left_side_time(change: Change, first: str | None = None,
 
 
 def _is_touched(change: Change, comment: Comment, first: str | None = None,
-                second: str | None = None, repository: str | None = None) -> bool:
+                second: str | None = None) -> bool:
     """Tells whether a thread is touched in the comparison of two versions:
     it has a sent message newer than the left version's upload, or its line
     is in code the comparison changes. A thread on a whole file is touched
@@ -55,7 +55,6 @@ def _is_touched(change: Change, comment: Comment, first: str | None = None,
         comment: the thread.
         first: the left version, see versions_to_compare().
         second: the right version, see versions_to_compare().
-        repository: the repository's directory, None for the current one.
 
     Returns:
         True if the thread is touched.
@@ -63,35 +62,34 @@ def _is_touched(change: Change, comment: Comment, first: str | None = None,
     since = _left_side_time(change, first, second)
     if any(message.sent and message.time > since for message in comment.messages):
         return True
-    shown = thread_place(change, comment, first, second, repository)
+    shown = thread_place(change, comment, first, second)
     if PATCHSET_LEVEL == shown.path:
         return False
     if shown.line is None:
-        return shown.path in compared_files(change, first, second, repository)
-    old, new, paths = diff_endpoints(change, first, second, shown.path, repository)
-    old_path = old_path_of(change, first, second, paths[0], repository)
-    edits = edits_of(old, new, paths[0], repository, old_path)
+        return shown.path in compared_files(change, first, second)
+    old, new, paths = diff_endpoints(change, first, second, shown.path)
+    old_path = old_path_of(change, first, second, paths[0])
+    edits = edits_of(change.repository, old, new, paths[0], old_path)
     line, is_old_side = shown.line, OLD_SIDE == shown.side
     return any(ranges_overlap(line, line + 1, *(edit[:2] if is_old_side else edit[2:]))
                for edit in edits)
 
 
-def touched_threads(change: Change, first: str | None = None, second: str | None = None,
-                    repository: str | None = None) -> set[int]:
+def touched_threads(change: Change, first: str | None = None,
+                    second: str | None = None) -> set[int]:
     """Finds the threads touched in a comparison, see _is_touched().
 
     Args:
         change: the change.
         first: the left version, see versions_to_compare().
         second: the right version, see versions_to_compare().
-        repository: the repository's directory, None for the current one.
 
     Returns:
         The threads' numbers. Empty when the versions can't be compared.
     """
     try:
         return {comment.number for comment in change.comments
-                if _is_touched(change, comment, first, second, repository)}
+                if _is_touched(change, comment, first, second)}
     except ChangeError:
         return set()
 
@@ -112,7 +110,7 @@ def _waits_for(comment: Comment, viewer: str = REVIEWER) -> bool:
 
 
 def relevant_threads(change: Change, first: str | None = None, second: str | None = None,
-                     viewer: str = REVIEWER, repository: str | None = None) -> set[int]:
+                     viewer: str = REVIEWER) -> set[int]:
     """Finds the threads worth a look in a comparison: touched ones (see
     _is_touched()) and unresolved ones waiting for the viewer.
 
@@ -121,18 +119,16 @@ def relevant_threads(change: Change, first: str | None = None, second: str | Non
         first: the left version, see versions_to_compare().
         second: the right version, see versions_to_compare().
         viewer: who looks, REVIEWER or AUTHOR.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         The threads' numbers.
     """
-    return touched_threads(change, first, second, repository) | {
+    return touched_threads(change, first, second) | {
         comment.number for comment in change.comments if _waits_for(comment, viewer)}
 
 
 def threads_by_file(change: Change, files: Sequence[str], first: str | None = None,
-                    second: str | None = None,
-                    repository: str | None = None) -> list[tuple[str, list[Comment]]]:
+                    second: str | None = None) -> list[tuple[str, list[Comment]]]:
     """Groups the threads by the file the comparison shows them on.
 
     Args:
@@ -140,7 +136,6 @@ def threads_by_file(change: Change, files: Sequence[str], first: str | None = No
         files: the file list's paths, COMMIT_MSG first.
         first: the left version, see versions_to_compare().
         second: the right version, see versions_to_compare().
-        repository: the repository's directory, None for the current one.
 
     Returns:
         (path, threads) per file in the order of files. Threads on the
@@ -151,7 +146,7 @@ def threads_by_file(change: Change, files: Sequence[str], first: str | None = No
     groups: dict[str, list[Comment]] = {}
     for comment in change.comments:
         try:
-            path = thread_place(change, comment, first, second, repository).path
+            path = thread_place(change, comment, first, second).path
         except ChangeError:
             path = split_place(comment.place)[0]
         groups.setdefault(path, []).append(comment)

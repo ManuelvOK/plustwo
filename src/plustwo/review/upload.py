@@ -7,7 +7,7 @@ from plustwo.git.errors import ChangeError
 from plustwo.git.lock import review_lock
 from plustwo.git.notes import read_note, write_note
 from plustwo.git.refs import commits_between, current_branch
-from plustwo.git.repository import git
+from plustwo.git.repository import Repository
 from plustwo.model.change import Change
 from plustwo.review.changes import change_from, changes_in_stack, note_of, reference_change_id
 from plustwo.review.patch_sets import add_patch_set, patch_sets_of
@@ -15,7 +15,7 @@ from plustwo.review.setup import ensure_layout
 from plustwo.review.stacks import set_stack_base, stack_bases, stack_ref, topic_of_branch
 
 
-def upload(branch: str | None = None, topic: str | None = None, repository: str | None = None,
+def upload(repository: Repository, branch: str | None = None, topic: str | None = None,
            is_wip: bool | None = None, from_change: str | None = None
            ) -> tuple[list[tuple[Change, int, str | None]], str, bool, str | None]:
     """Uploads the stack of a local branch: its commits that are not on the
@@ -32,10 +32,10 @@ def upload(branch: str | None = None, topic: str | None = None, repository: str 
     another base moves the stack there.
 
     Args:
+        repository: the repository.
         branch: the local branch, None for the checked out one.
         topic: the stack's topic, None for the branch's name without a
             leading review/.
-        repository: the repository's directory, None for the current one.
         is_wip: True or False marks every change of the stack work in
             progress or ready, like Gerrit's %wip and %ready. None leaves
             the marks.
@@ -63,21 +63,20 @@ def upload(branch: str | None = None, topic: str | None = None, repository: str 
         if base == branch:
             raise ChangeError(f'{base} is the base branch, upload from another branch')
         topic = topic or topic_of_branch(branch or '')
-        tip = git('rev-parse', branch or 'HEAD', repository=repository)
-        commits = commits_between(base, tip, repository)
+        tip = repository.git('rev-parse', branch or 'HEAD')
+        commits = commits_between(repository, base, tip)
         if not commits:
             raise ChangeError(f'{branch or "HEAD"} has no commits beyond {base}')
         change_ids = []
         for commit in commits:
-            change_id = change_id_of(commit, repository)
+            change_id = change_id_of(repository, commit)
             if change_id is None:
                 raise ChangeError(f'{commit[:8]} has no Change-Id. Run plustwo init, then '
                                   'amend it to get one.')
             change_ids.append(change_id)
         in_review = {change.change_id: change.topic for change in changes_in_stack(repository)}
         has_grown = False
-        if not git('rev-parse', '--verify', '--quiet', stack_ref(topic), check=False,
-                   repository=repository):
+        if not repository.git('rev-parse', '--verify', '--quiet', stack_ref(topic), check=False):
             others = {in_review[change_id] for change_id in change_ids if change_id in in_review}
             if 1 == len(others):
                 topic, has_grown = others.pop(), True
@@ -91,7 +90,7 @@ def upload(branch: str | None = None, topic: str | None = None, repository: str 
         # The work in progress mark of each commit, None to leave it
         marks = [is_wip] * len(commits)
         if is_wip is not None and from_change:
-            from_id = reference_change_id(from_change, repository)
+            from_id = reference_change_id(repository, from_change)
             index = next((index for index, change_id in enumerate(change_ids)
                           if change_id.startswith(from_id)), None)
             if index is None:
@@ -104,31 +103,30 @@ def upload(branch: str | None = None, topic: str | None = None, repository: str 
         uploaded = []
         is_marked = False
         for commit, change_id, mark in zip(commits, change_ids, marks):
-            patch_sets = patch_sets_of(change_id, repository)
+            patch_sets = patch_sets_of(repository, change_id)
             latest = max(patch_sets, default=0)
             if latest and patch_sets[latest] == commit:
-                note = read_note(commit, repository)
+                note = read_note(repository, commit)
                 if note.get('rebase_requested') or (mark is not None
                                                     and mark != note.get('wip', False)):
                     note['rebase_requested'] = False
                     if mark is not None:
                         note['wip'] = mark
-                    write_note(commit, note, repository)
+                    write_note(repository, commit, note)
                     is_marked = True
                 continue
-            note = read_note(patch_sets[latest] if latest else commit, repository)
-            change = change_from(commit, topic, note, repository)
+            note = read_note(repository, patch_sets[latest] if latest else commit)
+            change = change_from(repository, commit, topic, note)
             change.rebase_is_requested = False
             if mark is not None:
                 change.is_wip = mark
-            uploaded.append((change, *add_patch_set(change, repository)))
-            write_note(commit, note_of(change), repository)
-        old_top = git('rev-parse', '--verify', '--quiet', stack_ref(topic), check=False,
-                      repository=repository)
+            uploaded.append((change, *add_patch_set(change)))
+            write_note(repository, commit, note_of(change))
+        old_top = repository.git('rev-parse', '--verify', '--quiet', stack_ref(topic), check=False)
         old_base = stack_bases(repository).get(topic)
         if not uploaded and old_top == tip and not is_marked and base == old_base:
             raise ChangeError(f'{topic} is uploaded already, nothing changed')
-        git('update-ref', stack_ref(topic), tip, repository=repository)
-        set_stack_base(topic, base, repository)
+        repository.git('update-ref', stack_ref(topic), tip)
+        set_stack_base(repository, topic, base)
         moved = old_base if old_top and old_base and old_base != base else None
         return uploaded, topic, has_grown, moved

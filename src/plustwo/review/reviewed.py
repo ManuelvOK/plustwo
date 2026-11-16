@@ -6,60 +6,59 @@ import hashlib
 
 from collections.abc import Sequence
 
-from plustwo.git.repository import git
+from plustwo.git.repository import Repository
 from plustwo.model.change import Change
 from plustwo.model.place import COMMIT_MSG
 from plustwo.review.changes import update_change
 
 
 @functools.lru_cache(maxsize=4096)
-def _file_diff_hash(commit: str, path: str, repository: str | None = None) -> str:
+def _file_diff_hash(repository: Repository, commit: str, path: str) -> str:
     """Hashes a file's own diff in a commit, against the commit's parent.
     The hash stays the same while the file's change does, also after a
     rebase.
 
     Args:
+        repository: the repository.
         commit: the commit.
         path: the file's path, or COMMIT_MSG for the message.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         The hash, 16 hex digits.
     """
     if COMMIT_MSG == path:
-        text = git('log', '-1', '--format=%B', commit, repository=repository)
+        text = repository.git('log', '-1', '--format=%B', commit)
     else:
-        text = git('diff', '--no-color', '--no-ext-diff', '--no-textconv', '-U0', f'{commit}^',
-                   commit, '--', path, check=False, repository=repository)
+        text = repository.git('diff', '--no-color', '--no-ext-diff', '--no-textconv', '-U0',
+                              f'{commit}^',
+                              commit, '--', path, check=False)
         # Line numbers move with a rebase, the edits themselves don't.
         text = '\n'.join(line for line in text.split('\n') if not line.startswith('@@'))
     return hashlib.sha1(text.encode()).hexdigest()[:16]
 
 
-def is_reviewed(change: Change, path: str, repository: str | None = None) -> bool:
+def is_reviewed(change: Change, path: str) -> bool:
     """Tells whether the reviewer marked a file reviewed and its diff is
     the same as then.
 
     Args:
         change: the change.
         path: the file's path.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         True if the mark holds.
     """
     mark = change.reviewed.get(path)
-    return bool(mark) and mark == _file_diff_hash(change.commit, path, repository)
+    return bool(mark) and mark == _file_diff_hash(change.repository, change.commit, path)
 
 
-def toggle_reviewed(change_id: str, path: str, repository: str | None = None) -> bool:
+def toggle_reviewed(repository: Repository, change_id: str, path: str) -> bool:
     """Marks a file of a change reviewed, or unmarks it.
 
     Args:
+        repository: the repository.
         change_id: the full Change-Id.
         path: the file's path.
-        repository: the repository's directory, None for the one the
-            change is in review in.
 
     Returns:
         Whether the file is marked now.
@@ -73,23 +72,22 @@ def toggle_reviewed(change_id: str, path: str, repository: str | None = None) ->
         Returns:
             Whether the file is marked now.
         """
-        if is_reviewed(change, path, repository):
+        if is_reviewed(change, path):
             del change.reviewed[path]
             return False
-        change.reviewed[path] = _file_diff_hash(change.commit, path, repository)
+        change.reviewed[path] = _file_diff_hash(repository, change.commit, path)
         return True
 
-    return update_change(change_id, edit, repository)
+    return update_change(repository, change_id, edit)
 
 
-def mark_reviewed(change_id: str, path: str, repository: str | None = None) -> None:
+def mark_reviewed(repository: Repository, change_id: str, path: str) -> None:
     """Marks a file of a change reviewed, also when it is already.
 
     Args:
+        repository: the repository.
         change_id: the full Change-Id.
         path: the file's path.
-        repository: the repository's directory, None for the one the
-            change is in review in.
     """
     def edit(change: Change) -> None:
         """Sets the mark.
@@ -97,9 +95,9 @@ def mark_reviewed(change_id: str, path: str, repository: str | None = None) -> N
         Args:
             change: the change, read fresh.
         """
-        change.reviewed[path] = _file_diff_hash(change.commit, path, repository)
+        change.reviewed[path] = _file_diff_hash(repository, change.commit, path)
 
-    update_change(change_id, edit, repository)
+    update_change(repository, change_id, edit)
 
 
 def file_after(files: Sequence[str], path: str) -> str | None:

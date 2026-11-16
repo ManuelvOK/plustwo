@@ -208,14 +208,12 @@ def message_patch_sets(change: Change, comment: Comment, shown: int | None = Non
     return numbers
 
 
-def patch_set_history(change: Change, shown: int | None = None,
-                      repository: str | None = None) -> list[PatchSetEntry]:
+def patch_set_history(change: Change, shown: int | None = None) -> list[PatchSetEntry]:
     """Lists the change's patch sets with what happened on them.
 
     Args:
         change: the change.
         shown: the patch set the reviewer looks at, see patch_set_events().
-        repository: the repository's directory, None for the current one.
 
     Returns:
         An entry per patch set, oldest first: when and by whom it was
@@ -227,8 +225,9 @@ def patch_set_history(change: Change, shown: int | None = None,
     history = []
     for index, number in enumerate(numbers):
         commit = change.patch_sets[number]
-        patch_set_type_text = (patch_set_type(change.patch_sets[numbers[index - 1]], commit,
-                                              repository) if index else '-')
+        patch_set_type_text = (patch_set_type(change.repository,
+                                              change.patch_sets[numbers[index - 1]], commit)
+                               if index else '-')
         history.append(PatchSetEntry(number, commit, change.uploads.get(number, 0),
                                      change.uploaders.get(number, ''), patch_set_type_text,
                                      [vote for vote in change.votes if number == vote.patch_set],

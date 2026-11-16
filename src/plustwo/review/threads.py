@@ -8,7 +8,7 @@ import time
 from plustwo.git.commit_message import commit_message_text
 from plustwo.git.errors import ChangeError
 from plustwo.git.files import file_lines, renames_of
-from plustwo.git.repository import git, git_command
+from plustwo.git.repository import Repository
 from plustwo.model.acknowledgement import is_acknowledgement
 from plustwo.model.change import Change
 from plustwo.model.comment import OLD_STATUSES, RESOLVED, STATUSES, UNRESOLVED, Comment
@@ -19,14 +19,13 @@ from plustwo.review.changes import comment_of, update_change
 from plustwo.review.porting import thread_version
 
 
-def line_at(commit: str, place: str, repository: str | None = None,
-            side: str = NEW_SIDE) -> str:
+def line_at(repository: Repository, commit: str, place: str, side: str = NEW_SIDE) -> str:
     """Reads the source line a place refers to.
 
     Args:
+        repository: the repository.
         commit: the commit the place counts in.
         place: the place, like src/main.cc:12.
-        repository: the repository's directory, None for the current one.
         side: NEW_SIDE, or OLD_SIDE to read the line from the commit's
             parent.
 
@@ -40,13 +39,13 @@ def line_at(commit: str, place: str, repository: str | None = None,
     if COMMIT_MSG == path:
         if OLD_SIDE == side:
             return ''
-        text = commit_message_text(commit, repository)
+        text = commit_message_text(repository, commit)
     elif OLD_SIDE == side:
         # A renamed file had its old path in the parent
-        old_path = renames_of(commit, repository).get(path, path)
-        text = git('show', f'{commit}^:{old_path}', check=False, repository=repository)
+        old_path = renames_of(repository, commit).get(path, path)
+        text = repository.git('show', f'{commit}^:{old_path}', check=False)
     else:
-        text = git('show', f'{commit}:{path}', check=False, repository=repository)
+        text = repository.git('show', f'{commit}:{path}', check=False)
     lines = text.split('\n')
     number = int(line)
     return lines[number - 1].strip() if 1 <= number <= len(lines) else ''
@@ -71,15 +70,16 @@ def status_name(name: str) -> str:
     return status
 
 
-def add_comment(change_id: str, place: str, text: str, is_sent: bool = True,
+def add_comment(repository: Repository, change_id: str, place: str, text: str, is_sent: bool = True,
                 side: str = NEW_SIDE, author: str = REVIEWER, status: str | None = None,
-                repository: str | None = None, patch_set: int | None = None) -> int:
+                patch_set: int | None = None) -> int:
     """Starts a thread. Like in Gerrit it is unresolved unless status says
     otherwise, and a message on the whole change is resolved, like one sent
     with the drafts. Like Gerrit, refuses a file the version doesn't have
     and a line past its end.
 
     Args:
+        repository: the repository.
         change_id: the full Change-Id.
         place: the place, see comment_place() for a line of a diff.
         text: the first message's text.
@@ -89,8 +89,6 @@ def add_comment(change_id: str, place: str, text: str, is_sent: bool = True,
         author: who writes, REVIEWER or AUTHOR.
         status: the thread's status or an older name for it, see
             status_name(). None for the default.
-        repository: the repository's directory, None for the one the
-            change is in review in.
         patch_set: the patch set the place counts on, None or 0 for the
             newest.
 
@@ -122,47 +120,48 @@ def add_comment(change_id: str, place: str, text: str, is_sent: bool = True,
                                             time=int(time.time()) if is_sent_now else 0)],
                           side=side,
                           id=os.urandom(6).hex())
-        check_place(change, comment, repository)
+        check_place(change, comment)
         change.comments.append(comment)
         return comment.number
 
-    return update_change(change_id, edit, repository)
+    return update_change(repository, change_id, edit)
 
 
-def check_place(change: Change, comment: Comment, repository: str | None = None) -> None:
+def check_place(change: Change, comment: Comment) -> None:
     """Checks that a new thread's place exists. The commit message and the
     whole change are always there.
 
     Args:
         change: the thread's change.
         comment: the thread.
-        repository: the repository's directory, None for the current one.
 
     Raises:
         ChangeError: the thread's file isn't in the version it counts in
             (see thread_version()), or its line is past the file's end.
     """
     path, line = split_place(comment.place)
-    version = thread_version(change, comment, repository)
+    version = thread_version(change, comment)
     if path in (COMMIT_MSG, PATCHSET_LEVEL) or version is None:
         return
     commit, path = version
     where = f'PS{comment.patch_set}' + (' (old side)' if OLD_SIDE == comment.side else '')
-    if 0 != subprocess.run([*git_command(repository), 'cat-file', '-e', f'{commit}:{path}'],
+    if 0 != subprocess.run([*change.repository.git_command(), 'cat-file', '-e', f'{commit}:{path}'],
                            capture_output=True).returncode:
         raise ChangeError(f'{where} has no file {path}')
-    lines = file_lines(commit, path, repository)
+    lines = file_lines(change.repository, commit, path)
     if line is not None and lines is not None and not 1 <= line <= len(lines):
         raise ChangeError(f'{path} has {len(lines)} lines in {where}, not line {line}')
 
 
-def add_message(change_id: str, number: int, author: str, text: str, is_sent: bool = True,
-                status: str | None = None, repository: str | None = None) -> None:
+def add_message(repository: Repository, change_id: str, number: int, author: str, text: str,
+                is_sent: bool = True,
+                status: str | None = None) -> None:
     """Adds a message to a thread. Like Gerrit's Reply, a reviewer has one
     draft per thread. A reviewer's acknowledgement resolves, see
     is_acknowledgement().
 
     Args:
+        repository: the repository.
         change_id: the full Change-Id.
         number: the thread's number.
         author: who writes, REVIEWER or AUTHOR.
@@ -171,8 +170,6 @@ def add_message(change_id: str, number: int, author: str, text: str, is_sent: bo
             author's message is always sent.
         status: the status the message gives the thread, see
             status_name(). None leaves it as it is.
-        repository: the repository's directory, None for the one the
-            change is in review in.
 
     Raises:
         ChangeError: the status is unknown, or the reviewer has a draft in
@@ -199,19 +196,18 @@ def add_message(change_id: str, number: int, author: str, text: str, is_sent: bo
                                         time=int(time.time()) if is_sent_now else 0,
                                         unresolved=unresolved))
 
-    update_change(change_id, edit, repository)
+    update_change(repository, change_id, edit)
 
 
-def edit_draft(change_id: str, number: int, text: str, repository: str | None = None) -> None:
+def edit_draft(repository: Repository, change_id: str, number: int, text: str) -> None:
     """Replaces the text of the reviewer's draft at the end of a thread. An
     acknowledgement resolves, see is_acknowledgement().
 
     Args:
+        repository: the repository.
         change_id: the full Change-Id.
         number: the thread's number.
         text: the draft's new text.
-        repository: the repository's directory, None for the one the
-            change is in review in.
     """
     def edit(change: Change) -> None:
         """Changes the draft.
@@ -229,19 +225,18 @@ def edit_draft(change_id: str, number: int, text: str, repository: str | None = 
         if comment.messages[-1].unresolved is None and is_acknowledgement(text):
             comment.messages[-1].unresolved = False
 
-    update_change(change_id, edit, repository)
+    update_change(repository, change_id, edit)
 
 
-def delete_draft(change_id: str, number: int, repository: str | None = None) -> None:
+def delete_draft(repository: Repository, change_id: str, number: int) -> None:
     """Deletes the reviewer's draft at the end of a thread. A thread that
     was only a draft disappears completely. The other threads keep their
     numbers.
 
     Args:
+        repository: the repository.
         change_id: the full Change-Id.
         number: the thread's number.
-        repository: the repository's directory, None for the one the
-            change is in review in.
     """
     def edit(change: Change) -> None:
         """Deletes the draft.
@@ -259,18 +254,17 @@ def delete_draft(change_id: str, number: int, repository: str | None = None) -> 
         if not comment.messages:
             change.comments.remove(comment)
 
-    update_change(change_id, edit, repository)
+    update_change(repository, change_id, edit)
 
 
-def send_drafts(change_id: str, message: str = '', repository: str | None = None) -> int:
+def send_drafts(repository: Repository, change_id: str, message: str = '') -> int:
     """Sends all of the reviewer's drafts of a change, like Gerrit's Reply.
 
     Args:
+        repository: the repository.
         change_id: the full Change-Id.
         message: a message on the whole change, resolved like a note. ''
             for none.
-        repository: the repository's directory, None for the one the
-            change is in review in.
 
     Returns:
         The number of drafts sent.
@@ -298,35 +292,32 @@ def send_drafts(change_id: str, message: str = '', repository: str | None = None
                 id=os.urandom(6).hex()))
         return len(drafts)
 
-    return update_change(change_id, edit, repository)
+    return update_change(repository, change_id, edit)
 
 
-def set_status(change_id: str, number: int, status: str, text: str = '',
-               repository: str | None = None) -> None:
+def set_status(repository: Repository, change_id: str, number: int, status: str,
+               text: str = '') -> None:
     """Lets the author resolve a thread or make it unresolved again.
 
     Args:
+        repository: the repository.
         change_id: the full Change-Id.
         number: the thread's number.
         status: the new status, see status_name().
         text: the message with it, '' for none.
-        repository: the repository's directory, None for the one the
-            change is in review in.
     """
-    add_message(change_id, number, AUTHOR, text or '', status=status, repository=repository)
+    add_message(repository, change_id, number, AUTHOR, text or '', status=status)
 
 
-def toggle_draft_status(change_id: str, number: int,
-                        repository: str | None = None) -> str | None:
+def toggle_draft_status(repository: Repository, change_id: str, number: int) -> str | None:
     """Flips whether sending a thread's draft resolves it, like the
     reviewer's Resolved checkbox. Without a draft, an empty one is made
     that flips the thread's status.
 
     Args:
+        repository: the repository.
         change_id: the full Change-Id.
         number: the thread's number.
-        repository: the repository's directory, None for the one the
-            change is in review in.
 
     Returns:
         The status the draft will give, see Comment.draft_status().
@@ -351,4 +342,4 @@ def toggle_draft_status(change_id: str, number: int,
             draft.unresolved = not is_unresolved_now
         return comment.draft_status()
 
-    return update_change(change_id, edit, repository)
+    return update_change(repository, change_id, edit)

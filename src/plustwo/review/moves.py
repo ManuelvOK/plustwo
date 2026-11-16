@@ -13,6 +13,7 @@ from plustwo.model.place import (
 from plustwo.model.roles import REVIEWER
 from plustwo.review.changes import comment_of, update_change
 from plustwo.review.threads import check_place
+from plustwo.git.repository import Repository
 
 
 def move_place(text: str) -> tuple[str, str]:
@@ -32,8 +33,7 @@ def move_place(text: str) -> tuple[str, str]:
 
 
 def place_move(change: Change, comment: Comment, place: str, side: str = NEW_SIDE,
-               patch_set: int = 0, by: str = REVIEWER,
-               repository: str | None = None) -> Move | None:
+               patch_set: int = 0, by: str = REVIEWER) -> Move | None:
     """Moves a thread to a place on a patch set. Checks the place like a new
     thread's. A thread that is only a draft just gets the new place, else
     the move is kept and shown (see Move).
@@ -45,7 +45,6 @@ def place_move(change: Change, comment: Comment, place: str, side: str = NEW_SID
         side: the side the place is on, NEW_SIDE or OLD_SIDE.
         patch_set: the patch set the place counts on, 0 for the newest.
         by: who moves the thread, REVIEWER or AUTHOR.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         The move, None for a draft.
@@ -59,8 +58,7 @@ def place_move(change: Change, comment: Comment, place: str, side: str = NEW_SID
     path, _line = split_place(place)
     if path in (PATCHSET_LEVEL, CHANGE_PLACE):
         place, side = PATCHSET_LEVEL, NEW_SIDE
-    check_place(change, replace(comment, place=place, side=side, patch_set=patch_set),
-                repository)
+    check_place(change, replace(comment, place=place, side=side, patch_set=patch_set))
     if comment.is_draft():
         comment.place, comment.side, comment.patch_set = place, side, patch_set
         return None
@@ -69,20 +67,19 @@ def place_move(change: Change, comment: Comment, place: str, side: str = NEW_SID
     return move
 
 
-def move_thread(change_id: str, number: int, place: str, side: str = NEW_SIDE,
-                patch_set: int = 0, by: str = REVIEWER,
-                repository: str | None = None) -> Move | None:
+def move_thread(repository: Repository, change_id: str, number: int, place: str,
+                side: str = NEW_SIDE,
+                patch_set: int = 0, by: str = REVIEWER) -> Move | None:
     """Moves a thread by hand under the lock, see place_move().
 
     Args:
+        repository: the repository.
         change_id: the full Change-Id.
         number: the thread's number.
         place: the new place.
         side: the side the place is on, NEW_SIDE or OLD_SIDE.
         patch_set: the patch set the place counts on, 0 for the newest.
         by: who moves the thread, REVIEWER or AUTHOR.
-        repository: the repository's directory, None for the one the
-            change is in review in.
 
     Returns:
         The move, None for a draft.
@@ -96,10 +93,9 @@ def move_thread(change_id: str, number: int, place: str, side: str = NEW_SIDE,
         Returns:
             The move, None for a draft.
         """
-        return place_move(change, comment_of(change, number), place, side, patch_set, by,
-                          repository)
+        return place_move(change, comment_of(change, number), place, side, patch_set, by)
 
-    return update_change(change_id, edit, repository)
+    return update_change(repository, change_id, edit)
 
 
 def move_text(move: Move) -> str:

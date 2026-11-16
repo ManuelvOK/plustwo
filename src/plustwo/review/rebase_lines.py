@@ -58,8 +58,7 @@ def _moved_range(begin: int, end: int, edits: list[Edit]) -> tuple[int, int, boo
 
 
 def rebase_lines(change: Change, first: str | None = None, second: str | None = None,
-                 path: str | None = None,
-                 repository: str | None = None) -> tuple[LineSets, LineSets]:
+                 path: str | None = None) -> tuple[LineSets, LineSets]:
     """Finds the lines of a diff between two patch sets that differ because
     the changes below changed, i.e. the base moved, not only the change
     itself.
@@ -77,7 +76,6 @@ def rebase_lines(change: Change, first: str | None = None, second: str | None = 
         first: the left version, see versions_to_compare().
         second: the right version, see versions_to_compare().
         path: the file's path, None for none.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         (lines from below, lines partly from below), see LineSets. Empty
@@ -88,20 +86,21 @@ def rebase_lines(change: Change, first: str | None = None, second: str | None = 
     (first, old), (_second, new) = versions_to_compare(change, first, second)
     if BASE == first or COMMIT_MSG == path or not path:
         return nothing
-    if tree_of(f'{old}^', repository) == tree_of(f'{new}^', repository):
+    if tree_of(change.repository, f'{old}^') == tree_of(change.repository, f'{new}^'):
         return nothing
-    old_own = edits_of(f'{old}^', old, path, repository)
-    new_own = edits_of(f'{new}^', new, path, repository)
+    old_own = edits_of(change.repository, f'{old}^', old, path)
+    new_own = edits_of(change.repository, f'{new}^', new, path)
     # The edits between the parents, in the patch sets' line numbers
     moved = []
-    for old_begin, old_end, new_begin, new_end in edits_of(f'{old}^', f'{new}^', path, repository):
+    for old_begin, old_end, new_begin, new_end in edits_of(change.repository, f'{old}^', f'{new}^',
+                                                           path):
         begin, end, is_old_exact = _moved_range(old_begin, old_end, old_own)
         other_begin, other_end, is_new_exact = _moved_range(new_begin, new_end, new_own)
         moved.append((begin, end, other_begin, other_end, is_old_exact and is_new_exact))
     # The edits of the diff that match or overlap them
     from_below: LineSets = (set(), set())
     partly: LineSets = (set(), set())
-    for edit in edits_of(old, new, path, repository):
+    for edit in edits_of(change.repository, old, new, path):
         if any(edit == other[:4] and other[4] for other in moved):
             lines = from_below
         elif any(ranges_overlap(edit[0], edit[1], other[0], other[1])

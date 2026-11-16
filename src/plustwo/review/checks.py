@@ -8,8 +8,7 @@ import subprocess
 import sys
 
 from plustwo.config.settings import setting
-from plustwo.git.refs import git_path, toplevel
-from plustwo.git.repository import git
+from plustwo.git.repository import Repository
 from plustwo.model.vote import VERIFIED
 from plustwo.paths import LAUNCHER
 from plustwo.review.changes import changes_in_stack
@@ -21,13 +20,13 @@ from plustwo.review.votes import set_vote
 _N_LOG_LINES_IN_VOTE = 20
 
 
-def _cancel_check(repository: str | None = None) -> None:
+def _cancel_check(repository: Repository) -> None:
     """Stops a running check of the repository, if there is one.
 
     Args:
-        repository: the repository's directory, None for the current one.
+        repository: the repository.
     """
-    pid_file = git_path('plustwo/check.pid', repository)
+    pid_file = repository.git_path('plustwo/check.pid')
     if not pid_file.exists():
         return
     with contextlib.suppress(ValueError, ProcessLookupError, PermissionError):
@@ -35,65 +34,62 @@ def _cancel_check(repository: str | None = None) -> None:
     pid_file.unlink(missing_ok=True)
 
 
-def start_check(topic: str, repository: str | None = None) -> bool:
+def start_check(repository: Repository, topic: str) -> bool:
     """Starts the check (setting checks.command) of a stack's top change in
     the background, after stopping one still running: a newer upload makes
     its result useless.
 
     Args:
+        repository: the repository.
         topic: the stack's topic.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         Whether a check started, False without checks.command.
     """
-    if not setting('checks.command', repository=repository):
+    if not setting(repository, 'checks.command'):
         return False
     _cancel_check(repository)
-    top = git('rev-parse', stack_ref(topic), repository=repository)
-    root = toplevel(repository)
+    top = repository.git('rev-parse', stack_ref(topic))
     process = subprocess.Popen([sys.executable, str(LAUNCHER), 'check-run',
-                                topic, top], cwd=root, start_new_session=True,
+                                topic, top], cwd=repository.path, start_new_session=True,
                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                stderr=subprocess.DEVNULL)
-    pid_file = git_path('plustwo/check.pid', repository)
+    pid_file = repository.git_path('plustwo/check.pid')
     pid_file.parent.mkdir(parents=True, exist_ok=True)
     pid_file.write_text(f'{process.pid} {top}\n')
     return True
 
 
-def run_check(topic: str, commit: str | None = None,
-              repository: str | None = None) -> int | None:
+def run_check(repository: Repository, topic: str, commit: str | None = None) -> int | None:
     """Runs the check of a stack's top change in the worktree
     .git/plustwo/check, the setting checks.setup first if there is one, and
     votes Verified by ci with the end of the log. The log stays in
     .git/plustwo/check.log.
 
     Args:
+        repository: the repository.
         topic: the stack's topic.
         commit: the commit to check, None for the stack's top.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         The vote, None without checks.command.
     """
-    command = setting('checks.command', repository=repository)
+    command = setting(repository, 'checks.command')
     if not command:
         return None
-    commit = commit or git('rev-parse', stack_ref(topic), repository=repository)
+    commit = commit or repository.git('rev-parse', stack_ref(topic))
     # The worktree at the commit
-    worktree = git_path('plustwo/check', repository)
+    worktree = repository.git_path('plustwo/check')
     if not (worktree / '.git').exists():
-        git('worktree', 'prune', repository=repository)
-        git('worktree', 'add', '--detach', '--force', str(worktree), commit,
-            repository=repository)
+        repository.git('worktree', 'prune')
+        repository.git('worktree', 'add', '--detach', '--force', str(worktree), commit)
     else:
-        git('checkout', '--quiet', '--detach', '--force', commit, repository=str(worktree))
+        Repository(worktree).git('checkout', '--quiet', '--detach', '--force', commit)
     # The steps, logged
-    log_path = git_path('plustwo/check.log', repository)
+    log_path = repository.git_path('plustwo/check.log')
     with open(log_path, 'w') as log:
         status = 0
-        for step in filter(None, (setting('checks.setup', repository=repository), command)):
+        for step in filter(None, (setting(repository, 'checks.setup'), command)):
             log.write(f'$ {step}\n')
             log.flush()
             status = subprocess.run(step, shell=True, cwd=worktree, stdout=log,
@@ -108,6 +104,6 @@ def run_check(topic: str, commit: str | None = None,
                    if change.topic == topic and commit in change.patch_sets.values()), None)
     if change is not None:
         number = next(number for number, other in change.patch_sets.items() if other == commit)
-        set_vote(change.change_id, VERIFIED, value, by='ci', patch_set=number, message=tail,
-                 repository=repository)
+        set_vote(repository, change.change_id, VERIFIED, value, by='ci', patch_set=number,
+                 message=tail)
     return value

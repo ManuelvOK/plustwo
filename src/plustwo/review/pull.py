@@ -6,13 +6,13 @@ import subprocess
 from plustwo.git.commits import change_id_of
 from plustwo.git.errors import ChangeError
 from plustwo.git.refs import commits_between, current_branch
-from plustwo.git.repository import git, git_command
+from plustwo.git.repository import Repository
 from plustwo.review.patch_sets import patch_sets_of
 from plustwo.review.setup import ensure_layout
 from plustwo.review.stacks import stack_base, stack_ref, topic_of_branch
 
 
-def pull(repository: str | None = None) -> str:
+def pull(repository: Repository) -> str:
     """Brings what the reviewer did into the checked out branch: a rebase,
     a submit. Like a fetch and rebase from Gerrit.
 
@@ -23,7 +23,7 @@ def pull(repository: str | None = None) -> str:
     worktree. The branch is never deleted.
 
     Args:
-        repository: the repository's directory, None for the current one.
+        repository: the repository.
 
     Returns:
         What happened, as a short line.
@@ -33,38 +33,36 @@ def pull(repository: str | None = None) -> str:
             has changes.
     """
     branch = current_branch(repository)
-    base = stack_base(topic_of_branch(branch or ''), repository)
+    base = stack_base(repository, topic_of_branch(branch or ''))
     if branch is None:
         raise ChangeError('HEAD is detached, check out the branch to pull into')
     if base == branch:
         raise ChangeError(f'{base} is the base branch, check out the branch to pull into')
-    if git('status', '--porcelain', '--untracked-files=no', repository=repository):
+    if repository.git('status', '--porcelain', '--untracked-files=no'):
         raise ChangeError('the worktree has changes, commit or stash them first')
     ensure_layout(repository)
     topic = topic_of_branch(branch)
-    server = git('rev-parse', '--verify', '--quiet', stack_ref(topic), check=False,
-                 repository=repository)
-    target = server or git('rev-parse', base, repository=repository)
-    local = commits_between(base, 'HEAD', repository)
+    server = repository.git('rev-parse', '--verify', '--quiet', stack_ref(topic), check=False)
+    target = server or repository.git('rev-parse', base)
+    local = commits_between(repository, base, 'HEAD')
     uploaded = []
     for commit in local:
-        change_id = change_id_of(commit, repository)
-        if not change_id or commit not in patch_sets_of(change_id, repository).values():
+        change_id = change_id_of(repository, commit)
+        if not change_id or commit not in patch_sets_of(repository, change_id).values():
             break
         uploaded.append(commit)
     newer = local[len(uploaded):]
-    head = git('rev-parse', 'HEAD', repository=repository)
+    head = repository.git('rev-parse', 'HEAD')
     if not local and head == target:
         return f'{branch} has nothing beyond {base}' + ('' if server else ', all is submitted')
     if head == target or (uploaded and uploaded[-1] == target):
         return f'{branch} is up to date'
     if not newer:
-        git('reset', '--quiet', '--keep', target, repository=repository)
+        repository.git('reset', '--quiet', '--keep', target)
         return (f'{branch} moved to the reviewed stack {topic}' if server
                 else f'{topic} is submitted, {branch} has nothing beyond {base} now')
-    upstream = uploaded[-1] if uploaded else git('merge-base', base, 'HEAD',
-                                                 repository=repository)
-    result = subprocess.run([*git_command(repository), 'rebase',
+    upstream = uploaded[-1] if uploaded else repository.git('merge-base', base, 'HEAD')
+    result = subprocess.run([*repository.git_command(), 'rebase',
                              '--quiet', '--onto', target, upstream, branch],
                             capture_output=True, text=True)
     if 0 != result.returncode:

@@ -14,7 +14,7 @@ from plustwo.git.notes import notes_version
 from plustwo.git.refs import (
     NOTES_REF, OLD_PATCH_SET_PREFIX, PATCH_SET_PREFIX, PLUSTWO_PREFIX, REVIEW_BRANCH_PREFIX,
     STACK_PREFIX, commits_between, refs_with_prefix)
-from plustwo.git.repository import git
+from plustwo.git.repository import Repository, run_git
 from plustwo.review.patch_sets import patch_sets_of
 from plustwo.review.stacks import stack_ref, topic_of_branch
 
@@ -31,9 +31,12 @@ _OLD_HOOK_TEXTS = ('#!/bin/sh\n# Installed by git change: adds a Gerrit Change-I
                   'exec git-change commit-msg-hook "$1"\n',)
 
 
-def init_repository() -> list[str]:
-    """Sets up the current repository: installs the commit-msg hook, makes
+def init_repository(repository: Repository) -> list[str]:
+    """Sets up a repository: installs the commit-msg hook, makes
     notes follow amends and rebases, migrates older layouts and settings.
+
+    Args:
+        repository: the repository.
 
     Returns:
         A line per moved setting, see migrate_settings().
@@ -42,7 +45,7 @@ def init_repository() -> list[str]:
         ChangeError: a commit-msg hook that is neither plustwo's nor
             Gerrit's exists.
     """
-    path = Path(git('rev-parse', '--git-path', 'hooks/commit-msg'))
+    path = repository.git_path('hooks/commit-msg')
     existing = path.read_text(errors='replace') if path.exists() else None
     # Gerrit's own hook adds the same Change-Id trailer, so it stays.
     is_gerrit_hook = existing is not None and 'Change-Id' in existing and 'Gerrit' in existing
@@ -53,20 +56,22 @@ def init_repository() -> list[str]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(_HOOK_TEXT)
         path.chmod(0o755)
-    if NOTES_REF not in git('config', '--get-all', 'notes.rewriteRef', check=False).split('\n'):
-        git('config', '--add', 'notes.rewriteRef', NOTES_REF)
+    if NOTES_REF not in repository.git('config', '--get-all', 'notes.rewriteRef',
+                                        check=False).split('\n'):
+        repository.git('config', '--add', 'notes.rewriteRef', NOTES_REF)
 
     # Without an existing notes ref, every amend warns that it is invalid.
     # An empty notes commit makes it exist before the first comment.
-    if not notes_version():
-        empty_tree = git('hash-object', '-t', 'tree', '-w', '--stdin', input_text='')
-        notes_commit = git('commit-tree', empty_tree, '-m', 'Notes created by plustwo init')
-        git('update-ref', NOTES_REF, notes_commit)
-    migrate_layout(do_remove_old=True)
-    return migrate_settings()
+    if not notes_version(repository):
+        empty_tree = repository.git('hash-object', '-t', 'tree', '-w', '--stdin', input_text='')
+        notes_commit = repository.git('commit-tree', empty_tree, '-m',
+                                      'Notes created by plustwo init')
+        repository.git('update-ref', NOTES_REF, notes_commit)
+    migrate_layout(repository, do_remove_old=True)
+    return migrate_settings(repository)
 
 
-def migrate_layout(do_remove_old: bool = False, repository: str | None = None) -> None:
+def migrate_layout(repository: Repository, do_remove_old: bool = False) -> None:
     """Moves the review state of older versions into refs/plustwo/.
 
     The patch sets are copied from refs/patchsets/. Every local review/
@@ -76,46 +81,46 @@ def migrate_layout(do_remove_old: bool = False, repository: str | None = None) -
     no harm.
 
     Args:
+        repository: the repository.
         do_remove_old: whether to delete the old patch set refs afterwards.
-        repository: the repository's directory, None for the current one.
     """
-    old = refs_with_prefix(OLD_PATCH_SET_PREFIX, repository=repository)
-    new = refs_with_prefix(PATCH_SET_PREFIX, repository=repository)
+    old = refs_with_prefix(repository, OLD_PATCH_SET_PREFIX)
+    new = refs_with_prefix(repository, PATCH_SET_PREFIX)
     for ref, commit in old.items():
         target = PATCH_SET_PREFIX + ref[len(OLD_PATCH_SET_PREFIX):]
         if target not in new:
-            git('update-ref', target, commit, repository=repository)
+            repository.git('update-ref', target, commit)
     base = base_branch(repository)
-    branches = refs_with_prefix(f'refs/heads/{REVIEW_BRANCH_PREFIX}', repository=repository)
-    stacks = refs_with_prefix(STACK_PREFIX, repository=repository)
+    branches = refs_with_prefix(repository, f'refs/heads/{REVIEW_BRANCH_PREFIX}')
+    stacks = refs_with_prefix(repository, STACK_PREFIX)
     for ref in branches:
         topic = topic_of_branch(ref[len('refs/heads/'):])
         if stack_ref(topic) in stacks:
             continue
         top = None
-        for commit in commits_between(base, ref, repository):
-            change_id = change_id_of(commit, repository)
-            patch_sets = patch_sets_of(change_id, repository) if change_id else {}
+        for commit in commits_between(repository, base, ref):
+            change_id = change_id_of(repository, commit)
+            patch_sets = patch_sets_of(repository, change_id) if change_id else {}
             if not patch_sets or patch_sets[max(patch_sets)] != commit:
                 break
             top = commit
         if top:
-            git('update-ref', stack_ref(topic), top, repository=repository)
+            repository.git('update-ref', stack_ref(topic), top)
     if do_remove_old:
         for ref, commit in old.items():
-            git('update-ref', '-d', ref, commit, repository=repository)
+            repository.git('update-ref', '-d', ref, commit)
 
 
-def ensure_layout(repository: str | None = None) -> None:
+def ensure_layout(repository: Repository) -> None:
     """Migrates a repository of an older version on first use, so nothing
     breaks before plustwo init runs again.
 
     Args:
-        repository: the repository's directory, None for the current one.
+        repository: the repository.
     """
-    refs = refs_with_prefix(OLD_PATCH_SET_PREFIX, PLUSTWO_PREFIX, repository=repository)
+    refs = refs_with_prefix(repository, OLD_PATCH_SET_PREFIX, PLUSTWO_PREFIX)
     if refs and not any(ref.startswith(PLUSTWO_PREFIX) for ref in refs):
-        migrate_layout(repository=repository)
+        migrate_layout(repository)
 
 
 def _new_change_id(message: str) -> str:
@@ -149,5 +154,5 @@ def add_change_id(message_path: str) -> None:
         return
     if CHANGE_ID_PATTERN.search(message):
         return
-    git('interpret-trailers', '--in-place', '--trailer',
-        f'Change-Id: {_new_change_id(message)}', message_path)
+    run_git('interpret-trailers', '--in-place', '--trailer',
+            f'Change-Id: {_new_change_id(message)}', message_path)

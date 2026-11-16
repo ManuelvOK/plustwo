@@ -7,6 +7,7 @@ from plustwo.git.errors import ChangeError
 from plustwo.model.change import Change
 from plustwo.model.vote import CODE_REVIEW, DEFAULT_VOTERS, LABEL_RANGES, Vote, label_name
 from plustwo.review.changes import update_change
+from plustwo.git.repository import Repository
 
 
 def vote_values(label: str = CODE_REVIEW) -> tuple[int, ...]:
@@ -22,21 +23,19 @@ def vote_values(label: str = CODE_REVIEW) -> tuple[int, ...]:
     return tuple(range(lowest, highest + 1))
 
 
-def set_vote(change_id: str, label: str, value: int, by: str | None = None,
-             patch_set: int | None = None, message: str = '',
-             repository: str | None = None) -> int:
+def set_vote(repository: Repository, change_id: str, label: str, value: int, by: str | None = None,
+             patch_set: int | None = None, message: str = '') -> int:
     """Votes on a patch set. The vote replaces the voter's earlier votes of
     that label, 0 only removes them.
 
     Args:
+        repository: the repository.
         change_id: the full Change-Id.
         label: the label or a name for it, see label_name().
         value: the vote, within the label's range.
         by: who votes, None for the label's default voter.
         patch_set: the patch set's number, None for the latest.
         message: a message with the vote, '' for none.
-        repository: the repository's directory, None for the one the
-            change is in review in.
 
     Returns:
         The patch set's number.
@@ -79,18 +78,16 @@ def set_vote(change_id: str, label: str, value: int, by: str | None = None,
                                      message=message))
         return number
 
-    return update_change(change_id, edit, repository)
+    return update_change(repository, change_id, edit)
 
 
-def require_verified(change_id: str, does_need_verified: bool,
-                     repository: str | None = None) -> None:
+def require_verified(repository: Repository, change_id: str, does_need_verified: bool) -> None:
     """Sets whether a change needs Verified+1 to be submitted.
 
     Args:
+        repository: the repository.
         change_id: the full Change-Id.
         does_need_verified: whether the change needs Verified+1.
-        repository: the repository's directory, None for the one the
-            change is in review in.
     """
     def edit(change: Change) -> None:
         """Sets the flag.
@@ -100,4 +97,4 @@ def require_verified(change_id: str, does_need_verified: bool,
         """
         change.needs_verified = does_need_verified
 
-    update_change(change_id, edit, repository)
+    update_change(repository, change_id, edit)

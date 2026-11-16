@@ -9,7 +9,7 @@ from plustwo.diff.pairing import paired_lines
 from plustwo.git.cache import cached_for_objects
 from plustwo.git.commit_message import COMMIT_MSG_NAME, commit_message_text, commit_message_tree
 from plustwo.git.files import file_lines, renames_of
-from plustwo.git.repository import git
+from plustwo.git.repository import Repository
 from plustwo.model.change import Change
 from plustwo.model.comment import Comment
 from plustwo.model.place import (
@@ -82,25 +82,24 @@ class PortedPlace:
 
 # ── following files ───────────────────────────────────────────────────────────
 
-@cached_for_objects(0, 1)
-def path_in(old: str, new: str, path: str, repository: str | None = None) -> str | None:
+@cached_for_objects(1, 2)
+def path_in(repository: Repository, old: str, new: str, path: str) -> str | None:
     """Finds the path a file of one commit has in another.
 
     Args:
+        repository: the repository.
         old: the commit the file is in.
         new: the other commit.
         path: the file's path in old.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         The same path if new has it, else where git's rename detection
         finds it or _rewritten_path(), None if the file is gone.
     """
-    if git('rev-parse', '--verify', '--quiet', f'{new}:{path}', check=False,
-           repository=repository):
+    if repository.git('rev-parse', '--verify', '--quiet', f'{new}:{path}', check=False):
         return path
-    fields = git('diff-tree', '-M', '-r', '--name-status', '-z', old, new, '--',
-                 repository=repository).split('\0')
+    fields = repository.git('diff-tree', '-M', '-r', '--name-status', '-z', old, new,
+                            '--').split('\0')
     index = 0
     while index < len(fields) and fields[index]:
         if fields[index].startswith(('R', 'C')):
@@ -109,24 +108,24 @@ def path_in(old: str, new: str, path: str, repository: str | None = None) -> str
             index += 3
         else:
             index += 2
-    return _rewritten_path(old, new, path, repository)
+    return _rewritten_path(repository, old, new, path)
 
 
-@cached_for_objects(0, 1)
-def _added_files(old: str, new: str, repository: str | None = None) -> list[str]:
+@cached_for_objects(1, 2)
+def _added_files(repository: Repository, old: str, new: str) -> list[str]:
     """Finds the files one commit has and another hasn't.
 
     Args:
+        repository: the repository.
         old: the older commit.
         new: the newer commit.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         The paths of the files new has and old hasn't, other than the ones
         git's rename detection finds as renamed or copied.
     """
-    fields = git('diff-tree', '-M', '-r', '--name-status', '-z', old, new, '--',
-                 repository=repository).split('\0')
+    fields = repository.git('diff-tree', '-M', '-r', '--name-status', '-z', old, new,
+                            '--').split('\0')
     added = []
     index = 0
     while index < len(fields) and fields[index]:
@@ -139,59 +138,59 @@ def _added_files(old: str, new: str, repository: str | None = None) -> list[str]
     return added
 
 
-def _n_kept_lines(old: str, new: str, path: str, name: str, numbers: Iterable[int],
-                  repository: str | None = None) -> int:
+def _n_kept_lines(repository: Repository, old: str, new: str, path: str, name: str,
+                  numbers: Iterable[int]) -> int:
     """Counts how many of some lines of a file the diff to another file
     keeps. The diff ignores whitespace: indentation often changes when code
     moves into another file.
 
     Args:
+        repository: the repository.
         old: the commit of the first file.
         new: the commit of the other file.
         path: the first file's path in old.
         name: the other file's path in new.
         numbers: the line numbers in the first file. Lines that aren't there
             and bare lines (see _BARE_LINES) don't count.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         The number of kept lines.
     """
-    lines = file_lines(old, path, repository) or []
-    edits = edits_of(old, new, name, repository, path, 'all')
+    lines = file_lines(repository, old, path) or []
+    edits = edits_of(repository, old, new, name, path, 'all')
     return sum(1 for number in numbers if 1 <= number <= len(lines)
                and lines[number - 1].strip() not in _BARE_LINES
                and not any(begin <= number < end for begin, end, _, _ in edits))
 
 
-@cached_for_objects(0, 1)
-def _rewritten_path(old: str, new: str, path: str, repository: str | None = None) -> str | None:
+@cached_for_objects(1, 2)
+def _rewritten_path(repository: Repository, old: str, new: str, path: str) -> str | None:
     """Finds the file a file became when git finds no rename, its content
     too different by git's measure, which counts bytes.
 
     Args:
+        repository: the repository.
         old: the commit the file is in.
         new: the newer commit.
         path: the file's path in old.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         The path of the file new added that keeps more than half of the
         file's lines. None if no file does, as when it was split into
         several.
     """
-    lines = file_lines(old, path, repository) or []
+    lines = file_lines(repository, old, path) or []
     numbers = range(1, len(lines) + 1)
     n_real_lines = sum(1 for text in lines if text.strip() not in _BARE_LINES)
-    n_kept, name = max(((_n_kept_lines(old, new, path, name, numbers, repository), name)
-                        for name in _added_files(old, new, repository)),
+    n_kept, name = max(((_n_kept_lines(repository, old, new, path, name, numbers), name)
+                        for name in _added_files(repository, old, new)),
                        default=(0, None))
     return name if n_kept >= _FOUND_MIN_LINES and n_kept > n_real_lines / 2 else None
 
 
-@cached_for_objects(0, 1)
-def _found_line(source: str, target: str, path: str, line: int,
-                repository: str | None = None) -> MovedPlace | None:
+@cached_for_objects(1, 2)
+def _found_line(repository: Repository, source: str, target: str, path: str,
+                line: int) -> MovedPlace | None:
     """Finds where a line of a file went when it isn't in that file in the
     other version, gone or renamed (see path_in()), as when the file was
     split into several. The added file whose diff with the gone one keeps
@@ -200,50 +199,50 @@ def _found_line(source: str, target: str, path: str, line: int,
     on the change.
 
     Args:
+        repository: the repository.
         source: the commit the line is in.
         target: the other commit.
         path: the file's path in source.
         line: the line's number.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         The line's place in target, see MovedPlace. None if no file wins.
     """
     near = range(line - _FOUND_RANGE, line + _FOUND_RANGE + 1)
-    n_kept, name = max(((_n_kept_lines(source, target, path, name, near, repository), name)
-                        for name in _added_files(source, target, repository)),
+    n_kept, name = max(((_n_kept_lines(repository, source, target, path, name, near), name)
+                        for name in _added_files(repository, source, target)),
                        default=(0, ''))
     if n_kept < _FOUND_MIN_LINES:
         return None
-    number, state = _line_in_file(source, target, path, name, line, repository)
+    number, state = _line_in_file(repository, source, target, path, name, line)
     return name, number or None, EDITED if REMOVED == state else state
 
 
-def _line_in_file(source: str, target: str, path: str, name: str, line: int,
-                  repository: str | None = None) -> tuple[int, str]:
+def _line_in_file(repository: Repository, source: str, target: str, path: str, name: str,
+                  line: int) -> tuple[int, str]:
     """Moves a line of a file into another file or the same one renamed. A
     changed line goes to the line it pairs with in the diff view, if it
     pairs.
 
     Args:
+        repository: the repository.
         source: the commit the line is in.
         target: the other commit.
         path: the file's path in source.
         name: the other file's path in target.
         line: the line's number.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         (line, state), see ported_line(). SAME counts as MOVED.
     """
-    edits = edits_of(source, target, name, repository, path, 'all')
+    edits = edits_of(repository, source, target, name, path, 'all')
     number, state = ported_line(line, edits)
     if state in (SAME, MOVED):
         return number, MOVED
     old_begin, old_end, new_begin, new_end = next(
         edit for edit in edits if edit[0] <= line < edit[1])
-    old = file_lines(source, path, repository) or []
-    new = file_lines(target, name, repository) or []
+    old = file_lines(repository, source, path) or []
+    new = file_lines(repository, target, name) or []
     for old_index, new_index in paired_lines(
             [text.strip() for text in old[old_begin - 1:old_end - 1]],
             [text.strip() for text in new[new_begin - 1:new_end - 1]]):
@@ -280,20 +279,20 @@ def ported_line(line: int, edits: list[Edit]) -> tuple[int, str]:
     return line + shift, SAME if 0 == shift else MOVED
 
 
-@cached_for_objects(0, 1)
-def moved_place(source: str, target: str, path: str, line: int | None,
-                repository: str | None = None) -> MovedPlace:
+@cached_for_objects(1, 2)
+def moved_place(repository: Repository, source: str, target: str, path: str,
+                line: int | None) -> MovedPlace:
     """Moves a file's line from one version into another. The versions
     never change, so the result is kept.
 
     Args:
+        repository: the repository.
         source: the version the line is in, a commit or a parent like abc^.
             A commit for COMMIT_MSG.
         target: the other version, a commit or a parent like abc^. A commit
             for COMMIT_MSG.
         path: the file's path in source.
         line: the line's number, None for the whole file.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         The place in target, see MovedPlace and ported_line(). The line is
@@ -304,38 +303,36 @@ def moved_place(source: str, target: str, path: str, line: int | None,
     if COMMIT_MSG == path:
         if line is None:
             return path, None, SAME
-        edits = edits_of(commit_message_tree(source, repository),
-                         commit_message_tree(target, repository), COMMIT_MSG_NAME, repository)
+        edits = edits_of(repository, commit_message_tree(repository, source),
+                         commit_message_tree(repository, target), COMMIT_MSG_NAME)
         number, state = ported_line(line, edits)
         return path, number, state
-    new_path = path_in(source, target, path, repository)
+    new_path = path_in(repository, source, target, path)
     if new_path is None:
-        found = _found_line(source, target, path, line, repository) if line else None
+        found = _found_line(repository, source, target, path, line) if line else None
         if found is None:
             return path, None, FILE_GONE
         return found
     if line is None:
         return new_path, None, SAME if new_path == path else MOVED
     if new_path != path:
-        number, state = _line_in_file(source, target, path, new_path, line, repository)
+        number, state = _line_in_file(repository, source, target, path, new_path, line)
     else:
-        number, state = ported_line(line, edits_of(source, target, path, repository))
+        number, state = ported_line(line, edits_of(repository, source, target, path))
     if REMOVED == state:
         # Maybe moved into a new file, as when a file was split
-        return _found_line(source, target, path, line, repository) or (new_path, number, state)
+        return _found_line(repository, source, target, path, line) or (new_path, number, state)
     return new_path, number, state
 
 
 # ── threads ───────────────────────────────────────────────────────────────────
 
-def thread_version(change: Change, comment: Comment,
-                   repository: str | None = None) -> ThreadVersion | None:
+def thread_version(change: Change, comment: Comment) -> ThreadVersion | None:
     """Finds the version a thread's place counts in.
 
     Args:
         change: the thread's change.
         comment: the thread.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         (version, path there). The new side is the thread's patch set, the
@@ -350,11 +347,11 @@ def thread_version(change: Change, comment: Comment,
         return origin, path
     if path in (COMMIT_MSG, PATCHSET_LEVEL):
         return f'{origin}^', path
-    return f'{origin}^', renames_of(origin, repository).get(path, path)
+    return f'{origin}^', renames_of(change.repository, origin).get(path, path)
 
 
-def port_thread(change: Change, comment: Comment, target: int | str | None = None,
-                repository: str | None = None) -> PortedPlace | None:
+def port_thread(change: Change, comment: Comment,
+                target: int | str | None = None) -> PortedPlace | None:
     """Finds where a thread of an older patch set is in a newer version,
     like Gerrit's ported comments.
 
@@ -372,7 +369,6 @@ def port_thread(change: Change, comment: Comment, target: int | str | None = Non
         comment: the thread.
         target: a patch set's number, CURRENT (the only text it may be)
             for the change's commit, None for the latest patch set.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         The place, None when the thread is on that patch set already, or on
@@ -389,27 +385,28 @@ def port_thread(change: Change, comment: Comment, target: int | str | None = Non
         commit = change.patch_sets[target]
     else:
         return moved_here
-    version = thread_version(change, anchor, repository)
+    version = thread_version(change, anchor)
     if version is None or change.patch_sets[anchor.patch_set] == commit:
         return moved_here
-    place, line, state = _place_in(anchor, version, commit if OLD_SIDE != anchor.side
-                                   else f'{commit}^', commit, repository)
+    place, line, state = _place_in(change.repository, anchor, version,
+                                   commit if OLD_SIDE != anchor.side
+                                   else f'{commit}^', commit)
     if anchor is not comment and SAME == state:
         state = MOVED
     return PortedPlace(place, line, state, target)
 
 
-def _place_in(comment: Comment, version: ThreadVersion, target: str, shown: str,
-              repository: str | None = None) -> tuple[str, int | None, str]:
+def _place_in(repository: Repository, comment: Comment, version: ThreadVersion, target: str,
+              shown: str) -> tuple[str, int | None, str]:
     """Moves a thread's place from its version into another.
 
     Args:
+        repository: the repository.
         comment: the thread.
         version: the thread's version, see thread_version().
         target: the other version, a commit or a parent like abc^.
         shown: the commit whose diff names the file. For the old side, the
             path is the one in shown, where the interfaces look for it.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         (place, line, state), see ported_line() for the state.
@@ -419,16 +416,15 @@ def _place_in(comment: Comment, version: ThreadVersion, target: str, shown: str,
     if COMMIT_MSG == source_path and (source.endswith('^') or target.endswith('^')):
         # Base has no commit message.
         return comment.place, line, SAME if source == target else FILE_GONE
-    path, number, state = moved_place(source, target, source_path, line, repository)
+    path, number, state = moved_place(repository, source, target, source_path, line)
     if FILE_GONE != state and target != shown and path not in (COMMIT_MSG, PATCHSET_LEVEL):
         # A file of the left version under its name in the right one
-        path = path_in(target, shown, path, repository) or path
+        path = path_in(repository, target, shown, path) or path
     return join_place(path, number), number, state
 
 
 def comment_place(change: Change, path: str, line: int | None, side: str,
-                  first: str | None = None, second: str | None = None,
-                  repository: str | None = None) -> tuple[str, str, int]:
+                  first: str | None = None, second: str | None = None) -> tuple[str, str, int]:
     """Finds where a new thread on a line of the diff of two versions goes.
     Like in Gerrit, a thread in the left pane is on the left patch set when
     that is one, else on the old side of the right one.
@@ -440,7 +436,6 @@ def comment_place(change: Change, path: str, line: int | None, side: str,
         side: the pane, OLD_SIDE for the left, NEW_SIDE for the right.
         first: the left version, see versions_to_compare().
         second: the right version, see versions_to_compare().
-        repository: the repository's directory, None for the current one.
 
     Returns:
         (place, side, patch set), the patch set 0 for the newest.
@@ -448,7 +443,7 @@ def comment_place(change: Change, path: str, line: int | None, side: str,
     (first_label, _left), (second_label, _right) = versions_to_compare(change, first, second)
     patch_set = int(second_label) if second_label.isdigit() else 0
     if OLD_SIDE == side and first_label.isdigit():
-        old_path = old_path_of(change, first, second, path, repository) or path
+        old_path = old_path_of(change, first, second, path) or path
         return join_place(old_path, line), NEW_SIDE, int(first_label)
     return join_place(path, line), side, patch_set
 
@@ -475,7 +470,7 @@ class ShownThread:
 
 
 def thread_place(change: Change, comment: Comment, first: str | None = None,
-                 second: str | None = None, repository: str | None = None) -> ShownThread:
+                 second: str | None = None) -> ShownThread:
     """Finds where the diff of two versions shows a thread.
 
     A thread goes into the version a pane shows: a new side one of the
@@ -490,7 +485,6 @@ def thread_place(change: Change, comment: Comment, first: str | None = None,
         comment: the thread.
         first: the left version, see versions_to_compare().
         second: the right version, see versions_to_compare().
-        repository: the repository's directory, None for the current one.
 
     Returns:
         The place.
@@ -500,7 +494,7 @@ def thread_place(change: Change, comment: Comment, first: str | None = None,
     # version, see Comment.anchored().
     comment = comment.anchored(int(second_label) if second_label.isdigit() else None)
     path, line = split_place(comment.place)
-    version = thread_version(change, comment, repository)
+    version = thread_version(change, comment)
     if version is None:
         return ShownThread(path, line, comment.side)
     if OLD_SIDE == comment.side or first_label == str(comment.patch_set):
@@ -509,7 +503,7 @@ def thread_place(change: Change, comment: Comment, first: str | None = None,
         side, target = NEW_SIDE, right
     if version[0] == target or PATCHSET_LEVEL == path:
         return ShownThread(path, line, side)
-    place, number, state = _place_in(comment, version, target, right, repository)
+    place, number, state = _place_in(change.repository, comment, version, target, right)
     origin = f'PS{comment.patch_set}'
     if FILE_GONE == state:
         return ShownThread(PATCHSET_LEVEL, None, NEW_SIDE, origin, f'file gone: {comment.place}')
@@ -517,26 +511,25 @@ def thread_place(change: Change, comment: Comment, first: str | None = None,
     note = ''
     if REMOVED == state:
         # Below the line before, where the line was, 0 is the top
-        note = f'line {line}, removed: {version_line(version, line, repository)}'
+        note = f'line {line}, removed: {version_line(change.repository, version, line)}'
         number = number or None
     new_path = split_place(place)[0]
     # A file renamed or rewritten under another name says where it was.
     where = f'{origin} {comment.place}' if new_path != path else origin
     if EDITED == state:
-        note = f'in {where}: {version_line(version, line, repository)}'
+        note = f'in {where}: {version_line(change.repository, version, line)}'
     elif MOVED == state and new_path != path:
         note = f'in {where}'
     return ShownThread(new_path, number, side, origin, note)
 
 
-def version_line(version: ThreadVersion, line: int | None,
-                 repository: str | None = None) -> str:
+def version_line(repository: Repository, version: ThreadVersion, line: int | None) -> str:
     """Reads a line of a thread's version.
 
     Args:
+        repository: the repository.
         version: the version, see thread_version().
         line: the line's number, None for none.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         The line, stripped. '' if there is none.
@@ -545,8 +538,8 @@ def version_line(version: ThreadVersion, line: int | None,
     if line is None:
         return ''
     if COMMIT_MSG == path:
-        lines = (commit_message_text(source, repository).split('\n')
+        lines = (commit_message_text(repository, source).split('\n')
                  if not source.endswith('^') else [])
     else:
-        lines = file_lines(source, path, repository) or []
+        lines = file_lines(repository, source, path) or []
     return lines[line - 1].strip() if 1 <= line <= len(lines) else ''

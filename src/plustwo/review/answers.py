@@ -13,6 +13,7 @@ from plustwo.model.message import Message
 from plustwo.model.roles import AUTHOR
 from plustwo.review.changes import comment_of, find_change, update_change
 from plustwo.review.moves import move_place, place_move
+from plustwo.git.repository import Repository
 
 
 # The verb of an answer that moves its thread, see parse_answers()
@@ -85,15 +86,14 @@ def _parsed_answers(text: str) -> list[tuple[int, str, int, str | None, str]]:
     return result
 
 
-def answer(text: str, repository: str | None = None) -> int:
+def answer(repository: Repository, text: str) -> int:
     """Adds the author's answers to their threads, with one lock and one
     note write per change. Checks the format and the changes of all lines
     before writing.
 
     Args:
+        repository: the repository.
         text: the answers, see parse_answers().
-        repository: the repository's directory, None for the one each
-            change is in review in.
 
     Returns:
         The number of answers.
@@ -109,12 +109,12 @@ def answer(text: str, repository: str | None = None) -> int:
         # An unknown change or thread stops the whole batch before anything
         # is written. All of them are named, so one retry is enough.
         try:
-            change = find_change(prefix, repository)
+            change = find_change(repository, prefix)
             comment = comment_of(change, number)
             if MOVE == status:
                 # Checked on a copy, the change is only read here
                 place_move(change, replace(comment, moves=list(comment.moves)),
-                           *move_place(message), by=AUTHOR, repository=repository)
+                           *move_place(message), by=AUTHOR)
         except ChangeError as error:
             errors.append(f'line {line}: {error}')
             continue
@@ -133,10 +133,10 @@ def answer(text: str, repository: str | None = None) -> int:
             for number, status, message in entries:
                 if MOVE == status:
                     place_move(change, comment_of(change, number), *move_place(message),
-                               by=AUTHOR, repository=repository)
+                               by=AUTHOR)
                     continue
                 comment_of(change, number).messages.append(Message(
                     author=AUTHOR, text=message, sent=True, time=int(time.time()),
                     unresolved=None if status is None else UNRESOLVED == status))
-        update_change(change_id, edit, repository)
+        update_change(repository, change_id, edit)
     return len(answers)

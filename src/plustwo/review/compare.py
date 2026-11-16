@@ -5,7 +5,7 @@ from plustwo.git.cache import cached_for_objects
 from plustwo.git.commit_message import COMMIT_MSG_NAME, commit_message, commit_message_tree
 from plustwo.git.errors import ChangeError
 from plustwo.git.files import EMPTY_TREE, file_lines, files_of, renames_of
-from plustwo.git.repository import git
+from plustwo.git.repository import Repository
 from plustwo.model.change import Change
 from plustwo.model.place import COMMIT_MSG
 from plustwo.model.version import BASE, CURRENT, LATEST
@@ -145,8 +145,7 @@ def versions_to_compare(change: Change, first: str | None = None,
 
 
 def diff_endpoints(change: Change, first: str | None = None, second: str | None = None,
-                   path: str | None = None,
-                   repository: str | None = None) -> tuple[str, str, list[str]]:
+                   path: str | None = None) -> tuple[str, str, list[str]]:
     """Finds what git diff compares for two versions of a change.
 
     Args:
@@ -155,7 +154,6 @@ def diff_endpoints(change: Change, first: str | None = None, second: str | None 
         second: the right version, see versions_to_compare().
         path: the one file to diff, None for the files the change touches
             in either version.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         (old, new, paths). For COMMIT_MSG, old and new are trees holding
@@ -163,24 +161,24 @@ def diff_endpoints(change: Change, first: str | None = None, second: str | None 
     """
     (first, old), (_second, new) = versions_to_compare(change, first, second)
     if COMMIT_MSG == path:
-        return (commit_message_tree(None if BASE == first else old, repository),
-                commit_message_tree(new, repository), [COMMIT_MSG_NAME])
+        return (commit_message_tree(change.repository, None if BASE == first else old),
+                commit_message_tree(change.repository, new), [COMMIT_MSG_NAME])
     if path:
         return old, new, [path]
-    files = set(files_of(new, repository))
+    files = set(files_of(change.repository, new))
     if BASE != first:
-        files |= set(files_of(old, repository))
+        files |= set(files_of(change.repository, old))
     return old, new, sorted(files)
 
 
-@cached_for_objects(0, 1)
-def _numstat(old: str, new: str, repository: str | None = None) -> dict[str, tuple[int, int]]:
+@cached_for_objects(1, 2)
+def _numstat(repository: Repository, old: str, new: str) -> dict[str, tuple[int, int]]:
     """Finds the files that differ between two commits.
 
     Args:
+        repository: the repository.
         old: the old commit, a parent like abc^ too.
         new: the new commit.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         Each path, mapped to (number of added lines, number of removed
@@ -188,21 +186,20 @@ def _numstat(old: str, new: str, repository: str | None = None) -> dict[str, tup
         (0, 0), when the messages differ.
     """
     # The parent of a root commit: nothing
-    exists = git('rev-parse', '--verify', '--quiet', old, check=False, repository=repository)
-    output = git('diff', '--numstat', '--no-renames', old if exists else EMPTY_TREE, new,
-                 repository=repository)
+    exists = repository.git('rev-parse', '--verify', '--quiet', old, check=False)
+    output = repository.git('diff', '--numstat', '--no-renames', old if exists else EMPTY_TREE, new)
     files = {}
     for line in filter(None, output.split('\n')):
         n_added, n_removed, path = line.split('\t', 2)
         files[path] = (int(n_added) if n_added.isdigit() else 0,
                        int(n_removed) if n_removed.isdigit() else 0)
-    if not exists or commit_message(old, repository) != commit_message(new, repository):
+    if not exists or commit_message(repository, old) != commit_message(repository, new):
         files[COMMIT_MSG] = (0, 0)
     return files
 
 
-def compared_files(change: Change, first: str | None = None, second: str | None = None,
-                   repository: str | None = None) -> dict[str, tuple[int, int]]:
+def compared_files(change: Change, first: str | None = None,
+                   second: str | None = None) -> dict[str, tuple[int, int]]:
     """Finds the files that differ between the two compared versions of a
     change. The file box shows their counts, and the change's other files
     as unchanged.
@@ -211,7 +208,6 @@ def compared_files(change: Change, first: str | None = None, second: str | None 
         change: the change.
         first: the left version, see versions_to_compare().
         second: the right version, see versions_to_compare().
-        repository: the repository's directory, None for the current one.
 
     Returns:
         Each path, mapped to (number of added lines, number of removed
@@ -219,7 +215,7 @@ def compared_files(change: Change, first: str | None = None, second: str | None 
         the message differs (always against base).
     """
     (first, old), (_second, new) = versions_to_compare(change, first, second)
-    files = dict(_numstat(old, new, repository))
+    files = dict(_numstat(change.repository, old, new))
     if BASE == first:
         files[COMMIT_MSG] = (0, 0)
     return files
@@ -245,8 +241,7 @@ def diff_command(change: Change, first: str | None = None, second: str | None = 
     return ['git', *command, old, new, '--', *files]
 
 
-def old_path_of(change: Change, first: str | None, second: str | None, path: str,
-                repository: str | None = None) -> str | None:
+def old_path_of(change: Change, first: str | None, second: str | None, path: str) -> str | None:
     """Finds the path of a file in the older of two versions, when the
     change renamed it.
 
@@ -255,18 +250,17 @@ def old_path_of(change: Change, first: str | None, second: str | None, path: str
         first: the left version, see versions_to_compare().
         second: the right version, see versions_to_compare().
         path: the file's path in the newer version.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         The old path, if the change renamed the file and the older version
         doesn't have it under path. Else None.
     """
-    old, new, _ = diff_endpoints(change, first, second, path, repository)
-    if COMMIT_MSG == path or file_lines(old, path, repository) != []:
+    old, new, _ = diff_endpoints(change, first, second, path)
+    if COMMIT_MSG == path or file_lines(change.repository, old, path) != []:
         return None
     # Renamed by the change: the new version's own rename
-    source = renames_of(new, repository).get(path)
-    return source if source and file_lines(old, source, repository) else None
+    source = renames_of(change.repository, new).get(path)
+    return source if source and file_lines(change.repository, old, source) else None
 
 
 def range_diff_command(change: Change, first: str | None = None,
