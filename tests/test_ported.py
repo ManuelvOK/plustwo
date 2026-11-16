@@ -794,9 +794,9 @@ class UserTest(unittest.TestCase):
     def test_user_name_read_once(self):
         # The dashboard asks for every change, git must run only once.
         runs = []
-        real = config_user.git
+        real = config_user.run_git
         git_user_name.cache_clear()
-        config_user.git = lambda *arguments, **keywords: runs.append(arguments) or real(
+        config_user.run_git = lambda *arguments, **keywords: runs.append(arguments) or real(
             *arguments, **keywords)
         environment = os.environ.pop('PLUSTWO_USER', None)
         try:
