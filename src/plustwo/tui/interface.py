@@ -155,25 +155,32 @@ class Interface:
 
     # ── state shared by the views ─────────────────────────────────────────────
 
-    def setting(self, key: str, default: str | None = None) -> str | None:
+    def setting(self, key: str, default: str | None = None,
+                repository: Repository | None = None) -> str | None:
         """Reads a setting, see read_setting().
 
         Args:
             key: the setting's key.
             default: the value when no file has the setting.
+            repository: the repository whose settings count, like the one of
+                the change shown. None for the working directory's.
 
         Returns:
             The value, else default.
         """
-        return read_setting(self._repository, key, default)
+        return read_setting(repository or self._repository, key, default)
 
-    def theme(self) -> str | None:
+    def theme(self, repository: Repository | None = None) -> str | None:
         """Reads bat's theme for the diff's syntax colours.
+
+        Args:
+            repository: the repository whose settings count, the one of the
+                change shown. None for the working directory's.
 
         Returns:
             The setting tui.theme, None for bat's default.
         """
-        return self.setting('tui.theme')
+        return self.setting('tui.theme', repository=repository)
 
     def _settings_section(self, section: str) -> dict[str, str]:
         """Reads all settings of a section, like settings_section().

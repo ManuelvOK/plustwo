@@ -233,7 +233,7 @@ class ChangeView:
         Returns:
             The theme, None for bat's default.
         """
-        return self._interface.theme()
+        return self._interface.theme(self._repository)
 
     def reload(self) -> None:
         """Reads the change again. Goes back if it is gone."""
