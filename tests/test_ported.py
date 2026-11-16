@@ -98,6 +98,56 @@ class PortTest(unittest.TestCase):
         self.assertEqual(self.port(first, second, core.PATCHSET_LEVEL),
                          (core.PATCHSET_LEVEL, None, core.SAME))
 
+    def test_rewritten_under_new_name(self):
+        # Too different for git's rename detection, which counts bytes,
+        # but most lines are kept: the new file is the old one renamed.
+        old = ''.join(f'int value_{number} = {number};\n' for number in range(1, 13))
+        new = ('#pragma once\n' + old.replace('value_3 ', 'v3 ').replace('value_9 ', 'v9 ')
+               .replace(' = ', '=').replace('int ', '    int '))
+        first = self.commit({'old.hh': old}, 'PS1', self.base)
+        second = self.commit({'new.hh': new}, 'PS2', self.base)
+        self.assertNotIn('R', self.git('diff-tree', '-M', '-r', '--name-status', first, second))
+        self.assertEqual(core.path_in(first, second, 'old.hh', self.directory), 'new.hh')
+        self.assertEqual(self.port(first, second, 'old.hh:5'), ('new.hh:6', 6, core.MOVED))
+        self.assertEqual(self.port(first, second, 'old.hh:3'), ('new.hh:4', 4, core.EDITED))
+        self.assertEqual(self.port(first, second, 'old.hh'), ('new.hh', None, core.MOVED))
+
+    def test_split_file(self):
+        # Split into three files, too different for git's rename detection:
+        # a line goes where the lines around it went, the whole file stays
+        # gone, like in Gerrit.
+        part = [''.join(f'{name} {number}\n' for number in range(1, 9))
+                for name in ('alpha', 'beta', 'gamma')]
+        first = self.commit({'all.hh': '\n'.join(part)}, 'PS1', self.base)
+        second = self.commit({'a.hh': '// a\n' + part[0],
+                              'b.hh': '// b\n' + part[1].replace('beta 4', 'beta four'),
+                              'c.hh': part[2]}, 'PS2', self.base)
+        self.assertIsNone(core.path_in(first, second, 'all.hh', self.directory))
+        self.assertEqual(self.port(first, second, 'all.hh:3'), ('a.hh:4', 4, core.MOVED))
+        self.assertEqual(self.port(first, second, 'all.hh:12'), ('b.hh:4', 4, core.MOVED))
+        self.assertEqual(self.port(first, second, 'all.hh:13'), ('b.hh:5', 5, core.EDITED))
+        self.assertEqual(self.port(first, second, 'all.hh:20'), ('c.hh:2', 2, core.MOVED))
+        self.assertEqual(self.port(first, second, 'all.hh'), ('all.hh', None, core.FILE_GONE))
+        # A line without enough kept lines around it stays gone.
+        third = self.commit({'d.hh': 'something else\n'}, 'PS3', self.base)
+        self.assertEqual(self.port(first, third, 'all.hh:3'), ('all.hh', None, core.FILE_GONE))
+
+    def test_moved_into_new_file(self):
+        # Git renames the file, but some of its lines went into a new one.
+        part = [''.join(f'{name} {number}\n' for number in range(1, 9))
+                for name in ('alpha', 'beta')]
+        first = self.commit({'both.hh': part[0] + '\n' + part[1]}, 'PS1', self.base)
+        second = self.commit({'a.hh': '// a\n' + part[0], 'b.hh': '// b\n' + part[1]},
+                             'PS2', self.base)
+        self.assertEqual(self.port(first, second, 'both.hh:3'), ('a.hh:4', 4, core.MOVED))
+        self.assertEqual(self.port(first, second, 'both.hh:12'), ('b.hh:4', 4, core.MOVED))
+        # Out of a file that stays
+        head, tail = LINES.split('line 10\n')
+        third = self.commit({'b.txt': 'line 10\n' + tail, 'c.txt': 'top\n' + head},
+                            'PS3', self.base)
+        self.assertEqual(self.port(self.base, third, 'b.txt:3'), ('c.txt:4', 4, core.MOVED))
+        self.assertEqual(self.port(self.base, third, 'b.txt:12'), ('b.txt:3', 3, core.MOVED))
+
     def test_rebased_patch_set(self):
         # The base grew three lines on top: the direct diff moves the line.
         first = self.commit({'a.txt': LINES.replace('line 8', 'line eight')}, 'PS1', self.base)
