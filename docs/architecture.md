@@ -42,6 +42,27 @@ Rules:
    terminal's background in `tui/colours.py`, is read through its module
    (`colours.TERMINAL_BACKGROUND`), so every reader sees the new value.
 
+## Repository
+
+`plustwo.git.repository.Repository` is the repository a function acts on. It
+holds the absolute path of the working tree, runs git in it (`git()`,
+`git_command()`) and knows what belongs to one repository alone, found out
+once and kept: the .git directory and the settings file. Repositories are
+equal when their paths are, so they are keys of caches.
+
+There is no global current repository. Every function that acts on one takes
+it as its first parameter, required, and passes it on. Functions that take a
+`Change` take none, because `Change.repository` says where the change is.
+`cached_for_objects` keys its results on the first argument, the repository.
+
+The frontends create the objects: the command line from the working directory
+(`Repository.of_working_directory()`) or from a registered repository the
+command names, the registry hands out one per registered repository, the
+curses interface and the web server keep the ones they show. Commands that
+work outside any repository, like `inbox` and `watch` over all registered
+ones or the user's settings, start from the registry. git calls without a
+repository, like `git config --file`, go through `run_git()`.
+
 ## Starting
 
 `plustwo` at the top of the checkout is a small launcher. It puts the `src/`

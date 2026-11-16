@@ -27,6 +27,10 @@ every command and docs/architecture.md for the layers of the code.
   line, the curses interface and the web interface are thin frontends
   that call them. Imports point downwards only. Never put logic into argparse handlers, curses code,
   HTTP handlers or the page's JavaScript.
+- There is no global current repository. A function that acts on one
+  takes a `Repository` (git/repository.py) as its first parameter, a
+  function that takes a `Change` uses `change.repository`. The frontends
+  create the objects, see docs/architecture.md.
 - The web server binds to 127.0.0.1 and requires its random token on
   every API request and checks Host and Origin, because any page in the
   browser could otherwise send requests to it.
