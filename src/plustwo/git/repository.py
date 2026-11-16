@@ -5,6 +5,7 @@ in it."""
 import functools
 import subprocess
 from pathlib import Path
+from typing import ClassVar
 
 from plustwo.git.errors import ChangeError
 
@@ -19,6 +20,11 @@ class Repository:
         path: the absolute path of the repository's working tree.
     """
 
+    # Each directory asked about, mapped to its repository, see
+    # of_directory(). Only found ones are kept, a directory can become a
+    # repository.
+    _found: ClassVar[dict[str, 'Repository']] = {}
+
     def __init__(self, path: str | Path) -> None:
         """Wraps the working tree of a repository, without asking git.
 
@@ -30,7 +36,9 @@ class Repository:
 
     @classmethod
     def of_directory(cls, directory: str | Path) -> 'Repository':
-        """Finds the repository a directory is in.
+        """Finds the repository a directory is in, asking git once per
+        directory. The same object comes back, so what it has found out
+        stays known.
 
         Args:
             directory: a directory in the repository.
@@ -42,11 +50,14 @@ class Repository:
             ChangeError: the directory is in no repository. The message is
                 git's.
         """
-        result = subprocess.run(['git', '-C', str(directory), 'rev-parse', '--show-toplevel'],
-                                capture_output=True, text=True)
-        if 0 != result.returncode or not result.stdout.strip():
-            raise ChangeError(result.stderr.strip() or 'not a git repository')
-        return cls(result.stdout.strip())
+        key = str(Path(directory).absolute())
+        if key not in cls._found:
+            result = subprocess.run(['git', '-C', key, 'rev-parse', '--show-toplevel'],
+                                    capture_output=True, text=True)
+            if 0 != result.returncode or not result.stdout.strip():
+                raise ChangeError(result.stderr.strip() or 'not a git repository')
+            cls._found[key] = cls(result.stdout.strip())
+        return cls._found[key]
 
     @classmethod
     def of_working_directory(cls) -> 'Repository':

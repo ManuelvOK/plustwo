@@ -31,6 +31,7 @@ from plustwo.diff.moved import moved_lines
 from plustwo.diff.pairing import paired_lines
 from plustwo.diff.rows import ADDED, CONTEXT, REMOVED, side_by_side_rows
 from plustwo.git.files import file_lines
+from plustwo.git.repository import Repository
 
 COMMITS_PER_REPOSITORY = int(os.environ.get('TEST_COMMITS', '200'))
 ANSI = re.compile(r'\x1b\[[0-9;]*m')
@@ -131,12 +132,12 @@ class Checks:
 
     def check_version_pair(self, repository, old, new, path):
         """All checks of one file between two versions."""
-        old_lines = file_lines(old, path, repository)
-        new_lines = file_lines(new, path, repository)
+        old_lines = file_lines(Repository(repository), old, path)
+        new_lines = file_lines(Repository(repository), new, path)
         if old_lines is None or new_lines is None:
             return False
         label = f'{repository.name} {new[:8]} {path}'
-        edits = edits_of(old, new, path, repository)
+        edits = edits_of(Repository(repository), old, new, path)
         rows = side_by_side_rows(old_lines, new_lines, edits)
         self.check_whole_file(old_lines, new_lines, edits, rows, label)
         for context in (0, 3, 10):
@@ -324,8 +325,8 @@ class DeltaTest(unittest.TestCase):
         count = 0
         for repository in test_repositories():
             for old, new, path in file_pairs(repository, limit=min(COMMITS_PER_REPOSITORY, 60)):
-                old_lines = file_lines(old, path, repository)
-                new_lines = file_lines(new, path, repository)
+                old_lines = file_lines(Repository(repository), old, path)
+                new_lines = file_lines(Repository(repository), new, path)
                 if old_lines is None or new_lines is None:
                     continue
                 # delta shows a submodule as a header without line numbers
@@ -333,7 +334,7 @@ class DeltaTest(unittest.TestCase):
                        for lines in (old_lines, new_lines)):
                     continue
                 rows = side_by_side_rows(old_lines, new_lines,
-                                              edits_of(old, new, path, repository))
+                                              edits_of(Repository(repository), old, new, path))
                 theirs = self.delta_numbers(repository, old, new, path)
                 with self.subTest(f'{repository.name} {new[:8]} {path}'):
                     for side in (0, 1):

@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_stacks import ENVIRONMENT, ROOT, Repository
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'src'))
+from plustwo.git.repository import Repository as GitRepository
 from plustwo.model.acknowledgement import is_acknowledgement
 from plustwo.model.message import Message
 from plustwo.review.changes import find_change
@@ -36,7 +37,7 @@ class WebTest(unittest.TestCase):
         cls.repository.git('switch', '--quiet', '-c', 'feature')
         cls.repository.commit('base.txt', 'one\nTWO\nthree\n', 'Change two')
         cls.repository.change('upload')
-        cls.server = make_server([cls._directory.name], port=0)
+        cls.server = make_server([GitRepository(cls._directory.name)], port=0)
         cls.port = cls.server.plustwo.port
         cls.token = cls.server.plustwo.token
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
@@ -149,15 +150,15 @@ class WebTest(unittest.TestCase):
         # The reply box's step: drafts, message and the vote together
         change_id = self.change_id()
         directory = self._directory.name
-        own = find_change(change_id, directory).own_vote()
-        self.assertEqual((0, None), reply(change_id, '', own, directory))
+        own = find_change(GitRepository(directory), change_id).own_vote()
+        self.assertEqual((0, None), reply(GitRepository(directory), change_id, '', own))
         other = -1 if own != -1 else 1
-        sent, voted = reply(change_id, '', other, directory)
+        sent, voted = reply(GitRepository(directory), change_id, '', other)
         self.assertEqual(0, sent)
         self.assertIsNotNone(voted)
-        self.assertEqual(other, find_change(change_id, directory).own_vote())
-        reply(change_id, '', own, directory)
-        self.assertEqual(own, find_change(change_id, directory).own_vote())
+        self.assertEqual(other, find_change(GitRepository(directory), change_id).own_vote())
+        reply(GitRepository(directory), change_id, '', own)
+        self.assertEqual(own, find_change(GitRepository(directory), change_id).own_vote())
 
     def test_move_thread(self):
         # The move button: the thread goes to the clicked line, the page

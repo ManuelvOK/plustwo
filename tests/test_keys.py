@@ -193,7 +193,7 @@ class CursorTest(unittest.TestCase):
     """A thread in the diff is one cursor stop."""
 
     def pane(self):
-        diff = DiffPane(None)
+        diff = DiffPane(None, lambda: None)
         # Two diff rows, a thread of 30 rows, two diff rows
         diff.rows = ([('diff', 0), ('diff', 1)] + [('thread', 7, row) for row in range(30)]
                      + [('diff', 2), ('diff', 3)])
@@ -255,7 +255,7 @@ class SearchTest(unittest.TestCase):
         self.assertEqual([], search_matches('abc', ''))
 
     def test_goes_from_match_to_match(self):
-        diff = DiffPane(None)
+        diff = DiffPane(None, lambda: None)
         # Line 0 has the text on the new side, line 2 on both, a thread between
         diff._texts = [('a', 'x one'), None, ('two x', 'x three'), ('b', 'b')]
         diff._continues = [False, True, False, False]
@@ -281,7 +281,7 @@ class SearchTest(unittest.TestCase):
         self.assertFalse(comment_matches(types.SimpleNamespace(messages=[message]), 'x'))
 
     def test_comments_mode_finds_threads_only(self):
-        diff = DiffPane(None)
+        diff = DiffPane(None, lambda: None)
         diff._texts = [('x', 'x'), ('a', 'b')]
         diff._continues = [False, False]
         diff.rows = [('diff', 0), ('thread', 4, 0), ('thread', 4, 1), ('diff', 1)]
@@ -401,7 +401,7 @@ class UsabilityTest(unittest.TestCase):
         self.assertEqual(0, choice.value)
 
     def test_line_above(self):
-        diff = DiffPane(None)
+        diff = DiffPane(None, lambda: None)
         # Line 1, a thread, line 2 wrapped onto two rows, a gap, line 3
         diff.rows = [('diff', 0), ('thread', 1, 0), ('diff', 1), ('diff', 2), ('diff', 3),
                      ('diff', 4)]
