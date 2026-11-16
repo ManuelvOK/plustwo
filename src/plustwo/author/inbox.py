@@ -2,24 +2,34 @@
 """The author's inbox: threads to answer."""
 
 from plustwo.config.registry import repository_name
-from plustwo.diff.rows import REMOVED
+from plustwo.model.change import Change
+from plustwo.model.comment import Comment
 from plustwo.model.place import PATCHSET_LEVEL, split_place
 from plustwo.model.vote import LABEL_RANGES
 from plustwo.review.changes import changes_in_stack
 from plustwo.review.labels import message_text
-from plustwo.review.porting import EDITED, FILE_GONE, port_thread, thread_version, version_line
+from plustwo.review.porting import (
+    EDITED, FILE_GONE, REMOVED, port_thread, thread_version, version_line)
 from plustwo.review.threads import line_at
 
 
-WATCH_INTERVAL_SECONDS = 1.0
+# How many lines of a negative vote's message the inbox shows
+_N_VOTE_MESSAGE_LINES = 10
 
 
-def inbox_lines(repositories, topic=None):
-    """What the author has to answer, as short lines.
+def inbox_lines(repositories: list[str | None], topic: str | None = None) -> list[str]:
+    """Lists what the author has to answer: rebase requests, negative votes
+    and unanswered unresolved threads, each thread with the quoted source
+    line, so the author needs nothing else to start. Replies on resolved
+    threads follow as fyi lines.
 
-    Only rebase requests, negative votes and unanswered unresolved threads,
-    each thread with the quoted source line, so the author needs nothing
-    else to start.
+    Args:
+        repositories: the repositories' directories, None for the current
+            one.
+        topic: the one stack to look at, None for all.
+
+    Returns:
+        Short lines.
     """
     lines = []
     for repository in repositories:
@@ -30,44 +40,93 @@ def inbox_lines(repositories, topic=None):
             if change.rebase_is_requested:
                 lines.append(f'rebase {name} {change.topic}: conflicts with '
                              f'{change.base}, rebase locally and upload')
-            for label in LABEL_RANGES:
-                for vote in change.current_votes(label):
-                    if vote.value < 0:
-                        lines.append(f'vote {name} {change.short_id()} {label}{vote.value:+d} '
-                                     f'PS{vote.patch_set} by {vote.by}')
-                        lines += [f'    {line}' for line in vote.message.split('\n')[-10:]
-                                  if vote.message]
+            lines += _vote_lines(name, change)
             for comment in change.comments:
-                if not comment.wants_answer():
-                    continue
-                commit = change.patch_sets.get(comment.patch_set, change.commit)
-                quoted = line_at(commit, comment.place, repository, comment.side)
-                lines.append(f'{name} {change.short_id()} #{comment.number} '
-                             + patch_set_note(change, comment, repository)
-                             + comment.place_label() + (f'  | {quoted}' if quoted else ''))
-                sent = [message for message in comment.messages if message.sent]
-                lines.append(f'    {message_text(sent[-1])}')
-            lines += news_lines(name, change)
+                if comment.wants_answer():
+                    lines += _thread_lines(name, change, comment, repository)
+            lines += _news_lines(name, change)
     return lines
 
 
-def news_lines(name, change):
-    """'fyi' lines of a change's news(): replies on resolved threads,
-    to read, not to answer.
+def _vote_lines(name: str, change: Change) -> list[str]:
+    """Lists the negative votes on a change's latest patch set.
+
+    Args:
+        name: the repository's name.
+        change: the change.
+
+    Returns:
+        A line per vote, then the end of its message, indented.
+    """
+    lines = []
+    for label in LABEL_RANGES:
+        for vote in change.current_votes(label):
+            if vote.value >= 0:
+                continue
+            lines.append(f'vote {name} {change.short_id()} {label}{vote.value:+d} '
+                         f'PS{vote.patch_set} by {vote.by}')
+            if vote.message:
+                lines += [f'    {line}'
+                          for line in vote.message.split('\n')[-_N_VOTE_MESSAGE_LINES:]]
+    return lines
+
+
+def _thread_lines(name: str, change: Change, comment: Comment,
+                  repository: str | None) -> list[str]:
+    """Writes a thread to answer.
+
+    Args:
+        name: the repository's name.
+        change: the thread's change.
+        comment: the thread.
+        repository: the repository's directory, None for the current one.
+
+    Returns:
+        The head with the place and the quoted line, then the reviewer's
+        last message, indented.
+    """
+    commit = change.patch_sets.get(comment.patch_set, change.commit)
+    quoted = line_at(commit, comment.place, repository, comment.side)
+    head = (f'{name} {change.short_id()} #{comment.number} '
+            + patch_set_note(change, comment, repository)
+            + comment.place_label() + (f'  | {quoted}' if quoted else ''))
+    last_sent = comment.last_sent()
+    return [head] + ([f'    {message_text(last_sent)}'] if last_sent else [])
+
+
+def _news_lines(name: str, change: Change) -> list[str]:
+    """Writes the fyi lines of a change's news(): replies on resolved
+    threads, to read, not to answer.
+
+    Args:
+        name: the repository's name.
+        change: the change.
+
+    Returns:
+        A head per thread, then the reply, indented.
     """
     lines = []
     for comment in change.news():
+        last_sent = comment.last_sent()
         lines.append(f'fyi {name} {change.short_id()} #{comment.number} (resolved) '
                      + comment.place_label())
-        lines += [f'    {line}' for line in message_text(comment.last_sent()).split('\n')]
+        if last_sent is not None:
+            lines += [f'    {line}' for line in message_text(last_sent).split('\n')]
     return lines
 
 
-def lost_threads(changes, repository=None):
-    """The unresolved threads of changes whose line the newest patch set
-    lost or changed (file gone, line removed or edited), for the author to
-    move where they belong: lines like 'I3f2a #4 a.cc:12 (PS1, line
-    removed): int x = 3;', as answer heads.
+def lost_threads(changes: list[Change], repository: str | None = None) -> list[str]:
+    """Lists the unresolved threads whose line the newest patch set lost or
+    changed (file gone, line removed or edited), for the author to move
+    where they belong.
+
+    Args:
+        changes: the changes.
+        repository: the repository's directory, None for the current one.
+
+    Returns:
+        Lines like 'I3f2a #4 (PS1, line removed) a.cc:12: int x = 3', as
+        heads of answers.
     """
     lines = []
     for change in changes:
@@ -77,7 +136,8 @@ def lost_threads(changes, repository=None):
             ported = port_thread(change, comment, repository=repository)
             if ported is None or ported.state not in (FILE_GONE, REMOVED, EDITED):
                 continue
-            anchor = comment.anchored(ported.patch_set)
+            anchor = comment.anchored(ported.patch_set if isinstance(ported.patch_set, int)
+                                      else None)
             version = thread_version(change, anchor, repository)
             _path, line = split_place(anchor.place)
             text = version_line(version, line, repository) if version and line else ''
@@ -87,9 +147,17 @@ def lost_threads(changes, repository=None):
     return lines
 
 
-def patch_set_note(change, comment, repository=None):
-    """'(PS2, now :50) ' for a thread of an older patch set than the latest,
-    with where it is now, see port_thread(). Empty for one on the latest.
+def patch_set_note(change: Change, comment: Comment, repository: str | None = None) -> str:
+    """Writes where a thread of an older patch set than the latest is now,
+    see port_thread().
+
+    Args:
+        change: the thread's change.
+        comment: the thread.
+        repository: the repository's directory, None for the current one.
+
+    Returns:
+        Like '(PS2, now :50) ', '' for a thread on the latest.
     """
     ported = port_thread(change, comment, repository=repository)
     if ported is None:
