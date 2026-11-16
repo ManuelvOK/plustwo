@@ -149,3 +149,24 @@ class Repository:
             not exist.
         """
         return self.git_path('plustwo/config')
+
+
+def run_git(*arguments: str, check: bool = True) -> str:
+    """Runs git where no repository is involved, like git config --file or
+    git's global configuration.
+
+    Args:
+        *arguments: git's arguments, the command first.
+        check: whether a failing git is an error.
+
+    Returns:
+        git's output without the final newline.
+
+    Raises:
+        ChangeError: git failed and check is set. Its message is git's.
+    """
+    result = subprocess.run(['git', *arguments], encoding='utf-8', errors='replace',
+                            capture_output=True)
+    if check and 0 != result.returncode:
+        raise ChangeError(result.stderr.strip() or f'git {arguments[0]} failed')
+    return result.stdout.rstrip('\n')
