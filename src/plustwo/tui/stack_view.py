@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 from plustwo.config.user import current_user
 from plustwo.config.view_state import (
     SECTION_TITLES, folded_sections, move_section, toggle_section)
-from plustwo.git.repository import use_repository
+from plustwo.git.repository import Repository
 from plustwo.model.change import SUBMITTABLE, Change
 from plustwo.model.vote import CODE_REVIEW, VERIFIED
 from plustwo.review.changes import all_changes
@@ -55,7 +55,7 @@ class StackView:
         self._interface = interface
         self._changes: list[Change] = []
         # The stacks the base branch moved away from: (repository, topic)
-        self._behind: set[tuple[str | None, str]] = set()
+        self._behind: set[tuple[Repository, str]] = set()
         # The sections of each change and the folded sections, see reload()
         self._sections: list[list[str]] = []
         self._folded: set[str] = set()
@@ -99,13 +99,12 @@ class StackView:
         """Reads the changes of all shown repositories and lays out the
         sections.
         """
-        use_repository(None)
         selected = self._rows[self._selected] if self._selected < len(self._rows) else None
         self._changes = all_changes(self._interface.list_name)
         # Stacks the base branch moved away from, marked in the topic column
         self._behind = {(change.repository, change.topic) for change in self._changes
-                        if change.rebase_is_requested or needs_rebase(change.topic,
-                                                                         change.repository)}
+                        if change.rebase_is_requested
+                        or needs_rebase(change.repository, change.topic)}
         # What draw() needs, so drawing runs no git command
         self._folded = folded = folded_sections()
         user = current_user()
@@ -265,10 +264,9 @@ class StackView:
         change = self._selected_change()
         if change is None:
             return
-        use_repository(change.repository)
         if 'open' == action:
-            self._interface.open(ChangeView(self._interface, change.change_id,
-                                            change.repository))
+            self._interface.open(ChangeView(change.repository, self._interface,
+                                            change.change_id))
         elif 'diff' == action:
             self._interface.run_outside(diff_command(change))
         elif 'submit' == action:

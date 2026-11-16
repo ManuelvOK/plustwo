@@ -3,12 +3,13 @@
 
 import curses
 import textwrap
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from plustwo.diff.rows import expand_gaps
 from plustwo.diff.search import gaps_with_matches, search_matches
 from plustwo.git.files import file_lines
+from plustwo.git.repository import Repository
 from plustwo.model.change import Change
 from plustwo.model.comment import Comment
 from plustwo.model.message import Message
@@ -68,13 +69,15 @@ class DiffPane:
         has_moved: whether the diff has moved lines, see moved_lines().
     """
 
-    def __init__(self, pairs: ColourPairs) -> None:
+    def __init__(self, pairs: ColourPairs, theme: Callable[[], str | None]) -> None:
         """Starts the pane empty, see show().
 
         Args:
             pairs: the interface's colour pairs.
+            theme: gives bat's theme, see Interface.setting().
         """
         self._pairs = pairs
+        self._theme = theme
         self._key: tuple[Any, ...] | None = None
         self._path: str | None = None
         self._threads_key: object = None
@@ -93,8 +96,8 @@ class DiffPane:
         # gaps left (first old line, first new line, lines), for search
         self._texts: list[tuple[str, str] | None] = []
         self._closed_gaps: list[tuple[int, int, int]] = []
-        # (old version, old path, new version, new path) of the diff
-        self._sources: tuple[str, str, str, str] | None = None
+        # (repository, old version, old path, new version, new path) of the diff
+        self._sources: tuple[Repository, str, str, str, str] | None = None
         self.side = 'new'
         # The row to keep the cursor on when the rows are laid out again,
         # and whether to show the rows from the top then
@@ -153,13 +156,15 @@ class DiffPane:
                           False, False, None, None)]
         else:
             if self.expanded_gaps and any(row.n_skipped for row in rows):
-                rows = expand_gaps(rows, self.expanded_gaps, file_lines(old, old_path) or [],
-                                   file_lines(new, paths[0]) or [])
-            colours = (self._colours(old, old_path), self._colours(new, paths[0]))
+                rows = expand_gaps(rows, self.expanded_gaps,
+                                   file_lines(change.repository, old, old_path) or [],
+                                   file_lines(change.repository, new, paths[0]) or [])
+            colours = (self._colours(change.repository, old, old_path),
+                       self._colours(change.repository, new, paths[0]))
             rendered = rendered_rows(rows, width, colours, marks, search)
         self._closed_gaps = [(row.old.number or 0, row.new.number or 0, row.n_skipped)
                              for row in rows or () if row.n_skipped]
-        self._sources = (old, old_path, new, paths[0])
+        self._sources = (change.repository, old, old_path, new, paths[0])
         self._gaps = [entry[4] for entry in rendered]
         self._texts = [entry[5] for entry in rendered]
         self._diff_lines = [segments for segments, *_ in rendered]
@@ -186,11 +191,13 @@ class DiffPane:
             self._is_from_top = True
         self._threads_key = None
 
-    def _colours(self, version: str, path: str) -> list[list[CharacterColour]] | None:
+    def _colours(self, repository: Repository, version: str,
+                 path: str) -> list[list[CharacterColour]] | None:
         """Colours a file's version, kept per version, so moving around
         doesn't run bat again.
 
         Args:
+            repository: the repository.
             version: the version, a commit or tree.
             path: the file's path.
 
@@ -199,7 +206,8 @@ class DiffPane:
         """
         key = (version, path)
         if key not in self._colour_cache:
-            self._colour_cache[key] = highlighted(file_lines(version, path) or [], path)
+            self._colour_cache[key] = highlighted(file_lines(repository, version, path) or [], path,
+                                                   self._theme())
         return self._colour_cache[key]
 
     def _renumbered(self, keep: KeptRow,
@@ -638,10 +646,10 @@ class DiffPane:
         """
         if not self._closed_gaps or self._sources is None:
             return
-        old, old_path, new, path = self._sources
+        repository, old, old_path, new, path = self._sources
         self.expanded_gaps |= gaps_with_matches(
-            self._closed_gaps, file_lines(old, old_path) or [],
-            file_lines(new, path) or [], search)
+            self._closed_gaps, file_lines(repository, old, old_path) or [],
+            file_lines(repository, new, path) or [], search)
 
     def go_to_match(self, search: str, is_forward: bool, height: int,
                     mode: str = 'shown') -> bool | None:

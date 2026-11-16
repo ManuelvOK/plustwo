@@ -16,7 +16,7 @@ from plustwo.diff.search import SEARCH_MODES, comment_matches
 from plustwo.git.commit_message import commit_message_parts
 from plustwo.git.errors import ChangeError
 from plustwo.git.files import files_of, renames_of
-from plustwo.git.repository import use_repository
+from plustwo.git.repository import Repository
 from plustwo.model.change import Change
 from plustwo.model.comment import ACK, DONE, RESOLVED, Comment
 from plustwo.model.place import (
@@ -72,14 +72,13 @@ DEFAULT_COMPARE = ('base', 'latest')
 class ChangeView:
     """One change: files and threads on the left, the diff on the right."""
 
-    def __init__(self, interface: 'Interface', change_id: str,
-                 repository: str | None = None) -> None:
+    def __init__(self, repository: Repository, interface: 'Interface', change_id: str) -> None:
         """Starts the screen on a change, see reload().
 
         Args:
+            repository: the repository the change is in.
             interface: the interface.
             change_id: the change's full Change-Id.
-            repository: the repository's directory, None for the current one.
         """
         self._interface = interface
         self._change_id = change_id
@@ -95,7 +94,7 @@ class ChangeView:
         # commit message, see reload()
         self._file_index = None
         self._comment_index = 0
-        self._diff = DiffPane(interface.colour_pairs)
+        self._diff = DiffPane(interface.colour_pairs, interface.theme)
         self._layout: dict[str, tuple[int, int, int, int]] = {}
         # Threads folded or unfolded by hand: number -> expanded
         self._expanded: dict[int, bool] = {}
@@ -261,8 +260,7 @@ class ChangeView:
 
     def reload(self) -> None:
         """Reads the change again. Goes back if it is gone."""
-        use_repository(self._repository)
-        for change in changes_in_stack():
+        for change in changes_in_stack(self._repository):
             if change.change_id == self._change_id:
                 self._change = change
                 if not can_compare(change, *self._compare):
@@ -281,28 +279,28 @@ class ChangeView:
                 self._latest_seen = now
                 # The commit message comes first, like in Gerrit.
                 # A renamed file is listed once, under its new name.
-                self._renames = renames_of(change.commit)
-                self._counts = files_of(change.commit)
+                self._renames = renames_of(self._repository, change.commit)
+                self._counts = files_of(self._repository, change.commit)
                 self._files = [COMMIT_MSG] + sorted(
-                    set(files_of(change.commit)) - set(self._renames.values()))
+                    set(files_of(self._repository, change.commit)) - set(self._renames.values()))
                 if self._extra_file and self._extra_file not in self._files:
                     self._files.append(self._extra_file)
                 if self._file_position is None:
                     # The commit message stays first, the first real file is shown.
                     self._file_index = 1 if len(self._files) > 1 else 0
-                self._stack = [other for other in changes_in_stack()
+                self._stack = [other for other in changes_in_stack(self._repository)
                                if other.topic == change.topic]
                 if STACK != self._focus:
                     self._stack_index = self._current_in_stack()
                 self._marks = stack_marks(self._stack)
-                self._message = commit_message_parts(change.commit)
+                self._message = commit_message_parts(self._repository, change.commit)
                 # Where it is the user's turn, like the dashboard's "▶ you"
                 user = current_user()
                 self._yours = {other.change_id for other in self._stack
                                if 'your-turn' in other.sections(user)}
                 self._behind = (
                     'conflicts' if any(other.rebase_is_requested for other in self._stack)
-                    else 'base moved' if needs_rebase(change.topic) else None)
+                    else 'base moved' if needs_rebase(self._repository, change.topic) else None)
                 self._diff.forget()
                 return
         self._interface.back()
@@ -581,7 +579,7 @@ class ChangeView:
         # From the stack pane, the focus stays there to go on.
         if STACK != self._focus:
             self._focus = self._left_pane = FILES
-        self._diff = DiffPane(self._interface.colour_pairs)
+        self._diff = DiffPane(self._interface.colour_pairs, self._interface.theme)
         self.reload()
         self._stack_index = self._current_in_stack()
 
@@ -1216,7 +1214,6 @@ class ChangeView:
             count: the count typed before it, like the 15 of 15j. None for
                 none.
         """
-        use_repository(self._repository)
         interface = self._interface
         change = self._change
         height = self._diff_height()
@@ -1340,13 +1337,13 @@ class ChangeView:
             self._diff.side = 'old' if 'side-old' == action else 'new'
         elif 'reviewed' == action and self._selected_file():
             path = self._selected_file() or ''
-            marked = toggle_reviewed(self._change_id, path)
+            marked = toggle_reviewed(self._repository, self._change_id, path)
             interface.after_write()
             interface.say(f'{file_label(path)} '
                           + ('reviewed.' if marked else 'not reviewed any more.'))
         elif 'reviewed-next' == action and self._selected_file():
             path = self._selected_file() or ''
-            mark_reviewed(self._change_id, path)
+            mark_reviewed(self._repository, self._change_id, path)
             interface.after_write()
             following = file_after(self._files, path)
             if following is None:
@@ -1390,9 +1387,9 @@ class ChangeView:
             assert comment is not None
             anchor = self._box_below_thread(comment)
             if 'reply' == action:
-                reply_to_thread(interface, self._change_id, comment, anchor)
+                reply_to_thread(self._repository, interface, self._change_id, comment, anchor)
             else:
-                edit_draft(interface, self._change_id, comment, anchor)
+                edit_draft(self._repository, interface, self._change_id, comment, anchor)
         elif 'thread-patch-set' == action:
             self._thread_patch_set()
         else:
@@ -1414,7 +1411,7 @@ class ChangeView:
         try:
             place, side, patch_set = comment_place(self._change, path, line, side,
                                                    *self._compare)
-            move = move_thread(self._change_id, number, place, side, patch_set)
+            move = move_thread(self._repository, self._change_id, number, place, side, patch_set)
         except ChangeError as error:
             interface.say(str(error), ERROR)
             return
@@ -1710,7 +1707,7 @@ class ChangeView:
             return
         thread_place, side, patch_set = comment_place(
             self._change, path, int(line) if line else None, side, *self._compare)
-        add_comment(self._change_id, thread_place, text, is_sent=False, side=side,
+        add_comment(self._repository, self._change_id, thread_place, text, is_sent=False, side=side,
                     patch_set=patch_set)
         interface.after_write()
         interface.say(f'Draft saved. {interface.keymap.label("send")} sends all drafts.', OK)
@@ -1733,11 +1730,12 @@ def file_label(path: str, renames: dict[str, str] | None = None) -> str:
     return f'{renames[path]} → {path}' if renames and path in renames else path
 
 
-def reply_to_thread(interface: 'Interface', change_id: str, comment: Comment,
-                    anchor: BoxAnchor = None) -> None:
+def reply_to_thread(repository: Repository, interface: 'Interface', change_id: str,
+                    comment: Comment, anchor: BoxAnchor = None) -> None:
     """Writes a reply as a draft (r), in the comment box.
 
     Args:
+        repository: the repository the change is in.
         interface: the interface.
         change_id: the change's full Change-Id.
         comment: the thread.
@@ -1749,17 +1747,18 @@ def reply_to_thread(interface: 'Interface', change_id: str, comment: Comment,
         return
     text = interface.write_text(f'Reply to #{comment.number}', anchor=anchor)
     if text:
-        add_message(change_id, comment.number, REVIEWER, text, is_sent=False)
+        add_message(repository, change_id, comment.number, REVIEWER, text, is_sent=False)
         interface.after_write()
         interface.say(f'Reply saved as a draft. {interface.keymap.label("send")} sends all '
                       'drafts.', OK)
 
 
-def edit_draft(interface: 'Interface', change_id: str, comment: Comment,
+def edit_draft(repository: Repository, interface: 'Interface', change_id: str, comment: Comment,
                anchor: BoxAnchor = None) -> None:
     """Edits a thread's draft (e). Saving it empty deletes it.
 
     Args:
+        repository: the repository the change is in.
         interface: the interface.
         change_id: the change's full Change-Id.
         comment: the thread.
@@ -1773,9 +1772,9 @@ def edit_draft(interface: 'Interface', change_id: str, comment: Comment,
     if text is None:
         return
     if text:
-        review_threads.edit_draft(change_id, comment.number, text)
+        review_threads.edit_draft(repository, change_id, comment.number, text)
     else:
-        delete_draft(change_id, comment.number)
+        delete_draft(repository, change_id, comment.number)
     interface.after_write()
 
 
@@ -1805,7 +1804,7 @@ def thread_action(interface: 'Interface', change: Change, comment: Comment | Non
         if message is None:
             interface.say('Nothing sent.')
             return
-        count, voted = review_reply.reply(change.change_id, message,
+        count, voted = review_reply.reply(change.repository, change.change_id, message,
                                   choice[1].value if choice else None)
         interface.after_write()
         done: list[str] = []
@@ -1828,13 +1827,14 @@ def thread_action(interface: 'Interface', change: Change, comment: Comment | Non
                           f'{interface.keymap.label("edit-draft")} edits it.')
             return
         text = DONE if 'done' == action else ACK
-        add_message(change.change_id, comment.number, REVIEWER, text, is_sent=False,
+        add_message(change.repository, change.change_id, comment.number, REVIEWER, text,
+                    is_sent=False,
                          status=RESOLVED)
         interface.after_write()
         interface.say(f'"{text}" saved as a draft, it resolves #{comment.number}. '
                       f'{interface.keymap.label("send")} sends.', OK)
     elif 'resolve' == action:
-        status = toggle_draft_status(change.change_id, comment.number)
+        status = toggle_draft_status(change.repository, change.change_id, comment.number)
         interface.after_write()
         interface.say(f'Sending the draft makes #{comment.number} {status}. '
                       f'{interface.keymap.label("send")} sends.')

@@ -4,7 +4,6 @@
 import curses
 from collections.abc import Sequence
 
-from plustwo.config.settings import setting
 from plustwo.diff.contrast import readable
 from plustwo.diff.rows import ADDED, CONTEXT, REMOVED, Half, Row
 from plustwo.diff.search import search_matches
@@ -54,18 +53,20 @@ SEARCH_PLACES = {'shown': 'the lines shown', 'file': 'the whole file',
                  'all': 'the file and its comments', 'comments': 'the comments'}
 
 
-def highlighted(lines: Sequence[str], path: str) -> list[list[CharacterColour]] | None:
+def highlighted(lines: Sequence[str], path: str,
+                theme: str | None) -> list[list[CharacterColour]] | None:
     """Colours the lines of a file with syntax highlighting.
 
     Args:
         lines: the file's lines.
         path: the file's path, from which the language is picked.
+        theme: bat's theme, None for its default.
 
     Returns:
         For each line, the look of each character. None without bat, or if
         its output doesn't fit the lines.
     """
-    segments = syntax_segments(lines, path, setting('tui.theme'))
+    segments = syntax_segments(lines, path, theme)
     if segments is None:
         return None
     colours = []

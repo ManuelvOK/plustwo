@@ -156,6 +156,21 @@ def setting(repository: Repository, key: str, default: str | None = None) -> str
     return default
 
 
+def user_setting(key: str, default: str | None = None) -> str | None:
+    """Reads a setting from the user's file alone, for programs that run
+    outside any repository.
+
+    Args:
+        key: the setting's key.
+        default: the value when the file has no such setting.
+
+    Returns:
+        The value from the user's file, else default.
+    """
+    values = config_values(_user_config_path(), key)
+    return values[-1] if values and values[-1] else default
+
+
 def _legacy_setting(key: str, repository: Repository) -> str:
     """Reads an older setting from git's own config, again only when one of
     git's config files changed.
@@ -202,9 +217,35 @@ def settings_section(repository: Repository, section: str) -> dict[str, str]:
         Each name in the section, mapped to its value, the repository's
         over the user's.
     """
+    return _section_of(_config_files(repository), section)
+
+
+def user_settings_section(section: str) -> dict[str, str]:
+    """Reads all settings of a section from the user's file alone, see
+    user_setting().
+
+    Args:
+        section: the section's name.
+
+    Returns:
+        Each name in the section, mapped to its value.
+    """
+    return _section_of([_user_config_path()], section)
+
+
+def _section_of(files: list[Path], section: str) -> dict[str, str]:
+    """Reads all settings of a section from some files.
+
+    Args:
+        files: the files, the one that wins first.
+        section: the section's name.
+
+    Returns:
+        Each name in the section, mapped to its value.
+    """
     values = {}
     start = section.lower() + '.'
-    for path in reversed(_config_files(repository)):
+    for path in reversed(files):
         for key, value in config_entries(path):
             if key.startswith(start):
                 values[key[len(start):]] = value

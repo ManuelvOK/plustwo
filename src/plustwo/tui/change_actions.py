@@ -37,7 +37,7 @@ def approve(interface: 'Interface', change: Change) -> None:
     n_drafts = change.n_drafts()
     do_send = bool(n_drafts) and ord('y') == interface.ask_key(
         f'{n_drafts} draft(s) unsent. Send them along? (y/N)')
-    number, n_sent = quick_approve(change.change_id, do_send)
+    number, n_sent = quick_approve(change.repository, change.change_id, do_send)
     interface.after_write()
     interface.say(f'Code-Review+2 on PS{number}'
                   + (f', {n_sent} draft(s) sent.' if n_sent else '.'), OK)
@@ -51,13 +51,13 @@ def rebase_with_confirmation(interface: 'Interface', change: Change) -> None:
         interface: the interface.
         change: a change of the stack.
     """
-    if not needs_rebase(change.topic):
+    if not needs_rebase(change.repository, change.topic):
         interface.say(f'{change.topic} is on {change.base} already.')
         return
     if not interface.confirm([f'Rebase the stack {change.topic} onto {change.base}.',
                               'Every change gets a new patch set.'], 'Rebase?'):
         return
-    rebased = rebase_stack(change.topic)
+    rebased = rebase_stack(change.repository, change.topic)
     interface.after_write()
     interface.say(f'Rebased, {len(rebased)} new patch set(s).' if rebased is not None
                   else 'Conflicts: the author is asked to rebase.',
@@ -95,12 +95,12 @@ def vote_action(interface: 'Interface', change: Change, action: str) -> None:
                                  Choice(vote_values(), change.own_vote()))
         if value is None or value == change.own_vote():
             return
-        number = set_vote(change.change_id, CODE_REVIEW, value)
+        number = set_vote(change.repository, change.change_id, CODE_REVIEW, value)
         interface.after_write()
         interface.say(f'Code-Review{value:+d} on PS{number}.' if value
                       else 'Code-Review vote removed.')
     elif 'verified' == action:
-        require_verified(change.change_id, not change.needs_verified)
+        require_verified(change.repository, change.change_id, not change.needs_verified)
         interface.after_write()
         interface.say('Needs Verified+1 now.' if not change.needs_verified
                       else 'Verified+1 is not needed any more.')
@@ -141,6 +141,6 @@ def submit_with_confirmation(interface: 'Interface', change: Change) -> None:
     if n_drafts:
         lines += ['', f'{n_drafts} draft(s) are not sent and stay unsent.']
     if interface.confirm(lines, 'Submit?'):
-        submit(change.change_id, do_force=True)
+        submit(change.repository, change.change_id, do_force=True)
         interface.after_write()
         interface.say('Submitted: ' + ', '.join(other.short_id() for other in submitted), OK)

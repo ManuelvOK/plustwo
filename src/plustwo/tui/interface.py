@@ -9,11 +9,12 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from plustwo.config.registry import review_repositories
-from plustwo.config.settings import setting
+from plustwo.config.settings import setting, settings_section, user_setting, user_settings_section
 from plustwo.config.view_state import follows_latest
 from plustwo.diff.edits import WHITESPACE_MODES
 from plustwo.diff.search import SEARCH_MODES
 from plustwo.git.errors import ChangeError
+from plustwo.git.repository import Repository
 from plustwo.review.stacks import stack_version
 from plustwo.tui import colours as tui_colours
 from plustwo.tui.area import Area
@@ -45,16 +46,38 @@ _ESC_DELAY_MS = 25
 BoxAnchor = DiffGap | tuple[int, int, int] | None
 
 
-def run(list_name: str | None = None) -> None:
+def read_setting(repository: Repository | None, key: str,
+                 default: str | None = None) -> str | None:
+    """Reads a setting of the interface: from the repository's file and the
+    user's, or from the user's alone outside a repository.
+
+    Args:
+        repository: the working directory's repository, None outside one.
+        key: the setting's key.
+        default: the value when no file has the setting.
+
+    Returns:
+        The value, else default.
+    """
+    if repository is None:
+        return user_setting(key, default)
+    return setting(repository, key, default)
+
+
+def run(repository: Repository | None, list_name: str | None = None) -> None:
     """Starts the interface.
 
     Args:
+        repository: the working directory's repository, None outside one.
+            Its settings count for the interface.
         list_name: the list of repositories the dashboard shows, None for
             all.
     """
-    tui_colours.TERMINAL_BACKGROUND = (parse_colour(setting('tui.background', '') or '')
-                                       or query_background() or (0, 0, 0))
-    wants_true_colour = true_colour_terminal(setting('tui.colours', 'auto') or 'auto')
+    tui_colours.TERMINAL_BACKGROUND = (
+        parse_colour(read_setting(repository, 'tui.background', '') or '')
+        or query_background() or (0, 0, 0))
+    wants_true_colour = true_colour_terminal(
+        read_setting(repository, 'tui.colours', 'auto') or 'auto')
 
     def start(screen: Any) -> None:
         """Runs the interface on the screen curses set up.
@@ -67,7 +90,7 @@ def run(list_name: str | None = None) -> None:
         # tells them apart.
         curses.nonl()
         keys_as_keys()
-        Interface(screen, list_name).loop()
+        Interface(screen, repository, list_name).loop()
 
     curses.wrapper(start)
 
@@ -93,15 +116,19 @@ class Interface:
             session.
     """
 
-    def __init__(self, screen: Any, list_name: str | None = None) -> None:
+    def __init__(self, screen: Any, repository: Repository | None,
+                 list_name: str | None = None) -> None:
         """Sets up curses and the settings, with the dashboard as the first
         screen.
 
         Args:
             screen: the curses window of the whole screen.
+            repository: the working directory's repository, None outside
+                one. Its settings count.
             list_name: the list of repositories shown, None for all.
         """
         self._screen = screen
+        self._repository = repository
         self.list_name = list_name
         self._views: list[View] = [StackView(self)]
         self._message = ''
@@ -109,7 +136,7 @@ class Interface:
         self._version: str | None = None
         # The keys of an open text box for the footer, see write_text()
         self._box_footer: Callable[[], list[tuple[str, str]]] | None = None
-        self.keymap = keymap_from_settings()
+        self.keymap = keymap_from_settings(self._settings_section('keys'))
         if self.keymap.errors:
             self._message = 'Settings: ' + '; '.join(self.keymap.errors)
         curses.curs_set(0)
@@ -121,25 +148,58 @@ class Interface:
             curses.init_pair(number, curses_colour(number if number < 8 else 8), -1)
         screen.timeout(_RELOAD_INTERVAL_MS)
         self.colour_pairs = ColourPairs()
-        dim_colour = setting('tui.dim-colour', str(tui_colours.DIM_COLOUR)) or ''
+        dim_colour = self.setting('tui.dim-colour', str(tui_colours.DIM_COLOUR)) or ''
         if dim_colour.isdigit() and int(dim_colour) < 256:
             tui_colours.DIM_COLOUR = int(dim_colour)
         self.context_step = 0
-        self.whitespace = setting('diff.whitespace', 'none') or 'none'
+        self.whitespace = self.setting('diff.whitespace', 'none') or 'none'
         self.follow_latest = follows_latest()
         if self.whitespace not in WHITESPACE_MODES:
             self.whitespace = 'none'
         self.search = ''
         self.marking = False
         self.search_history: list[str] = []
-        self.search_mode = setting('tui.search', 'shown') or 'shown'
+        self.search_mode = self.setting('tui.search', 'shown') or 'shown'
         if self.search_mode not in SEARCH_MODES:
             self.search_mode = 'shown'
-        self.sidebar = setting('tui.sidebar', 'auto') or 'auto'
+        self.sidebar = self.setting('tui.sidebar', 'auto') or 'auto'
         if self.sidebar not in SIDEBAR_MODES:
             self.sidebar = 'auto'
 
     # ── state shared by the views ─────────────────────────────────────────────
+
+    def setting(self, key: str, default: str | None = None) -> str | None:
+        """Reads a setting, see read_setting().
+
+        Args:
+            key: the setting's key.
+            default: the value when no file has the setting.
+
+        Returns:
+            The value, else default.
+        """
+        return read_setting(self._repository, key, default)
+
+    def theme(self) -> str | None:
+        """Reads bat's theme for the diff's syntax colours.
+
+        Returns:
+            The setting tui.theme, None for bat's default.
+        """
+        return self.setting('tui.theme')
+
+    def _settings_section(self, section: str) -> dict[str, str]:
+        """Reads all settings of a section, like settings_section().
+
+        Args:
+            section: the section's name.
+
+        Returns:
+            Each name in the section, mapped to its value.
+        """
+        if self._repository is None:
+            return user_settings_section(section)
+        return settings_section(self._repository, section)
 
     def say(self, message: str, message_type: str | None = None) -> None:
         """Shows a message in the bottom line until the next key.

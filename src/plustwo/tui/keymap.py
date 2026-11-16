@@ -4,7 +4,6 @@
 from collections.abc import Mapping, Sequence
 
 from plustwo.config.key_presets import ACTIONS, ACTION_NAMES, PRESETS
-from plustwo.config.settings import settings_section
 from plustwo.tui.keys import COUNT_PREFIXES, key_codes, key_label, key_sequences
 from plustwo.tui.messages import PENDING
 from plustwo.tui.sidebar import FooterEntry
@@ -222,12 +221,15 @@ class Keymap:
         return lines
 
 
-def keymap_from_settings() -> Keymap:
+def keymap_from_settings(overrides: dict[str, str]) -> Keymap:
     """Makes the keymap the settings ask for.
+
+    Args:
+        overrides: the settings of the section keys, see settings_section().
 
     Returns:
         The keymap of keys.preset and the other keys settings.
     """
-    overrides = settings_section('keys')
+    overrides = dict(overrides)
     preset = overrides.pop('preset', 'vim')
     return Keymap(preset, overrides)
