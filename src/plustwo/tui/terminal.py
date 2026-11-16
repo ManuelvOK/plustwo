@@ -10,6 +10,13 @@ import time
 
 from plustwo.diff.contrast import Rgb
 
+# How often the screen checks for new commits or notes, in milliseconds
+RELOAD_INTERVAL_MS = 700
+
+# How long curses waits after Esc for more bytes of a key sequence. The
+# default of one second makes Esc feel stuck.
+ESC_DELAY_MS = 25
+
 
 def keys_as_keys() -> None:
     """Lets C-s, C-q and C-c arrive as keys: turns off the terminal's flow

@@ -28,14 +28,14 @@ def approve(interface: 'Interface', change: Change) -> None:
         interface: the interface.
         change: the change.
     """
-    key = interface.ask_key(f'Code-Review+2 on PS{change.latest_patch_set()} of '
-                            f'{change.short_id()} {change.subject}? '
-                            f'({interface.keymap.label("approve")} again or y)')
+    key = interface.dialogs.ask_key(f'Code-Review+2 on PS{change.latest_patch_set()} of '
+                                    f'{change.short_id()} {change.subject}? '
+                                    f'({interface.keymap.label("approve")} again or y)')
     if key not in interface.keymap.single_keys('approve') | {ord('y')}:
         interface.say('No vote given.')
         return
     n_drafts = change.n_drafts()
-    do_send = bool(n_drafts) and ord('y') == interface.ask_key(
+    do_send = bool(n_drafts) and ord('y') == interface.dialogs.ask_key(
         f'{n_drafts} draft(s) unsent. Send them along? (y/N)')
     number, n_sent = quick_approve(change.repository, change.change_id, do_send)
     interface.after_write()
@@ -54,8 +54,8 @@ def rebase_with_confirmation(interface: 'Interface', change: Change) -> None:
     if not needs_rebase(change.repository, change.topic):
         interface.say(f'{change.topic} is on {change.base} already.')
         return
-    if not interface.confirm([f'Rebase the stack {change.topic} onto {change.base}.',
-                              'Every change gets a new patch set.'], 'Rebase?'):
+    if not interface.dialogs.confirm([f'Rebase the stack {change.topic} onto {change.base}.',
+                                      'Every change gets a new patch set.'], 'Rebase?'):
         return
     rebased = rebase_stack(change.repository, change.topic)
     interface.after_write()
@@ -91,8 +91,8 @@ def vote_action(interface: 'Interface', change: Change, action: str) -> None:
         if not change.patch_sets:
             interface.say(f'{change.short_id()} has no patch set yet, nothing to vote on.', ERROR)
             return
-        value = interface.choose(f'Code-Review on PS{change.latest_patch_set()}:',
-                                 Choice(vote_values(), change.own_vote()))
+        value = interface.dialogs.choose(f'Code-Review on PS{change.latest_patch_set()}:',
+                                         Choice(vote_values(), change.own_vote()))
         if value is None or value == change.own_vote():
             return
         number = set_vote(change.repository, change.change_id, CODE_REVIEW, value)
@@ -118,10 +118,10 @@ def submit_with_confirmation(interface: 'Interface', change: Change) -> None:
     submitted = changes_submitted_with(change)
     problems = [problem for other in submitted for problem in other.submit_problems()]
     if problems:
-        interface.show_lines(['Cannot submit yet:', '']
-                             + [f'  {problem}' for problem in problems]
-                             + ['', f'{interface.keymap.label("approve")} gives Code-Review+2. '
-                                'Verified comes from a check.'])
+        interface.dialogs.show_lines(['Cannot submit yet:', '']
+                                     + [f'  {problem}' for problem in problems]
+                                     + ['', f'{interface.keymap.label("approve")} gives '
+                                        'Code-Review+2. Verified comes from a check.'])
         return
     # What goes, what is left open
     lines = [f'Submit to {change.base}:']
@@ -140,7 +140,7 @@ def submit_with_confirmation(interface: 'Interface', change: Change) -> None:
     n_drafts = sum(comment.has_draft() for other in submitted for comment in other.comments)
     if n_drafts:
         lines += ['', f'{n_drafts} draft(s) are not sent and stay unsent.']
-    if interface.confirm(lines, 'Submit?'):
+    if interface.dialogs.confirm(lines, 'Submit?'):
         submit(change.repository, change.change_id, do_force=True)
         interface.after_write()
         interface.say('Submitted: ' + ', '.join(other.short_id() for other in submitted), OK)

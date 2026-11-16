@@ -59,7 +59,8 @@ from plustwo.tui.sidebar import (
     thread_footer)
 
 if TYPE_CHECKING:
-    from plustwo.tui.interface import BoxAnchor, Interface
+    from plustwo.tui.interface import Interface
+    from plustwo.tui.text_input import BoxAnchor
 
 T = TypeVar('T')
 
@@ -1455,7 +1456,7 @@ class ChangeView:
                                               % len(modes)]
                 return search_question(interface.search_mode)
 
-            text = interface.ask(search_question(interface.search_mode),
+            text = interface.dialogs.ask(search_question(interface.search_mode),
                                  interface.search_history, next_mode)
             if text is None:
                 return
@@ -1646,7 +1647,7 @@ class ChangeView:
 
     def _choose_patch_sets(self) -> None:
         """Asks which two versions to compare."""
-        answer = self._interface.ask('Compare (e.g. "1 3", "2 current", "base 2", '
+        answer = self._interface.dialogs.ask('Compare (e.g. "1 3", "2 current", "base 2", '
                                      'empty for base latest):')
         if answer is None:
             return
@@ -1700,7 +1701,7 @@ class ChangeView:
             self._diff.move_cursor(0, self._layout[DIFF][2])
             anchor = self._gap(self._diff.line_end(self._diff.cursor), side)
         name = file_label(path).rsplit('/', 1)[-1]
-        text = interface.write_text(f'Comment on {name}' + (f':{line}' if line else
+        text = interface.text_input.write_text(f'Comment on {name}' + (f':{line}' if line else
                                                             ' (whole file)'), anchor=anchor)
         if not text:
             interface.say('Nothing saved.' if text is None else 'Empty comment, nothing saved.')
@@ -1745,7 +1746,7 @@ def reply_to_thread(repository: Repository, interface: 'Interface', change_id: s
         interface.say(f'You have a draft already. {interface.keymap.label("edit-draft")} '
                       'edits it.', ERROR)
         return
-    text = interface.write_text(f'Reply to #{comment.number}', anchor=anchor)
+    text = interface.text_input.write_text(f'Reply to #{comment.number}', anchor=anchor)
     if text:
         add_message(repository, change_id, comment.number, REVIEWER, text, is_sent=False)
         interface.after_write()
@@ -1767,8 +1768,8 @@ def edit_draft(repository: Repository, interface: 'Interface', change_id: str, c
     if not comment.has_draft():
         interface.say('No draft to edit in this thread.', ERROR)
         return
-    text = interface.write_text('Edit draft (empty deletes it)', comment.messages[-1].text,
-                                anchor)
+    text = interface.text_input.write_text('Edit draft (empty deletes it)',
+                                           comment.messages[-1].text, anchor)
     if text is None:
         return
     if text:
@@ -1796,7 +1797,7 @@ def thread_action(interface: 'Interface', change: Change, comment: Comment | Non
         if change.patch_sets:
             choice = (f'Code-Review on PS{change.latest_patch_set()}',
                       Choice(vote_values(), change.own_vote()))
-        message = interface.write_text(
+        message = interface.text_input.write_text(
             'Reply', save_label='send', choice=choice,
             lines=[(f'{drafts} draft{"" if 1 == drafts else "s"} to send. '
                     'A message on the whole change, optional:' if drafts
