@@ -26,6 +26,7 @@ from plustwo.diff.syntax import syntax_segments
 from plustwo.git.commit_message import commit_message, commit_message_parts
 from plustwo.git.errors import ChangeError
 from plustwo.git.files import file_lines, files_of, renames_of
+from plustwo.git.repository import Repository
 from plustwo.model.change import Change
 from plustwo.model.comment import ACK, DONE, RESOLVED
 from plustwo.model.place import COMMIT_MSG, NEW_SIDE, place_label, split_place
@@ -70,26 +71,26 @@ Query = dict[str, str]
 class Server:
     """The repositories served and the caches the API keeps."""
 
-    def __init__(self, repositories: Iterable[str], port: int) -> None:
+    def __init__(self, repositories: Iterable[Repository], port: int) -> None:
         """Starts serving repositories.
 
         Args:
-            repositories: the repositories' directories.
+            repositories: the repositories.
             port: the port the HTTP server listens on.
         """
-        self.repositories = [str(Path(repository).resolve()) for repository in repositories]
+        self.repositories = list(repositories)
         self.port = port
         self.token = secrets.token_hex(16)
-        self._colour_cache: dict[tuple[str, str, str, str], list[list[Segment]] | None] = {}
+        self._colour_cache: dict[tuple[Repository, str, str, str], list[list[Segment]] | None] = {}
 
-    def _repository(self, query: Query | dict[str, Any]) -> str:
+    def _repository(self, query: Query | dict[str, Any]) -> Repository:
         """Finds the repository a request is about.
 
         Args:
             query: the request's parameters, "repo" is the index.
 
         Returns:
-            The repository's directory.
+            The repository.
 
         Raises:
             ChangeError: if there is no such repository.
@@ -99,7 +100,7 @@ class Server:
             raise ChangeError(f'no repository {index}')
         return self.repositories[index]
 
-    def _change(self, query: Query) -> tuple[Change, str]:
+    def _change(self, query: Query) -> tuple[Change, Repository]:
         """Finds the change a request is about.
 
         Args:
@@ -109,17 +110,17 @@ class Server:
             The change and its repository.
         """
         repository = self._repository(query)
-        return find_change(query['id'], repository), repository
+        return find_change(repository, query['id']), repository
 
-    def _syntax_colours(self, version: str, path: str, lines: list[str] | None,
-                        repository: str, theme: str) -> list[list[Segment]] | None:
+    def _syntax_colours(self, repository: Repository, version: str, path: str,
+                        lines: list[str] | None, theme: str) -> list[list[Segment]] | None:
         """Syntax colours of a file's version, kept per version.
 
         Args:
+            repository: the repository.
             version: the version's commit.
             path: the file's path.
             lines: the file's lines, None for none.
-            repository: the repository's directory.
             theme: light or dark.
 
         Returns:
@@ -168,10 +169,10 @@ class Server:
         repository = self._repository(query)
         stacks: dict[str, list[dict[str, Any]]] = {}
         for change in changes_in_stack(repository):
-            stacks.setdefault(change.topic, []).append(change_summary(change, repository))
+            stacks.setdefault(change.topic, []).append(change_summary(change))
         return {'base': base_branch(repository),
                 'stacks': [{'topic': topic, 'base': changes[0]['base'],
-                            'needs_rebase': needs_rebase(topic, repository),
+                            'needs_rebase': needs_rebase(repository, topic),
                             'changes': changes} for topic, changes in stacks.items()]}
 
     def dashboard(self, _query: Query) -> dict[str, Any]:
@@ -186,20 +187,20 @@ class Server:
         """
         changes = [change for repository in self.repositories
                    for change in changes_in_stack(repository)]
-        names: dict[str | None, str] = {
-            path: name for name, path in registered_repositories().items()}
-        index: dict[str | None, int] = {
+        names: dict[Repository, str] = {
+            repository: name for name, repository in registered_repositories().items()}
+        index: dict[Repository, int] = {
             repository: number for number, repository in enumerate(self.repositories)}
         folded = folded_sections()
         behind = {(change.repository, change.topic) for change in changes
-                  if change.rebase_is_requested or needs_rebase(change.topic, change.repository)}
+                  if change.rebase_is_requested or needs_rebase(change.repository, change.topic)}
         sections = []
         for section, entries in review_dashboard.dashboard(changes):
             sections.append({
                 'name': section, 'title': SECTION_TITLES[section], 'count': len(entries),
                 'folded': section in folded,
                 'changes': [] if section in folded else [
-                    {**change_summary(change, change.repository),
+                    {**change_summary(change),
                      'number': number, 'repo': index.get(change.repository, 0),
                      'repo_name': names.get(change.repository, change.repository_name),
                      'needs_rebase': (change.repository, change.topic) in behind,
@@ -217,28 +218,28 @@ class Server:
             The JSON object.
         """
         change, repository = self._change(query)
-        renames = renames_of(change.commit, repository)
+        renames = renames_of(repository, change.commit)
         # Counts between the compared versions, unchanged files greyed
         try:
             compared = compared_files(change, query.get('a') or 'base',
-                                           query.get('b') or 'latest', repository)
+                                           query.get('b') or 'latest')
         except ChangeError:
             compared = None
         # Threads the comparison leaves as they were are quiet on the page.
         touched = touched_threads(change, query.get('a') or 'base',
-                                       query.get('b') or 'latest', repository)
-        paths = [COMMIT_MSG] + sorted(files_of(change.commit, repository))
+                                       query.get('b') or 'latest')
+        paths = [COMMIT_MSG] + sorted(files_of(repository, change.commit))
         files = []
         for path in paths:
             added, removed = (compared or {}).get(path, (0, 0))
             files.append({'path': path, 'added': added, 'removed': removed,
                           'changed': compared is None or path in compared,
-                          'reviewed': is_reviewed(change, path, repository),
+                          'reviewed': is_reviewed(change, path),
                           'renamed_from': renames.get(path)})
-        return {**change_summary(change, repository),
-                'message': commit_message(change.commit, repository),
+        return {**change_summary(change),
+                'message': commit_message(repository, change.commit),
                 'message_parts': dict(zip(('subject', 'body', 'trailers'),
-                                          commit_message_parts(change.commit, repository))),
+                                          commit_message_parts(repository, change.commit))),
                 'patch_sets': sorted(change.patch_sets),
                 'verified_required': change.needs_verified,
                 'problems': change.submit_problems(),
@@ -248,8 +249,7 @@ class Server:
                     'touched': comment.number in touched} for comment in change.comments],
                 # Drafts go with the patch set shown on the right
                 'history': history_list(patch_set_history(
-                    change, int(query['b']) if query.get('b', '').isdigit() else None,
-                    repository)),
+                    change, int(query['b']) if query.get('b', '').isdigit() else None)),
                 'votes': [vote_json(vote) for vote in change.votes]}
 
     def diff(self, query: Query) -> dict[str, Any]:
@@ -267,18 +267,18 @@ class Server:
         first, second = query.get('a') or 'base', query.get('b') or 'latest'
         context = None if 'all' == query.get('context') else int(query.get('context', '10'))
         whitespace = query.get('whitespace', 'none')
-        rows = file_diff_rows(change, first, second, path, context, repository, whitespace)
+        rows = file_diff_rows(change, first, second, path, context, whitespace)
         comparing = compare_label(change, first, second, does_follow_latest=follows_latest())
         if rows is None:
             return {'binary': True, 'rows': [], 'comparing': comparing}
-        old, new, paths = diff_endpoints(change, first, second, path, repository)
-        old_path = old_path_of(change, first, second, paths[0], repository) or paths[0]
+        old, new, paths = diff_endpoints(change, first, second, path)
+        old_path = old_path_of(change, first, second, paths[0]) or paths[0]
         theme = 'light' if 'light' == query.get('theme') else 'dark'
-        old_colours = self._syntax_colours(old, old_path, file_lines(old, old_path, repository),
-                                   repository, theme)
-        new_colours = self._syntax_colours(new, paths[0], file_lines(new, paths[0], repository),
-                                   repository, theme)
-        from_below, partly = rebase_lines(change, first, second, path, repository)
+        old_colours = self._syntax_colours(repository, old, old_path,
+                                           file_lines(repository, old, old_path), theme)
+        new_colours = self._syntax_colours(repository, new, paths[0],
+                                           file_lines(repository, new, paths[0]), theme)
+        from_below, partly = rebase_lines(change, first, second, path)
 
         def colours_of(half: Half, colours: list[list[Segment]] | None) -> list[Segment] | None:
             """Finds the syntax segments of a diff half's line.
@@ -298,7 +298,7 @@ class Server:
         # thread's, its place there
         threads: dict[int, dict[str, Any]] = {}
         for comment in change.comments:
-            shown = thread_place(change, comment, first, second, repository)
+            shown = thread_place(change, comment, first, second)
             threads[comment.number] = {'path': shown.path, 'line': shown.line, 'side': shown.side,
                                        'origin': shown.origin, 'note': shown.note}
         # Syntax colours lifted on the page's shades, see readable()
@@ -328,7 +328,7 @@ class Server:
         Returns:
             The JSON object.
         """
-        overrides = settings_section('keys', self.repositories[0])
+        overrides = settings_section(self.repositories[0], 'keys')
         preset = overrides.pop('preset', 'vim')
         if preset not in PRESETS:
             preset = 'vim'
@@ -363,7 +363,7 @@ class Server:
             set_follows_latest(bool(body.get('on')))
             return {'on': follows_latest()}
         repository = self._repository(body)
-        change = find_change(body['id'], repository)
+        change = find_change(repository, body['id'])
         change_id = change.change_id
         action = body['action']
         number: Any = body.get('number')
@@ -371,48 +371,44 @@ class Server:
             path, line = split_place(body['place'])
             place, side, patch_set = comment_place(
                 change, path, line, body.get('side', NEW_SIDE), body.get('a') or 'base',
-                body.get('b') or 'latest', repository)
-            return {'number': add_comment(change_id, place, body['text'], is_sent=False,
-                                               side=side, repository=repository,
-                                               patch_set=patch_set)}
+                body.get('b') or 'latest')
+            return {'number': add_comment(repository, change_id, place, body['text'], is_sent=False,
+                                               side=side, patch_set=patch_set)}
         if 'move' == action:
             path, line = split_place(body['place'])
             place, side, patch_set = comment_place(
                 change, path, line, body.get('side', NEW_SIDE), body.get('a') or 'base',
-                body.get('b') or 'latest', repository)
-            move = move_thread(change_id, number, place, side, patch_set,
-                                    repository=repository)
+                body.get('b') or 'latest')
+            move = move_thread(repository, change_id, number, place, side, patch_set)
             return {'shown': move_text(move) if move
                     else f'now on {place_label(place, side)}'}
         if 'reply' == action:
-            add_message(change_id, number, REVIEWER, body['text'], is_sent=False,
-                             repository=repository)
+            add_message(repository, change_id, number, REVIEWER, body['text'], is_sent=False)
         elif action in ('done', 'ack'):
-            add_message(change_id, number, REVIEWER,
+            add_message(repository, change_id, number, REVIEWER,
                              DONE if 'done' == action else ACK, is_sent=False,
-                             status=RESOLVED, repository=repository)
+                             status=RESOLVED)
         elif 'resolve' == action:
-            return {'status': toggle_draft_status(change_id, number, repository)}
+            return {'status': toggle_draft_status(repository, change_id, number)}
         elif 'edit-draft' == action:
             if body['text']:
-                edit_draft(change_id, number, body['text'], repository)
+                edit_draft(repository, change_id, number, body['text'])
             else:
-                delete_draft(change_id, number, repository)
+                delete_draft(repository, change_id, number)
         elif 'delete-draft' == action:
-            delete_draft(change_id, number, repository)
+            delete_draft(repository, change_id, number)
         elif 'send' == action:
             vote = body.get('vote')
-            sent, _voted = reply(change_id, body.get('message', ''),
-                                      None if vote is None else int(vote), repository)
+            sent, _voted = reply(repository, change_id, body.get('message', ''),
+                                      None if vote is None else int(vote))
             return {'sent': sent}
         elif 'vote' == action:
-            set_vote(change_id, body.get('label', CODE_REVIEW), int(body['value']),
-                          repository=repository)
+            set_vote(repository, change_id, body.get('label', CODE_REVIEW), int(body['value']))
         elif 'approve' == action:
-            patch_set, sent = quick_approve(change_id, bool(body.get('send')), repository)
+            patch_set, sent = quick_approve(repository, change_id, bool(body.get('send')))
             return {'patch_set': patch_set, 'sent': sent}
         elif 'reviewed' == action:
-            return {'reviewed': toggle_reviewed(change_id, body['path'], repository)}
+            return {'reviewed': toggle_reviewed(repository, change_id, body['path'])}
         else:
             raise ChangeError(f'unknown action "{action}"')
         return {}
@@ -536,12 +532,12 @@ class Handler(BaseHTTPRequestHandler):
         self._run(lambda: plustwo.act(body))
 
 
-def make_server(repositories: Iterable[str], port: int = DEFAULT_PORT) -> PlustwoServer:
+def make_server(repositories: Iterable[Repository], port: int = DEFAULT_PORT) -> PlustwoServer:
     """The HTTP server, bound to 127.0.0.1, not started yet. Port 0 picks
     a free one.
 
     Args:
-        repositories: the repositories' directories.
+        repositories: the repositories.
         port: the port.
 
     Returns:
@@ -553,11 +549,11 @@ def make_server(repositories: Iterable[str], port: int = DEFAULT_PORT) -> Plustw
     return server
 
 
-def serve(repositories: Iterable[str], port: int = DEFAULT_PORT) -> None:
+def serve(repositories: Iterable[Repository], port: int = DEFAULT_PORT) -> None:
     """Serves until stopped with Ctrl-C.
 
     Args:
-        repositories: the repositories' directories.
+        repositories: the repositories.
         port: the port.
     """
     server = make_server(repositories, port)

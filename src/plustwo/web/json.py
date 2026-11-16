@@ -131,12 +131,11 @@ def vote_json(vote: Vote) -> dict[str, Any]:
             'copied_from': vote.copied_from}
 
 
-def change_summary(change: Change, repository: str | None) -> dict[str, Any]:
+def change_summary(change: Change) -> dict[str, Any]:
     """A change's line in a list for the page.
 
     Args:
         change: the change.
-        repository: the repository's directory, unused.
 
     Returns:
         The JSON object.
