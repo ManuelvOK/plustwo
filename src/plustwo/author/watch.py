@@ -15,7 +15,7 @@ from plustwo.config.user import current_user
 from plustwo.git.errors import ChangeError
 from plustwo.git.notes import read_note, read_notes
 from plustwo.git.refs import ABANDONED_PREFIX, PATCH_SET_PREFIX, is_ancestor, refs_with_prefix
-from plustwo.git.repository import git
+from plustwo.git.repository import Repository
 from plustwo.model.acknowledgement import says_nothing
 from plustwo.model.change import Change
 from plustwo.model.comment import Comment
@@ -43,13 +43,13 @@ Stacks = dict[str, dict[str, str]]
 
 # ── events ────────────────────────────────────────────────────────────────────
 
-def events_of(repository: str | None, topic: str | None = None,
+def events_of(repository: Repository, topic: str | None = None,
               changes: list[Change] | None = None,
               submitted: list[Change] | None = None) -> set[Event]:
     """Collects everything sent, voted or rebased in a repository.
 
     Args:
-        repository: the repository's directory, None for the current one.
+        repository: the repository.
         topic: the one stack to look at, None for all.
         changes: the stacks' changes if read already, None to read them.
         submitted: more changes to count in, which left the stacks.
@@ -81,11 +81,11 @@ def events_of(repository: str | None, topic: str | None = None,
     return events
 
 
-def _stacks_of(repository: str | None, topic: str | None = None) -> Stacks:
+def _stacks_of(repository: Repository, topic: str | None = None) -> Stacks:
     """Reads the changes of each stack.
 
     Args:
-        repository: the repository's directory, None for the current one.
+        repository: the repository.
         topic: the one stack to look at, None for all.
 
     Returns:
@@ -262,13 +262,13 @@ def parse_time(text: str) -> int:
     return int(moment.timestamp())
 
 
-def submitted_since(repository: str | None, since: int, topic: str | None = None,
+def submitted_since(repository: Repository, since: int, topic: str | None = None,
                     changes: list[Change] | None = None) -> list[Change]:
     """Finds the changes submitted at or after a time, by the submit record
     in their notes, see submit().
 
     Args:
-        repository: the repository's directory, None for the current one.
+        repository: the repository.
         since: the time, seconds since 1970.
         topic: the one stack to look at, None for all.
         changes: the stacks' changes if read already, which are left out.
@@ -281,16 +281,16 @@ def submitted_since(repository: str | None, since: int, topic: str | None = None
         changes = changes_in_stack(repository)
     in_review = {change.change_id for change in changes}
     latest: dict[str, tuple[int, str]] = {}
-    for ref, commit in refs_with_prefix(PATCH_SET_PREFIX, repository=repository).items():
+    for ref, commit in refs_with_prefix(repository, PATCH_SET_PREFIX).items():
         change_id, number = ref[len(PATCH_SET_PREFIX):].rsplit('/', 1)
         if change_id not in in_review and int(number) > latest.get(change_id, (0, ''))[0]:
             latest[change_id] = (int(number), commit)
-    notes = read_notes([commit for _, commit in latest.values()], repository)
+    notes = read_notes(repository, [commit for _, commit in latest.values()])
     submitted = []
     for change_id, (_, commit) in latest.items():
         record = notes.get(commit, {}).get('submit') or {}
         if record.get('time', 0) >= since and (not topic or topic == record.get('topic')):
-            change = change_from(commit, record.get('topic', ''), notes[commit], repository,
+            change = change_from(repository, commit, record.get('topic', ''), notes[commit],
                                  change_id)
             change.is_submitted = True
             submitted.append(change)
@@ -303,7 +303,7 @@ class _RepositoryWatch:
     """What watch() knows of one repository between two looks.
 
     Attributes:
-        repository: the repository's directory, None for the current one.
+        repository: the repository.
         topic: the one stack watched, None for all.
         version: the refs as stack_version() read them last.
         known: the events reported or known before.
@@ -311,12 +311,12 @@ class _RepositoryWatch:
         bases: the stacks' base branches, as they were before a submit.
     """
 
-    def __init__(self, repository: str | None, topic: str | None, version: str,
+    def __init__(self, repository: Repository, topic: str | None, version: str,
                  current: list[Change]) -> None:
         """Takes the first look at a repository.
 
         Args:
-            repository: the repository's directory, None for the current one.
+            repository: the repository.
             topic: the one stack watched, None for all.
             version: the refs, see stack_version(), read before current.
             current: the stacks' changes now.
@@ -399,10 +399,10 @@ class _RepositoryWatch:
             base = bases_before.get(stack_topic, default_base)
             left = [commit for change_id, commit in before.items()
                     if change_id not in self.stacks.get(stack_topic, {})]
-            gone = [commit for commit in left if is_ancestor(commit, base, self.repository)]
-            is_abandoned = bool(left) and not gone and bool(git(
+            gone = [commit for commit in left if is_ancestor(self.repository, commit, base)]
+            is_abandoned = bool(left) and not gone and bool(self.repository.git(
                 'rev-parse', '--verify', '--quiet', f'{ABANDONED_PREFIX}{stack_topic}',
-                check=False, repository=self.repository))
+                check=False))
             if is_abandoned:
                 lines.append(f'abandoned {name} {stack_topic}')
             if gone:
@@ -427,16 +427,17 @@ class _RepositoryWatch:
         for stack_topic, before in stacks_before.items():
             base = bases_before.get(stack_topic, default_base)
             for change_id, commit in before.items():
-                if change_id in current_ids or not is_ancestor(commit, base, self.repository):
+                if change_id in current_ids or not is_ancestor(self.repository, commit, base):
                     continue
-                change = change_from(commit, '', read_note(commit, self.repository),
-                                     self.repository, change_id)
+                change = change_from(self.repository, commit, '', read_note(self.repository,
+                                                                            commit),
+                                     change_id)
                 change.is_submitted = True
                 submitted.append(change)
         return submitted
 
 
-def watch(repositories: list[str | None], output: TextIO = sys.stdout,
+def watch(repositories: list[Repository], output: TextIO = sys.stdout,
           topic: str | None = None, since: int | None = None,
           minutes: float | None = None) -> None:
     """Prints one line per change with new sent messages, one per vote, and
@@ -450,8 +451,7 @@ def watch(repositories: list[str | None], output: TextIO = sys.stdout,
     costs nothing while nothing happens.
 
     Args:
-        repositories: the repositories' directories, None for the current
-            one.
+        repositories: the repositories.
         output: where the lines go.
         topic: the one stack to watch, None for all.
         since: the time to catch up from, seconds since 1970. None for the
