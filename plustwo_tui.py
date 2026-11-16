@@ -187,6 +187,9 @@ ACTIONS = (
     ('resolve', 'Threads', 'resolved on/off', 'whether sending the draft resolves the thread or makes '
      'it unresolved again (Gerrit\'s Resolved checkbox). Without a draft, it makes an empty '
      'one.'),
+    ('move-thread', 'Threads', 'move', 'move the thread to the line it belongs to, when it lost '
+     'its place: go to the line, Enter drops it there, Esc cancels. On a row without a line '
+     'it goes on the whole file. Older patch sets keep where it was.'),
     ('send', 'Threads', 'reply and send', 'send all drafts of this change, with an optional message on '
      'the whole change, which tells the author to start'),
 )
@@ -221,6 +224,8 @@ VIM_KEYS = {
     'search': '/', 'search-next': 'n', 'search-prev': 'N',
     # Like the usual vim mapping of C-l to :nohlsearch
     'search-clear': 'C-l',
+    # The leader key, which vim leaves to the user's own mappings
+    'move-thread': '\\ m',
 }
 PRESETS = {
     'vim': VIM_KEYS,
@@ -245,7 +250,7 @@ PRESETS = {
               # Emacs' M-s holds its search commands
               'search': 'C-s', 'search-next': 'M-s n', 'search-prev': 'M-s p',
               # Like Emacs' unhighlight-regexp
-              'search-clear': 'M-s h u'},
+              'search-clear': 'M-s h u', 'move-thread': 'C-c m'},
     # Gerrit's web interface: j and k move, n and p go to the next and
     # previous changes, N and P to the next and previous thread, ] and [ to
     # the next and previous file, u goes up, o opens, c comments, and a
@@ -2818,7 +2823,15 @@ def thread_rows(comment, width, expanded, core, note='', origin='', patch_sets=(
     for line in note_rows:
         rows.append([*pad, ('│', *border), (' ' + line.ljust(inner), SECONDARY, -1, 0),
                      ('│', *border)])
-    for message_index, message in enumerate(comment.messages):
+    message_index = -1
+    for message in comment.entries():
+        if not isinstance(message, core.Message):
+            # A move by hand: a quiet line, no message
+            for line in textwrap.wrap(core.move_text(message), max(inner - 1, 10)):
+                rows.append([*pad, ('│', *border),
+                             (' ' + line.ljust(inner), SECONDARY, tint, 0), ('│', *border)])
+            continue
+        message_index += 1
         reviewer = core.REVIEWER == message.author
         name = ('Reviewer' if reviewer else 'Author') + (' (draft)' if not message.sent else '')
         name_colour = (STATUS_COLOURS['draft'] if not message.sent
@@ -2891,7 +2904,7 @@ def thread_footer(comment):
     if comment.has_draft():
         return [(('edit-draft',), 'edit draft'), (('resolve',), 'resolved')]
     return [(('reply',), 'reply'), (('done',), 'Done'), (('ack',), 'Ack'),
-            (('resolve',), 'resolved')]
+            (('resolve',), 'resolved'), (('move-thread',), 'move')]
 
 
 # The modes of the setting tui.sidebar. auto hides the left column on
@@ -3144,6 +3157,8 @@ class ChangeView:
         self._layout = None
         # Threads folded or unfolded by hand: number -> expanded
         self._expanded = {}
+        # The number of the thread being moved by hand, see _drop_thread()
+        self._moving = None
         self._renames = {}
         self._counts = {}
         # The changes of the stack, oldest first, and whether it needs a
@@ -3219,6 +3234,10 @@ class ChangeView:
         """
         change = self._change
         core = self._interface.core
+        if self._moving is not None:
+            return [(('down', 'up'), f'to the line of #{self._moving}'),
+                    (('side-old', 'side-new'), 'side'), (('open',), 'drop here'),
+                    (('back',), 'cancel')]
         if STACK == self._focus:
             entries = [(('down', 'up'), 'move'), (('open',), 'show change')]
         elif MESSAGE == self._focus:
@@ -3873,7 +3892,8 @@ class ChangeView:
             blocks.setdefault(place, []).append((comment.number, rows))
             signature.append((comment.number, comment.status, place, expanded, tuple(patch_sets),
                               tuple((message.author, message.text, message.sent, message.unresolved)
-                                    for message in comment.messages)))
+                                    for message in comment.messages),
+                              tuple((move.patch_set, move.place, move.side) for move in comment.moves)))
         self._diff.arrange(blocks, tuple(signature))
         return True
 
@@ -4079,6 +4099,20 @@ class ChangeView:
             'scroll-down': lambda: self._diff.scroll_rows(count or 1, height),
             'scroll-up': lambda: self._diff.scroll_rows(-(count or 1), height),
         }
+        if self._moving is not None and 'open' == action:
+            self._drop_thread()
+            return
+        if 'move-thread' == action:
+            comment = self._target_thread()
+            if comment is None:
+                interface.say('No thread here to move.')
+                return
+            self._moving = comment.number
+            self._focus_pane(DIFF)
+            interface.say(f'Moving #{comment.number}: go to its line, '
+                          f'{interface.keymap.label("open")} drops it, '
+                          f'{interface.keymap.label("back")} cancels.')
+            return
         if 'next-pane' == action:
             # Only the panes shown
             panes = [pane for pane in PANES if not self._layout or pane in self._layout]
@@ -4226,6 +4260,30 @@ class ChangeView:
         else:
             thread_action(interface, change, self._target_thread(), action)
 
+    def _drop_thread(self):
+        """Enter while moving a thread: moves it to the cursor's line, or to
+        the whole file on a row without a line.
+        """
+        interface = self._interface
+        number, self._moving = self._moving, None
+        path = self._selected_file()
+        if DIFF != self._focus or path is None:
+            interface.say(f'#{number} stays where it was: no file shown.', ERROR)
+            return
+        place = self._diff.cursor_place()
+        line, side = place if place is not None else (None, 'new')
+        core = interface.core
+        try:
+            place, side, patch_set = core.comment_place(self._change, path, line, side,
+                                                        *self._compare)
+            move = core.move_thread(self._change_id, number, place, side, patch_set)
+        except core.ChangeError as error:
+            interface.say(str(error), ERROR)
+            return
+        interface.after_write()
+        interface.say(f'#{number} ' + (core.move_text(move) if move
+                                       else f'now on {core.place_label(place, side)}') + '.', OK)
+
     def _marked_search(self, here):
         """The search whose matches to mark, if they are marked and here is
         a place the search looks, else ''.
@@ -4296,6 +4354,10 @@ class ChangeView:
         """h in the diff: back to the files or comments. Returns whether it
         did, elsewhere h goes back to the previous screen.
         """
+        if self._moving is not None:
+            self._interface.say(f'#{self._moving} stays where it was.')
+            self._moving = None
+            return True
         if DIFF != self._focus:
             return False
         number = self._diff.thread_at(self._diff.cursor)

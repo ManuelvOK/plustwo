@@ -160,6 +160,30 @@ class WebTest(unittest.TestCase):
         core.reply(change_id, '', own, directory)
         self.assertEqual(own, core.find_change(change_id, directory).own_vote())
 
+    def test_move_thread(self):
+        # The move button: the thread goes to the clicked line, the page
+        # gets the move as a line between the messages.
+        change_id = self.change_id()
+
+        def act(action, **fields):
+            status, data = self.request('/api/action',
+                                        body={'repo': 0, 'id': change_id, 'action': action,
+                                              **fields})
+            self.assertEqual(200, status, data)
+            return data
+
+        number = act('comment', place='base.txt:3', text='Here?')['number']
+        act('send')
+        moved = act('move', number=number, place='base.txt:1', side='new')
+        self.assertIn('moved by reviewer to base.txt:1', moved['shown'])
+        _, change = self.request(f'/api/change?id={change_id}')
+        thread = next(comment for comment in change['comments'] if comment['number'] == number)
+        self.assertEqual([1], [move['after'] for move in thread['moves']])
+        status, data = self.request('/api/action', body={'repo': 0, 'id': change_id,
+                                                         'action': 'move', 'number': number,
+                                                         'place': 'base.txt:99', 'side': 'new'})
+        self.assertNotEqual(200, status, data)
+
     def test_typed_ack_resolves(self):
         # A reply that only acknowledges resolves like the Ack key, and
         # leaves the author's inbox, also as a message on the whole change.

@@ -78,7 +78,7 @@ function el(tag, attributes = {}, ...children) {
     else if (name === 'class') node.className = value;
     else if (value !== null && value !== undefined && value !== false) node.setAttribute(name, value);
   }
-  for (const child of children.flat()) {
+  for (const child of children.flat(Infinity)) {
     if (child === null || child === undefined || child === false) continue;
     node.append(child instanceof Node ? child : document.createTextNode(String(child)));
   }
@@ -471,10 +471,12 @@ function diffView(change) {
       // New text all over gets the strong shade, see Half in the core.
       if (half.whole && kind !== 'context' && kind !== 'empty') kind += ' whole';
       tr.append(el('td', {class: `num ${kind}${isCursorSide ? ' side' : ''}`, title: 'comment',
-                          onclick: () => half.number && openEditor(side, half.number, index)},
+                          onclick: () => state.moving ? half.number && dropThread(side, half.number)
+                                                      : half.number && openEditor(side, half.number, index)},
                    half.number || ''),
                 el('td', {class: `text ${kind}${isCursorSide ? ' side' : ''}`,
-                          onclick: () => { state.cursor = index; state.side = side; render(); }},
+                          onclick: () => { if (state.moving) { if (half.number) dropThread(side, half.number); return; }
+                                           state.cursor = index; state.side = side; render(); }},
                    halfText(half, kind)));
     }
     body.append(tr);
@@ -554,16 +556,19 @@ function threadView(comment) {
   const status = comment.is_draft ? 'draft' : comment.status;
   const pending = comment.draft_status ? ` → ${comment.draft_status}` : '';
   const editing = state.editor && state.editor.number === comment.number;
-  const messages = comment.messages.map((message, index) => {
+  // Moves by hand go between the messages, as the core orders them.
+  const movesAfter = (count) => (comment.moves || []).filter((move) => move.after === count)
+    .map((move) => el('div', {class: 'msg dim'}, move.shown));
+  const messages = [movesAfter(0), ...comment.messages.map((message, index) => {
     const last = index === comment.messages.length - 1;
-    if (editing && last && !message.sent) return null;
-    return el('div', {class: `msg${message.sent ? '' : ' draft'}`},
+    if (editing && last && !message.sent) return movesAfter(index + 1);
+    return [el('div', {class: `msg${message.sent ? '' : ' draft'}`},
       el('span', {class: 'who'}, message.author === 'reviewer' ? 'Reviewer' : 'Author',
          message.sent ? '' : ' (draft)',
          // The patch set it belongs to, like Gerrit's "Patchset 3"
          message.patch_set ? el('span', {class: 'dim'}, ` · PS${message.patch_set}`) : null, ': '),
-      message.shown);
-  });
+      message.shown), movesAfter(index + 1)];
+  })];
   const number = comment.number;
   const {origin, note} = shownPlace(comment);
   // A thread of another patch set: show it on its own, the diff against its parent
@@ -589,13 +594,32 @@ function threadView(comment) {
       comment.has_draft
         ? [el('button', {onclick: () => { state.editor = {number, text: comment.messages.at(-1).text};
                                           render(); }}, 'Edit draft'),
-           el('button', {onclick: () => act('delete-draft', {number})}, 'Delete draft')]
+           el('button', {onclick: () => act('delete-draft', {number})}, 'Delete draft'),
+           moveButton(number)]
         : [el('button', {onclick: () => { state.editor = {number, text: ''}; render(); }}, 'Reply'),
            el('button', {onclick: () => act('done', {number})}, 'Done'),
-           el('button', {onclick: () => act('ack', {number})}, 'Ack')],
+           el('button', {onclick: () => act('ack', {number})}, 'Ack'),
+           moveButton(number)],
       el('label', {}, el('input', {type: 'checkbox',
                                    checked: (comment.draft_status || comment.status) === 'resolved',
                                    onchange: () => act('resolve', {number})}), ' Resolved')));
+}
+
+// Moving a thread by hand: the button, then a click on a line drops it
+// there, Esc cancels.
+function moveButton(number) {
+  return el('button', {title: 'move the thread to the line it belongs to',
+                       onclick: () => { state.moving = number;
+                                        say(`Moving #${number}: click its line, Esc cancels.`); }},
+            'Move');
+}
+
+async function dropThread(side, line) {
+  const number = state.moving;
+  state.moving = null;
+  const place = line ? `${state.file}:${line}` : state.file;
+  const result = await act('move', {number, place, side, a: state.a, b: state.b});
+  say(`#${number} ${result.shown}.`);
 }
 
 function openEditor(side, line, index) {
@@ -728,6 +752,10 @@ document.addEventListener('keydown', (event) => {
   if (!state.keys || event.target.closest('textarea, input, select, dialog')) return;
   const name = keyName(event);
   if (!name) return;
+  if (state.moving && name === 'Esc') {
+    say(`#${state.moving} stays where it was.`);
+    state.moving = null; event.preventDefault(); return;
+  }
   if (/^[0-9]$/.test(name) && !pending.length && (name !== '0' || count)) {
     count += name; event.preventDefault(); return;
   }

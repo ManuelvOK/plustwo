@@ -51,7 +51,21 @@ def comment_json(core, comment, patch_sets=()):
             'has_draft': comment.has_draft(),
             'messages': [message_json(core, message,
                                       patch_sets[index] if index < len(patch_sets) else None)
-                         for index, message in enumerate(comment.messages)]}
+                         for index, message in enumerate(comment.messages)],
+            'moves': moves_json(core, comment)}
+
+
+def moves_json(core, comment):
+    """A thread's moves by hand for the page: the text and how many of its
+    messages come before it, see Comment.entries().
+    """
+    moves, before = [], 0
+    for entry in comment.entries():
+        if isinstance(entry, core.Message):
+            before += 1
+        else:
+            moves.append({'shown': core.move_text(entry), 'after': before})
+    return moves
 
 
 def history_list(core, history):
@@ -304,6 +318,15 @@ class Server:
             return {'number': core.add_comment(change_id, place, body['text'], sent=False,
                                                side=side, repository=repository,
                                                patch_set=patch_set)}
+        if 'move' == action:
+            path, line = core.split_place(body['place'])
+            place, side, patch_set = core.comment_place(
+                change, path, line, body.get('side', core.NEW_SIDE), body.get('a') or 'base',
+                body.get('b') or 'latest', repository)
+            move = core.move_thread(change_id, number, place, side, patch_set,
+                                    repository=repository)
+            return {'shown': core.move_text(move) if move
+                    else f'now on {core.place_label(place, side)}'}
         if 'reply' == action:
             core.add_message(change_id, number, core.REVIEWER, body['text'], sent=False,
                              repository=repository)
