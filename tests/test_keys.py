@@ -19,11 +19,12 @@ from plustwo.model.roles import AUTHOR, REVIEWER
 from plustwo.review.labels import (
     answered_by_author, comment_counts, thread_file_after, threads_in_list_order)
 from plustwo.review.votes import vote_values
-from plustwo.tui.change_view import ChangeView
 from plustwo.tui.choice import Choice
 from plustwo.tui.colours import cursor_tint
+from plustwo.tui.comments_pane import CommentsPane
 from plustwo.tui.diff_cells import marked_segments
 from plustwo.tui.diff_pane import DiffPane
+from plustwo.tui.files_pane import FilesPane
 from plustwo.tui.keymap import Keymap
 from plustwo.tui.keys import META, key_sequences
 from plustwo.tui.lists import keyed_cursor
@@ -466,21 +467,21 @@ class StickyCursorTest(unittest.TestCase):
         class Thread:  # pylint: disable=too-few-public-methods
             def __init__(self, identifier):
                 self.id = identifier
-        view = ChangeView.__new__(ChangeView)
         threads = [Thread('t1'), Thread('t2'), Thread('t3')]
-        view._comments = lambda: threads  # pylint: disable=protected-access
-        view._comment_index = 1  # pylint: disable=protected-access
+        comments = CommentsPane(None, lambda: [('a', threads)])
+        comments.index = 1
         threads.reverse()
-        self.assertEqual(1, view._comment_index)  # pylint: disable=protected-access
+        self.assertEqual(1, comments.index)
         threads.insert(0, Thread('t0'))
-        self.assertEqual(2, view._comment_index)  # pylint: disable=protected-access
+        self.assertEqual(2, comments.index)
         del threads[2]
-        self.assertEqual(2, view._comment_index)  # pylint: disable=protected-access
+        self.assertEqual(2, comments.index)
         self.assertEqual('t1', threads[2].id)
-        view._files = ['/COMMIT_MSG', 'a', 'b']  # pylint: disable=protected-access
-        view._file_index = 2  # pylint: disable=protected-access
-        view._files = ['/COMMIT_MSG', 'Z', 'a', 'b']  # pylint: disable=protected-access
-        self.assertEqual(3, view._file_index)  # pylint: disable=protected-access
+        files = FilesPane(None)
+        files.files = ['/COMMIT_MSG', 'a', 'b']
+        files.index = 2
+        files.files = ['/COMMIT_MSG', 'Z', 'a', 'b']
+        self.assertEqual(3, files.index)
 
 
 class SidebarHeightsTest(unittest.TestCase):
