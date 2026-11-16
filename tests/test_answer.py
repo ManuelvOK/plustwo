@@ -69,5 +69,26 @@ class AnswerFormatTest(unittest.TestCase):
             self.assertIn(part, message)
 
 
+class AcknowledgementTest(unittest.TestCase):
+
+    def test_words(self):
+        for text in ('Ack.', 'ack', 'OK, thanks!', 'Ack, thanks 👍', 'Got it. LGTM',
+                     'Thanks, makes sense!', 'Okay thank you'):
+            self.assertTrue(core.is_acknowledgement(text), text)
+        for text in ('', '👍', 'why?', 'Ack, but rename it', 'OK, but not here'):
+            self.assertFalse(core.is_acknowledgement(text), text)
+
+    def test_old_note(self):
+        # Written before typed acknowledgements resolved: no flag on it.
+        comment = core.Comment(1, 'a.txt:3', 1, [
+            core.Message(core.REVIEWER, 'Why?'), core.Message(core.AUTHOR, 'Kept it.'),
+            core.Message(core.REVIEWER, 'Ack.')])
+        self.assertEqual(core.RESOLVED, comment.status)
+        self.assertFalse(comment.wants_answer())
+        # The author's "ok" doesn't resolve.
+        comment.messages[-1] = core.Message(core.AUTHOR, 'OK')
+        self.assertEqual(core.UNRESOLVED, comment.status)
+
+
 if __name__ == '__main__':
     unittest.main()

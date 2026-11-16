@@ -33,7 +33,7 @@ THEMES = {'light': 'GitHub', 'dark': 'Monokai Extended'}
 def message_json(core, message, patch_set=None):
     """A message for the page: text to edit, shown as the core shows it."""
     return {'author': message.author, 'text': message.text, 'shown': core.message_text(message),
-            'sent': message.sent, 'unresolved': message.unresolved, 'patch_set': patch_set}
+            'sent': message.sent, 'unresolved': message.sets_unresolved(), 'patch_set': patch_set}
 
 
 def comment_json(core, comment, patch_sets=()):
