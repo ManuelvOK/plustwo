@@ -219,16 +219,19 @@ from plustwo.cli.output import guide_text, print_comments, print_overview
 from plustwo.config.registry import (
     register_repository, registered_repositories, repository_lists, review_repositories,
     unregister_repository)
-from plustwo.config.settings import list_settings, set_setting, setting
+from plustwo.config.settings import (
+    list_settings, list_user_settings, set_setting, set_user_setting, setting, user_setting)
 from plustwo.git.errors import ChangeError
-from plustwo.git.refs import current_branch, git_path, toplevel
+from plustwo.git.refs import current_branch
+from plustwo.git.repository import Repository
 from plustwo.model.comment import DONE, OLD_STATUSES, RESOLVED, STATUSES, UNRESOLVED
 from plustwo.model.place import OLD_SIDE, place_label
 from plustwo.model.roles import AUTHOR, REVIEWER
 from plustwo.model.vote import CODE_REVIEW, VERIFIED, label_name
 from plustwo.review.abandon import abandon_stack, restore_stack
 from plustwo.review.answers import answer
-from plustwo.review.changes import branch_with_change, find_change
+from plustwo.review.changes import (
+    branch_with_change, find_change, find_change_anywhere)
 from plustwo.review.checks import run_check, start_check
 from plustwo.review.compare import diff_command, range_diff_command
 from plustwo.review.moves import move_place, move_text, move_thread
@@ -254,6 +257,32 @@ _DEFAULT_PORT = 8022
 
 # ── the commands ──────────────────────────────────────────────────────────────
 
+def _working_repository() -> Repository:
+    """Finds the repository the working directory is in, which the commands
+    that name no change act on.
+
+    Returns:
+        The repository.
+
+    Raises:
+        ChangeError: the working directory is in no repository.
+    """
+    return Repository.of_working_directory()
+
+
+def _optional_repository() -> Repository | None:
+    """Finds the working directory's repository for commands that also work
+    outside one.
+
+    Returns:
+        The repository, None outside one.
+    """
+    try:
+        return Repository.of_working_directory()
+    except ChangeError:
+        return None
+
+
 def _run_tui(arguments: Arguments) -> None:
     """Starts the terminal user interface.
 
@@ -262,7 +291,7 @@ def _run_tui(arguments: Arguments) -> None:
     """
     # Imported here, so other commands don't load curses.
     from plustwo.tui.interface import run  # pylint: disable=import-outside-toplevel
-    run(arguments.list)
+    run(_optional_repository(), arguments.list)
 
 
 def _init_command(_arguments: Arguments) -> None:
@@ -271,9 +300,10 @@ def _init_command(_arguments: Arguments) -> None:
     Args:
         _arguments: the command line, unused.
     """
-    moved = init_repository()
+    repository = _working_repository()
+    moved = init_repository(repository)
     print('commit-msg hook installed, notes follow amends and rebases')
-    print(f'registered as {register_repository(do_number_on_clash=True)}')
+    print(f'registered as {register_repository(repository, do_number_on_clash=True)}')
     print("agents: add 'run plustwo guide' to your AGENTS.md or CLAUDE.md")
     for line in moved:
         print(f'moved setting {line}')
@@ -288,17 +318,22 @@ def _config_command(arguments: Arguments) -> None:
     Raises:
         ChangeError: the setting to show is not set.
     """
+    repository = _optional_repository()
     if arguments.key is None:
-        print('\n'.join(list_settings()))
-    elif arguments.unset:
-        set_setting(arguments.key, None, arguments.user)
-    elif arguments.value is None:
-        value = setting(arguments.key)
+        print('\n'.join(list_user_settings() if repository is None
+                        else list_settings(repository)))
+    elif arguments.unset or arguments.value is not None:
+        value = None if arguments.unset else arguments.value
+        if arguments.user:
+            set_user_setting(arguments.key, value)
+        else:
+            set_setting(_working_repository(), arguments.key, value)
+    else:
+        value = (user_setting(arguments.key) if repository is None
+                 else setting(repository, arguments.key))
         if value is None:
             raise ChangeError(f'{arguments.key} is not set')
         print(value)
-    else:
-        set_setting(arguments.key, arguments.value, arguments.user)
 
 
 def _upload_command(arguments: Arguments) -> None:
@@ -312,15 +347,16 @@ def _upload_command(arguments: Arguments) -> None:
         else None
     from_change = arguments.wip or arguments.ready or None
     reference = arguments.change or from_change
-    branch = branch_with_change(reference) if reference else None
-    uploaded, topic, has_grown, moved_from = upload(branch, arguments.topic, is_wip=is_wip,
-                                                    from_change=from_change)
-    if start_check(topic):
+    repository = _working_repository()
+    branch = branch_with_change(repository, reference) if reference else None
+    uploaded, topic, has_grown, moved_from = upload(
+        repository, branch, arguments.topic, is_wip=is_wip, from_change=from_change)
+    if start_check(repository, topic):
         print(f'{topic}: check started, it votes Verified')
     if has_grown:
         print(f'added to stack {topic}')
     if moved_from:
-        print(f'{topic}: moved from {moved_from} to {stack_base(topic)}')
+        print(f'{topic}: moved from {moved_from} to {stack_base(repository, topic)}')
     if is_wip is not None:
         changes_text = (f'{from_change} and the changes ' + ('above' if is_wip else 'below')
                         + ' it ' if from_change else '')
@@ -332,7 +368,8 @@ def _upload_command(arguments: Arguments) -> None:
         print(f'{other.short_id()}: patch set {number}'
               + (f', {patch_set_type}' if patch_set_type else '')
               + (f', keeps {" ".join(kept)}' if kept else ''))
-    lost = lost_threads([find_change(other.change_id) for other, _number, _type in uploaded])
+    lost = lost_threads([find_change(repository, other.change_id) for other, _number,
+                         _type in uploaded])
     if lost:
         print('threads that lost their line, move the ones you know with '
               '`plustwo answer` lines like "I3f2a #4 move a.cc:12":')
@@ -349,11 +386,13 @@ def _rebase_command(arguments: Arguments) -> None:
         ChangeError: neither a topic nor a change names the stack.
     """
     topic = arguments.topic
-    if topic is None:
-        topic = find_change(arguments.change).topic if arguments.change else None
+    repository = None
+    if topic is None and arguments.change:
+        change = find_change_anywhere(arguments.change)
+        topic, repository = change.topic, change.repository
     if topic is None:
         raise ChangeError('name the stack: --topic TOPIC or a CHANGE of it')
-    rebased = rebase_stack(topic)
+    rebased = rebase_stack(repository or _working_repository(), topic)
     print(f'{topic}: rebased, {len(rebased)} new patch set(s)' if rebased is not None
           else f'{topic}: conflicts, the author is asked to rebase')
 
@@ -364,7 +403,7 @@ def _pull_command(_arguments: Arguments) -> None:
     Args:
         _arguments: the command line, unused.
     """
-    print(pull())
+    print(pull(_working_repository()))
 
 
 def _check_command(arguments: Arguments) -> None:
@@ -376,11 +415,12 @@ def _check_command(arguments: Arguments) -> None:
     Raises:
         ChangeError: no check is set up.
     """
-    topic = arguments.topic or topic_of_branch(current_branch() or '')
-    value = run_check(topic)
+    repository = _working_repository()
+    topic = arguments.topic or topic_of_branch(current_branch(repository) or '')
+    value = run_check(repository, topic)
     if value is None:
         raise ChangeError('no check set up: plustwo config checks.command "make check"')
-    print(f'{topic}: Verified{value:+d}, log in {git_path("plustwo/check.log")}')
+    print(f'{topic}: Verified{value:+d}, log in {repository.git_path("plustwo/check.log")}')
 
 
 def _check_run_command(arguments: Arguments) -> None:
@@ -390,10 +430,11 @@ def _check_run_command(arguments: Arguments) -> None:
     Args:
         arguments: the command line, with topic and commit.
     """
+    repository = _working_repository()
     try:
-        run_check(arguments.topic, arguments.commit)
+        run_check(repository, arguments.topic, arguments.commit)
     finally:
-        pid_file = git_path('plustwo/check.pid')
+        pid_file = repository.git_path('plustwo/check.pid')
         if pid_file.exists() and arguments.commit in pid_file.read_text():
             pid_file.unlink()
 
@@ -404,7 +445,8 @@ def _submit_command(arguments: Arguments) -> None:
     Args:
         arguments: the command line, with change.
     """
-    submitted = submit(find_change(arguments.change).change_id)
+    change = find_change_anywhere(arguments.change)
+    submitted = submit(change.repository, change.change_id)
     print('Submitted: ' + ', '.join(change.short_id() for change in submitted))
 
 
@@ -415,8 +457,8 @@ def _comment_command(arguments: Arguments) -> None:
         arguments: the command line, with change, place, text, author and
             status.
     """
-    change = find_change(arguments.change)
-    number = add_comment(change.change_id, arguments.place, arguments.text,
+    change = find_change_anywhere(arguments.change)
+    number = add_comment(change.repository, change.change_id, arguments.place, arguments.text,
                          author=AUTHOR if arguments.author else REVIEWER,
                          status=arguments.status)
     print(f'{change.short_id()}: comment #{number} added')
@@ -430,7 +472,8 @@ def _reply_command(arguments: Arguments) -> None:
             unresolve.
     """
     status = RESOLVED if arguments.resolve else UNRESOLVED if arguments.unresolve else None
-    add_message(find_change(arguments.change).change_id, arguments.number, AUTHOR,
+    change = find_change_anywhere(arguments.change)
+    add_message(change.repository, change.change_id, arguments.number, AUTHOR,
                 arguments.text, status=status)
 
 
@@ -440,7 +483,8 @@ def _done_command(arguments: Arguments) -> None:
     Args:
         arguments: the command line, with change, number and text.
     """
-    add_message(find_change(arguments.change).change_id, arguments.number, AUTHOR,
+    change = find_change_anywhere(arguments.change)
+    add_message(change.repository, change.change_id, arguments.number, AUTHOR,
                 arguments.text or DONE, status=RESOLVED)
 
 
@@ -451,9 +495,9 @@ def _move_command(arguments: Arguments) -> None:
         arguments: the command line, with change, number, place, patch_set,
             old and author.
     """
-    change = find_change(arguments.change)
+    change = find_change_anywhere(arguments.change)
     place, side = move_place(arguments.place)
-    move = move_thread(change.change_id, arguments.number, place,
+    move = move_thread(change.repository, change.change_id, arguments.number, place,
                        OLD_SIDE if arguments.old else side, arguments.patch_set or 0,
                        AUTHOR if arguments.author else REVIEWER)
     print(f'{change.short_id()}: comment #{arguments.number} '
@@ -466,7 +510,7 @@ def _answer_command(_arguments: Arguments) -> None:
     Args:
         _arguments: the command line, unused.
     """
-    n_answers = answer(sys.stdin.read())
+    n_answers = answer(_working_repository(), sys.stdin.read())
     print(f'{n_answers} answer(s) added')
 
 
@@ -476,8 +520,9 @@ def _status_command(arguments: Arguments) -> None:
     Args:
         arguments: the command line, with change, number, status and text.
     """
-    change = find_change(arguments.change)
-    set_status(change.change_id, arguments.number, arguments.status, arguments.text)
+    change = find_change_anywhere(arguments.change)
+    set_status(change.repository, change.change_id, arguments.number, arguments.status,
+               arguments.text)
     print(f'{change.short_id()}: comment #{arguments.number} {status_name(arguments.status)}')
 
 
@@ -488,9 +533,9 @@ def _vote_command(arguments: Arguments) -> None:
         arguments: the command line, with change, label, value, by,
             patch_set and message.
     """
-    change = find_change(arguments.change)
-    number = set_vote(change.change_id, arguments.label, arguments.value, arguments.by,
-                      arguments.patch_set, arguments.message or '')
+    change = find_change_anywhere(arguments.change)
+    number = set_vote(change.repository, change.change_id, arguments.label, arguments.value,
+                      arguments.by, arguments.patch_set, arguments.message or '')
     print(f'{change.short_id()}: {label_name(arguments.label)}{arguments.value:+d} '
           f'on PS{number}')
 
@@ -501,7 +546,8 @@ def _require_verified_command(arguments: Arguments) -> None:
     Args:
         arguments: the command line, with change and state.
     """
-    require_verified(find_change(arguments.change).change_id, 'off' != arguments.state)
+    change = find_change_anywhere(arguments.change)
+    require_verified(change.repository, change.change_id, 'off' != arguments.state)
 
 
 def _diff_command(arguments: Arguments) -> None:
@@ -510,7 +556,7 @@ def _diff_command(arguments: Arguments) -> None:
     Args:
         arguments: the command line, with change, first, second and tool.
     """
-    change = find_change(arguments.change)
+    change = find_change_anywhere(arguments.change)
     subprocess.run(diff_command(change, arguments.first, arguments.second, arguments.tool))
 
 
@@ -520,11 +566,11 @@ def _range_diff_command(arguments: Arguments) -> None:
     Args:
         arguments: the command line, with change, first and second.
     """
-    change = find_change(arguments.change)
+    change = find_change_anywhere(arguments.change)
     subprocess.run(range_diff_command(change, arguments.first, arguments.second))
 
 
-def _author_repositories(arguments: Arguments) -> list[str]:
+def _author_repositories(arguments: Arguments) -> list[Repository]:
     """Finds the repositories an author's command looks at.
 
     Args:
@@ -535,10 +581,11 @@ def _author_repositories(arguments: Arguments) -> list[str]:
         with --all, else the working directory's.
     """
     if arguments.repositories:
-        return list(arguments.repositories)
-    if arguments.all or toplevel() is None:
+        return [Repository.of_directory(path) for path in arguments.repositories]
+    here = _optional_repository()
+    if arguments.all or here is None:
         return review_repositories(arguments.list)
-    return ['.']
+    return [here]
 
 
 def _inbox_command(arguments: Arguments) -> None:
@@ -547,7 +594,7 @@ def _inbox_command(arguments: Arguments) -> None:
     Args:
         arguments: the command line, see _author_repositories(), and topic.
     """
-    repositories: list[str | None] = list(_author_repositories(arguments))
+    repositories = _author_repositories(arguments)
     print('\n'.join(inbox_lines(repositories, arguments.topic)) or 'Nothing to answer.')
 
 
@@ -559,7 +606,7 @@ def _watch_command(arguments: Arguments) -> None:
             since and minutes.
     """
     since = parse_time(arguments.since) if arguments.since else None
-    repositories: list[str | None] = list(_author_repositories(arguments))
+    repositories = _author_repositories(arguments)
     with contextlib.suppress(KeyboardInterrupt):
         watch(repositories, topic=arguments.topic, since=since, minutes=arguments.minutes)
 
@@ -570,7 +617,8 @@ def _register_command(arguments: Arguments) -> None:
     Args:
         arguments: the command line, with path, name and list.
     """
-    name = register_repository(arguments.path, arguments.name, arguments.list)
+    name = register_repository(Repository.of_directory(arguments.path), arguments.name,
+                               arguments.list)
     print(f'registered as {name}')
 
 
@@ -590,12 +638,13 @@ def _repos_command(_arguments: Arguments) -> None:
         _arguments: the command line, unused.
     """
     lists = repository_lists()
-    for name, path in registered_repositories().items():
+    for name, repository in registered_repositories().items():
         member_of = [list_name for list_name, names in lists.items() if name in names]
-        print(f'{name:<16} {path}' + (f'  ({", ".join(member_of)})' if member_of else ''))
+        print(f'{name:<16} {repository.path}'
+              + (f'  ({", ".join(member_of)})' if member_of else ''))
 
 
-def _stack_command(run: Callable[[str, str | None], None]) -> CommandRun:
+def _stack_command(run: Callable[[Repository, str], None]) -> CommandRun:
     """Makes the command of an action on a whole stack, named [REPO:]TOPIC.
 
     Args:
@@ -614,10 +663,10 @@ def _stack_command(run: Callable[[str, str | None], None]) -> CommandRun:
             ChangeError: the repository is not registered.
         """
         name, colon, topic = arguments.topic.rpartition(':')
-        repository = registered_repositories().get(name) if colon else None
-        if colon and repository is None:
+        repository = registered_repositories().get(name) if colon else _working_repository()
+        if repository is None:
             raise ChangeError(f'no registered repository {name}')
-        run(topic, repository)
+        run(repository, topic)
         print(f'{topic}: ' + ('abandoned' if abandon_stack == run else 'restored'))
     return stack_run
 
@@ -639,7 +688,8 @@ def _serve_command(arguments: Arguments) -> None:
     """
     # Imported here, so other commands don't load the HTTP server.
     from plustwo.web.server import serve  # pylint: disable=import-outside-toplevel
-    repositories = arguments.repositories or review_repositories(arguments.list)
+    repositories = ([Repository.of_directory(path) for path in arguments.repositories]
+                    or review_repositories(arguments.list))
     for repository in repositories:
         ensure_layout(repository)
     serve(repositories, arguments.port)

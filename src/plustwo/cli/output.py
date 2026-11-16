@@ -5,10 +5,10 @@ import argparse
 
 from plustwo.config.view_state import SECTION_TITLES, folded_sections
 from plustwo.git.errors import ChangeError
-from plustwo.git.repository import current_repository
 from plustwo.model.vote import CODE_REVIEW, VERIFIED
 from plustwo.paths import GUIDE
-from plustwo.review.changes import all_changes, find_change, submitted_change
+from plustwo.review.changes import (
+    all_changes, find_change_anywhere, submitted_change_anywhere)
 from plustwo.review.dashboard import dashboard
 from plustwo.review.labels import comment_counts, message_text, vote_label
 
@@ -46,11 +46,11 @@ def print_comments(arguments: argparse.Namespace) -> None:
         ChangeError: no change fits.
     """
     try:
-        change = find_change(arguments.change)
+        change = find_change_anywhere(arguments.change)
     except ChangeError:
         if arguments.change.isdigit():
             raise
-        change = submitted_change(arguments.change, current_repository())
+        change = submitted_change_anywhere(arguments.change)
     print(f'{change.short_id()} ({change.state()}): {change.subject}')
     if change.needs_verified:
         print('Needs Verified+1.')

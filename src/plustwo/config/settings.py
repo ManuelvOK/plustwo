@@ -252,18 +252,35 @@ def _section_of(files: list[Path], section: str) -> dict[str, str]:
     return values
 
 
-def set_setting(repository: Repository, key: str, value: str | None,
-                is_for_user: bool = False) -> None:
-    """Stores a setting.
+def set_setting(repository: Repository, key: str, value: str | None) -> None:
+    """Stores a setting in the repository's file.
 
     Args:
         repository: the repository.
         key: the setting's key.
         value: the new value, None to remove the setting.
-        is_for_user: whether the setting goes into the user's file instead
-            of the repository's.
     """
-    path = _user_config_path() if is_for_user else repository.config_file
+    _store(repository.config_file, key, value)
+
+
+def set_user_setting(key: str, value: str | None) -> None:
+    """Stores a setting in the user's file.
+
+    Args:
+        key: the setting's key.
+        value: the new value, None to remove the setting.
+    """
+    _store(_user_config_path(), key, value)
+
+
+def _store(path: Path, key: str, value: str | None) -> None:
+    """Stores a setting in a file.
+
+    Args:
+        path: the file.
+        key: the setting's key.
+        value: the new value, None to remove the setting.
+    """
     if value is None:
         if path.exists():
             run_git('config', '--file', str(path), '--unset', key, check=False)
@@ -281,8 +298,29 @@ def list_settings(repository: Repository) -> list[str]:
     Returns:
         Lines like "key=value  (file)", the user's file first.
     """
+    return _list_files(_config_files(repository))
+
+
+def list_user_settings() -> list[str]:
+    """Lists the settings of the user's file, see list_settings().
+
+    Returns:
+        Lines like "key=value  (file)".
+    """
+    return _list_files([_user_config_path()])
+
+
+def _list_files(files: list[Path]) -> list[str]:
+    """Lists the settings of some files.
+
+    Args:
+        files: the files, the one that wins first.
+
+    Returns:
+        Lines like "key=value  (file)", the last file first.
+    """
     lines = []
-    for path in reversed(_config_files(repository)):
+    for path in reversed(files):
         if path.exists():
             output = run_git('config', '--file', str(path), '--list', check=False)
             lines += [f'{line}  ({path})' for line in filter(None, output.split('\n'))]
