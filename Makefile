@@ -34,11 +34,15 @@ NAMES = plustwo git-change
 all: check
 
 check:
-	python3 -c 'import sys; [compile(open(f).read(), f, "exec") for f in sys.argv[1:]]' \
+	@echo 'compile'
+	@python3 -c 'import sys; [compile(open(f).read(), f, "exec") for f in sys.argv[1:]]' \
 	  plustwo $(SOURCES)
-	python3 tools/check_layers.py docs/architecture.md src/plustwo
-	mypy --config-file mypy.ini src/plustwo $(TOOLS)
-	python3 tools/check_style.py $(STYLED)
+	@echo 'layers'
+	@python3 tools/check_layers.py docs/architecture.md src/plustwo
+	@echo 'mypy'
+	@mypy --config-file mypy.ini --no-error-summary src/plustwo $(TOOLS)
+	@echo 'style'
+	@python3 tools/check_style.py $(STYLED)
 
 # The tests get state and settings directories of their own, so they never
 # register scratch repositories with the user's dashboard.
