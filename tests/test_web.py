@@ -3,8 +3,6 @@
 API reads and writes through the core.
 """
 
-import importlib.machinery
-import importlib.util
 import json
 import os
 import sys
@@ -16,14 +14,15 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_stacks import ENVIRONMENT, ROOT, Repository  # noqa: E402
+from test_stacks import ENVIRONMENT, ROOT, Repository
 
-sys.path.insert(0, str(ROOT))
-_loader = importlib.machinery.SourceFileLoader('plustwo_core', str(ROOT / 'plustwo'))
-_spec = importlib.util.spec_from_loader('plustwo_core', _loader)
-core = importlib.util.module_from_spec(_spec)
-_loader.exec_module(core)
-import plustwo_web  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'src'))
+from plustwo.model.acknowledgement import is_acknowledgement
+from plustwo.model.message import Message
+from plustwo.review.changes import find_change
+from plustwo.review.labels import message_text
+from plustwo.review.reply import reply
+from plustwo.web.server import make_server
 
 
 class WebTest(unittest.TestCase):
@@ -37,7 +36,7 @@ class WebTest(unittest.TestCase):
         cls.repository.git('switch', '--quiet', '-c', 'feature')
         cls.repository.commit('base.txt', 'one\nTWO\nthree\n', 'Change two')
         cls.repository.change('upload')
-        cls.server = plustwo_web.make_server(core, [cls._directory.name], port=0)
+        cls.server = make_server([cls._directory.name], port=0)
         cls.port = cls.server.plustwo.port
         cls.token = cls.server.plustwo.token
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
@@ -150,15 +149,15 @@ class WebTest(unittest.TestCase):
         # The reply box's step: drafts, message and the vote together
         change_id = self.change_id()
         directory = self._directory.name
-        own = core.find_change(change_id, directory).own_vote()
-        self.assertEqual((0, None), core.reply(change_id, '', own, directory))
+        own = find_change(change_id, directory).own_vote()
+        self.assertEqual((0, None), reply(change_id, '', own, directory))
         other = -1 if own != -1 else 1
-        sent, voted = core.reply(change_id, '', other, directory)
+        sent, voted = reply(change_id, '', other, directory)
         self.assertEqual(0, sent)
         self.assertIsNotNone(voted)
-        self.assertEqual(other, core.find_change(change_id, directory).own_vote())
-        core.reply(change_id, '', own, directory)
-        self.assertEqual(own, core.find_change(change_id, directory).own_vote())
+        self.assertEqual(other, find_change(change_id, directory).own_vote())
+        reply(change_id, '', own, directory)
+        self.assertEqual(own, find_change(change_id, directory).own_vote())
 
     def test_move_thread(self):
         # The move button: the thread goes to the clicked line, the page
@@ -207,8 +206,8 @@ class WebTest(unittest.TestCase):
         inbox = self.repository.change('inbox')
         self.assertNotIn(f'#{number} ', inbox)
         self.assertNotIn('OK, thanks!', inbox)
-        self.assertTrue(core.is_acknowledgement(' Thanks! '))
-        self.assertFalse(core.is_acknowledgement('Ack, but rename it'))
+        self.assertTrue(is_acknowledgement(' Thanks! '))
+        self.assertFalse(is_acknowledgement('Ack, but rename it'))
 
     def test_shown_text_from_core(self):
         # A message without text only resolves, the page shows it as the
@@ -231,7 +230,7 @@ class WebTest(unittest.TestCase):
         thread = next(comment for comment in change['comments'] if comment['number'] == number)
         last = thread['messages'][-1]
         self.assertEqual('', last['text'])
-        self.assertEqual(core.message_text(core.Message('reviewer', '', unresolved=False)),
+        self.assertEqual(message_text(Message('reviewer', '', unresolved=False)),
                          last['shown'])
         self.assertEqual('Two?', thread['messages'][0]['shown'])
 

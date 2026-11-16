@@ -4,23 +4,33 @@ reviewer's own keys.
 """
 
 import curses
-import importlib.machinery
-import importlib.util
 import sys
 import types
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import plustwo_tui as tui  # pylint: disable=wrong-import-position
-
-_loader = importlib.machinery.SourceFileLoader(
-    'plustwo', str(Path(__file__).resolve().parent.parent / 'plustwo'))
-_spec = importlib.util.spec_from_loader('plustwo', _loader)
-core = importlib.util.module_from_spec(_spec)
-_loader.exec_module(core)
-# run() hands the interface the core, for its colour math
-tui.CORE = core
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'src'))
+from plustwo.tui import colours as tui_colours
+from plustwo.config.key_presets import ACTIONS, ACTION_NAMES, PRESETS
+from plustwo.diff.search import comment_matches, gaps_with_matches, search_matches
+from plustwo.model.comment import Comment
+from plustwo.model.message import Message
+from plustwo.model.roles import AUTHOR, REVIEWER
+from plustwo.review.labels import (
+    answered_by_author, comment_counts, thread_file_after, threads_in_list_order)
+from plustwo.review.votes import vote_values
+from plustwo.tui.change_view import ChangeView
+from plustwo.tui.choice import Choice
+from plustwo.tui.colours import cursor_tint
+from plustwo.tui.diff_cells import marked_segments
+from plustwo.tui.diff_pane import DiffPane
+from plustwo.tui.keymap import Keymap
+from plustwo.tui.keys import META, key_sequences
+from plustwo.tui.lists import keyed_cursor
+from plustwo.tui.messages import PENDING
+from plustwo.tui.sidebar import sidebar_heights
+from plustwo.tui.terminal import parse_background_reply, parse_colour
+from plustwo.tui.text_box import TextBox, box_keys
 
 
 def feed(keymap, *keys):
@@ -39,26 +49,26 @@ class PresetTest(unittest.TestCase):
     """Every preset is complete and unambiguous."""
 
     def test_every_action_has_a_key(self):
-        for preset in tui.PRESETS:
-            keymap = tui.Keymap(preset)
+        for preset in PRESETS:
+            keymap = Keymap(preset)
             with self.subTest(preset):
                 self.assertEqual([], keymap.errors)
-                self.assertEqual([], [name for name in tui.ACTION_NAMES
+                self.assertEqual([], [name for name in ACTION_NAMES
                                       if not keymap.labels(name)])
 
     def test_no_key_is_both_a_binding_and_a_prefix(self):
-        for preset in tui.PRESETS:
-            keymap = tui.Keymap(preset)
+        for preset in PRESETS:
+            keymap = Keymap(preset)
             with self.subTest(preset):
                 self.assertEqual(set(), set(keymap._sequences) & keymap._prefixes)
 
     def test_no_key_lost_between_actions(self):
         # Two actions of one preset must not share a key: the second would
         # take it from the first without anyone noticing.
-        for preset, specs in tui.PRESETS.items():
+        for preset, specs in PRESETS.items():
             seen = {}
             for name, spec in specs.items():
-                for sequence in tui.key_sequences(spec):
+                for sequence in key_sequences(spec):
                     with self.subTest(preset=preset, action=name, sequence=sequence):
                         self.assertNotIn(sequence, seen, f'also {seen.get(sequence)}')
                     seen[sequence] = name
@@ -67,7 +77,7 @@ class PresetTest(unittest.TestCase):
 class VimTest(unittest.TestCase):
 
     def setUp(self):
-        self.keymap = tui.Keymap('vim')
+        self.keymap = Keymap('vim')
 
     def test_keys(self):
         self.assertEqual(('down', None), feed(self.keymap, 'j'))
@@ -77,14 +87,14 @@ class VimTest(unittest.TestCase):
 
     def test_count_and_gg(self):
         self.assertEqual(('down', 15), feed(self.keymap, '1', '5', 'j'))
-        self.assertEqual(tui.PENDING, feed(self.keymap, 'g'))
+        self.assertEqual(PENDING, feed(self.keymap, 'g'))
         self.assertEqual('g', self.keymap.typed())
         self.assertEqual(('top', None), feed(self.keymap, 'g'))
         self.assertEqual(('bottom', 120), feed(self.keymap, '1', '2', '0', 'G'))
 
     def test_broken_sequence_and_esc(self):
         self.assertEqual((None, None), feed(self.keymap, 'g', 'x'))
-        self.assertEqual(tui.PENDING, feed(self.keymap, '3', 27))
+        self.assertEqual(PENDING, feed(self.keymap, '3', 27))
         self.assertEqual(('down', None), feed(self.keymap, 'j'))
 
     def test_brackets(self):
@@ -95,13 +105,13 @@ class VimTest(unittest.TestCase):
 class EmacsTest(unittest.TestCase):
 
     def setUp(self):
-        self.keymap = tui.Keymap('emacs')
+        self.keymap = Keymap('emacs')
 
     def test_moving(self):
         self.assertEqual(('down', None), feed(self.keymap, ctrl('n')))
         self.assertEqual(('page-down', None), feed(self.keymap, ctrl('v')))
-        self.assertEqual(('page-up', None), feed(self.keymap, tui.META | ord('v')))
-        self.assertEqual(('top', None), feed(self.keymap, tui.META | ord('<')))
+        self.assertEqual(('page-up', None), feed(self.keymap, META | ord('v')))
+        self.assertEqual(('top', None), feed(self.keymap, META | ord('<')))
         self.assertEqual(('back', None), feed(self.keymap, ctrl('g')))
         self.assertEqual(('quit-now', None), feed(self.keymap, ctrl('x'), ctrl('c')))
 
@@ -118,7 +128,7 @@ class EmacsTest(unittest.TestCase):
 class GerritTest(unittest.TestCase):
 
     def test_keys(self):
-        keymap = tui.Keymap('gerrit')
+        keymap = Keymap('gerrit')
         for key, action in (('n', 'next-chunk'), ('p', 'prev-chunk'), ('N', 'next-thread'),
                             ('P', 'prev-thread'), (']', 'next-file'), ('[', 'prev-file'),
                             ('a', 'send'), ('u', 'back'), ('o', 'open'), ('c', 'comment'),
@@ -130,7 +140,7 @@ class GerritTest(unittest.TestCase):
 class OverrideTest(unittest.TestCase):
 
     def test_own_key_wins(self):
-        keymap = tui.Keymap('vim', {'reply': 'R'})
+        keymap = Keymap('vim', {'reply': 'R'})
         self.assertEqual([], keymap.errors)
         self.assertEqual(('reply', None), feed(keymap, 'R'))
         # reload lost R, so it isn't shown with it any more
@@ -139,19 +149,19 @@ class OverrideTest(unittest.TestCase):
         self.assertEqual((None, None), feed(keymap, 'r'))
 
     def test_several_and_named_keys(self):
-        keymap = tui.Keymap('vim', {'send': 'C-s,F', 'down': 'Down,Space'})
+        keymap = Keymap('vim', {'send': 'C-s,F', 'down': 'Down,Space'})
         self.assertEqual(('send', None), feed(keymap, ctrl('s')))
         self.assertEqual(('send', None), feed(keymap, 'F'))
         self.assertEqual(('down', None), feed(keymap, 32))
         self.assertEqual(('down', None), feed(keymap, curses.KEY_DOWN))
 
     def test_errors(self):
-        keymap = tui.Keymap('nano', {'fly': 'f', 'reply': 'Hyper-x'})
+        keymap = Keymap('nano', {'fly': 'f', 'reply': 'Hyper-x'})
         self.assertEqual('vim', keymap.preset)
         self.assertEqual(3, len(keymap.errors))
 
     def test_footer_and_help_show_the_keys(self):
-        keymap = tui.Keymap('emacs')
+        keymap = Keymap('emacs')
         self.assertEqual('C-n/C-p move', keymap.footer(((('down', 'up'), 'move'),)))
         help_text = '\n'.join(keymap.help_lines(80))
         self.assertIn('M-v', help_text)
@@ -161,7 +171,7 @@ class OverrideTest(unittest.TestCase):
 class TextBoxTest(unittest.TestCase):
 
     def test_emacs_editing(self):
-        box = tui.TextBox('hello world', emacs=True)
+        box = TextBox('hello world', emacs=True)
         box.key('\x01')
         self.assertEqual(0, box.position)
         box.key('\x06')
@@ -172,7 +182,7 @@ class TextBoxTest(unittest.TestCase):
         self.assertEqual('', box.text)
 
     def test_vim_mode_leaves_control_keys(self):
-        box = tui.TextBox('abc')
+        box = TextBox('abc')
         box.key('\x06')
         self.assertEqual('abc', box.text)
         self.assertEqual(3, box.position)
@@ -183,7 +193,7 @@ class CursorTest(unittest.TestCase):
     """A thread in the diff is one cursor stop."""
 
     def pane(self):
-        diff = tui.DiffPane(None)
+        diff = DiffPane(None)
         # Two diff rows, a thread of 30 rows, two diff rows
         diff.rows = ([('diff', 0), ('diff', 1)] + [('thread', 7, row) for row in range(30)]
                      + [('diff', 2), ('diff', 3)])
@@ -239,86 +249,86 @@ class SearchTest(unittest.TestCase):
     """
 
     def test_matches(self):
-        self.assertEqual([(0, 3), (8, 11)], core.search_matches('Foo bar foo', 'foo'))
-        self.assertEqual([(0, 3)], core.search_matches('Foo bar foo', 'Foo'))
-        self.assertEqual([(0, 2), (2, 4)], core.search_matches('aaaa', 'aa'))
-        self.assertEqual([], core.search_matches('abc', ''))
+        self.assertEqual([(0, 3), (8, 11)], search_matches('Foo bar foo', 'foo'))
+        self.assertEqual([(0, 3)], search_matches('Foo bar foo', 'Foo'))
+        self.assertEqual([(0, 2), (2, 4)], search_matches('aaaa', 'aa'))
+        self.assertEqual([], search_matches('abc', ''))
 
     def test_goes_from_match_to_match(self):
-        diff = tui.DiffPane(None)
+        diff = DiffPane(None)
         # Line 0 has the text on the new side, line 2 on both, a thread between
         diff._texts = [('a', 'x one'), None, ('two x', 'x three'), ('b', 'b')]
         diff._continues = [False, True, False, False]
         diff.rows = [('diff', 0), ('diff', 1), ('thread', 4, 0), ('diff', 2), ('diff', 3)]
         found = []
         for _ in range(4):
-            wrapped = diff.go_to_match(core, 'x', True, 10)
+            wrapped = diff.go_to_match('x', True, 10)
             found.append((diff.cursor, diff.side, wrapped))
         self.assertEqual([(3, 'old', False), (3, 'new', False), (0, 'new', True),
                           (3, 'old', False)], found)
-        self.assertFalse(diff.go_to_match(core, 'x', False, 10))
+        self.assertFalse(diff.go_to_match('x', False, 10))
         self.assertEqual((0, 'new'), (diff.cursor, diff.side))
-        self.assertIsNone(diff.go_to_match(core, 'nowhere', True, 10))
+        self.assertIsNone(diff.go_to_match('nowhere', True, 10))
 
     def test_gaps_and_comments(self):
         old = ['a', 'b', 'needle', 'c']
         new = ['a', 'b', 'c', 'Needle']
         # Gaps start at old line 1 and new line 3, two lines each
-        self.assertEqual({1}, core.gaps_with_matches([(1, 1, 3), (4, 3, 1)], old, new, 'needle'))
-        self.assertEqual({4}, core.gaps_with_matches([(1, 1, 2), (4, 4, 1)], old, new, 'Needle'))
+        self.assertEqual({1}, gaps_with_matches([(1, 1, 3), (4, 3, 1)], old, new, 'needle'))
+        self.assertEqual({4}, gaps_with_matches([(1, 1, 2), (4, 4, 1)], old, new, 'Needle'))
         message = types.SimpleNamespace(text='Why a Default?')
-        self.assertTrue(core.comment_matches(types.SimpleNamespace(messages=[message]), 'default'))
-        self.assertFalse(core.comment_matches(types.SimpleNamespace(messages=[message]), 'x'))
+        self.assertTrue(comment_matches(types.SimpleNamespace(messages=[message]), 'default'))
+        self.assertFalse(comment_matches(types.SimpleNamespace(messages=[message]), 'x'))
 
     def test_comments_mode_finds_threads_only(self):
-        diff = tui.DiffPane(None)
+        diff = DiffPane(None)
         diff._texts = [('x', 'x'), ('a', 'b')]
         diff._continues = [False, False]
         diff.rows = [('diff', 0), ('thread', 4, 0), ('thread', 4, 1), ('diff', 1)]
         diff.lines = [[], [('#4 x', -1, -1, 0)], [('more x', -1, -1, 0)], []]
-        self.assertFalse(diff.go_to_match(core, 'x', True, 10, 'comments'))
+        self.assertFalse(diff.go_to_match('x', True, 10, 'comments'))
         self.assertEqual(1, diff.cursor)
         # Both rows belong to one thread: the next match is the same one.
-        self.assertTrue(diff.go_to_match(core, 'x', True, 10, 'comments'))
+        self.assertTrue(diff.go_to_match('x', True, 10, 'comments'))
         # All: after the thread, the diff line above it, from the top
-        self.assertTrue(diff.go_to_match(core, 'x', True, 10, 'all'))
+        self.assertTrue(diff.go_to_match('x', True, 10, 'all'))
         self.assertEqual((0, 'old'), (diff.cursor, diff.side))
-        self.assertFalse(diff.go_to_match(core, 'x', True, 10, 'all'))
-        self.assertFalse(diff.go_to_match(core, 'x', True, 10, 'all'))
+        self.assertFalse(diff.go_to_match('x', True, 10, 'all'))
+        self.assertFalse(diff.go_to_match('x', True, 10, 'all'))
         self.assertEqual(1, diff.cursor)
 
     def test_marked_segments(self):
         segments = [('ab', 1, -1, 0), ('cd', 2, -1, 0)]
         self.assertEqual([('a', 1, -1, 0), ('b', 1, -1, curses.A_REVERSE),
                           ('c', 2, -1, curses.A_REVERSE), ('d', 2, -1, 0)],
-                         tui.marked_segments(core, segments, 'bc'))
-        self.assertIs(segments, tui.marked_segments(core, segments, 'x'))
+                         marked_segments(segments, 'bc'))
+        self.assertIs(segments, marked_segments(segments, 'x'))
 
 
 class BackgroundReplyTest(unittest.TestCase):
     """The terminal's answer to OSC 11, its background."""
 
     def test_replies(self):
-        parse = tui.parse_background_reply
+        parse = parse_background_reply
         self.assertEqual((0x1c, 0x1c, 0x1c), parse('\x1b]11;rgb:1c1c/1c1c/1c1c\x1b\\'))
         self.assertEqual((255, 0, 128), parse('\x1b]11;rgb:ff/00/80\x07'))
         self.assertEqual((255, 136, 0), parse('\x1b]11;rgb:f/8/0\x07\x1b[?62;22c'))
         self.assertEqual((0x1c, 0x1c, 0x1c), parse('junk\x1b]11;rgb:1c1c/1c1c/1c1c\x07\x1b[?1;2c'))
         for garbage in ('', '\x1b[?1;2c', '\x1b]11;rgb:zz/00/00\x07', '\x1b]11;rgb:ff/00/00'):
             self.assertIsNone(parse(garbage), garbage)
-        self.assertEqual((0x1c, 0x1c, 0x1c), tui.parse_colour('#1c1c1c'))
-        self.assertIsNone(tui.parse_colour('dark'))
+        self.assertEqual((0x1c, 0x1c, 0x1c), parse_colour('#1c1c1c'))
+        self.assertIsNone(parse_colour('dark'))
 
     def test_tint_follows_the_background(self):
-        tui.TRUE_COLOUR = True
+        tui_colours.TRUE_COLOUR = True
         try:
-            tui.TERMINAL_BACKGROUND = (0, 0, 0)
-            self.assertEqual((18, 18, 18), tui.cursor_tint(-1))
-            tui.TERMINAL_BACKGROUND = (250, 250, 250)
-            self.assertEqual((232, 232, 232), tui.cursor_tint(-1))
+            tui_colours.TERMINAL_BACKGROUND = (0, 0, 0)
+            self.assertEqual((18, 18, 18), cursor_tint(-1))
+            tui_colours.TERMINAL_BACKGROUND = (250, 250, 250)
+            self.assertEqual((232, 232, 232), cursor_tint(-1))
         finally:
-            tui.TRUE_COLOUR = False
-            tui.TERMINAL_BACKGROUND = (0, 0, 0)
+            tui_colours.TRUE_COLOUR = False
+            tui_colours.TERMINAL_BACKGROUND = (0, 0, 0)
 
 if __name__ == '__main__':
     unittest.main()
@@ -328,54 +338,54 @@ class UsabilityTest(unittest.TestCase):
     """Keys and pieces of the change screen added for everyday use."""
 
     def test_vim_habits(self):
-        vim = tui.Keymap('vim')
+        vim = Keymap('vim')
         self.assertEqual(('comment', None), feed(vim, 'o'))
         self.assertEqual(('comment-above', None), feed(vim, 'O'))
         self.assertEqual(('next-unresolved', None), feed(vim, ']', 'u'))
         # Gerrit's o opens, so only O comments there
-        gerrit = tui.Keymap('gerrit')
+        gerrit = Keymap('gerrit')
         self.assertEqual(('open', None), feed(gerrit, 'o'))
         self.assertEqual(('comment-above', None), feed(gerrit, 'O'))
-        self.assertEqual(('comment-above', None), feed(tui.Keymap('emacs'), ctrl('o')))
+        self.assertEqual(('comment-above', None), feed(Keymap('emacs'), ctrl('o')))
         self.assertEqual(('next-unresolved', None), feed(gerrit, ctrl('n')))
-        emacs = tui.Keymap('emacs')
-        self.assertEqual(('next-unresolved', None), feed(emacs, tui.META | ord('}')))
-        for preset in tui.PRESETS:
-            self.assertEqual([], tui.Keymap(preset).errors)
+        emacs = Keymap('emacs')
+        self.assertEqual(('next-unresolved', None), feed(emacs, META | ord('}')))
+        for preset in PRESETS:
+            self.assertEqual([], Keymap(preset).errors)
 
     def test_help_has_one_section_per_group(self):
-        for preset in tui.PRESETS:
-            lines = tui.Keymap(preset).help_lines(100)
-            groups = {action[1] for action in tui.ACTIONS}
+        for preset in PRESETS:
+            lines = Keymap(preset).help_lines(100)
+            groups = {action[1] for action in ACTIONS}
             headings = [line for line in lines if line in groups]
             self.assertEqual(len(headings), len(set(headings)), preset)
-        text = '\n'.join(tui.Keymap('vim').help_lines(100))
+        text = '\n'.join(Keymap('vim').help_lines(100))
         for label in ('next file', 'previous file', 'more context', 'less context',
                       'pick left side', 'pick right side', 'fold/unfold all'):
             self.assertIn(label, text)
         # Two labels of an action pair are never the same
-        labels = {action[0]: action[2] for action in tui.ACTIONS}
+        labels = {action[0]: action[2] for action in ACTIONS}
         for first, second in (('next-file', 'prev-file'), ('more-context', 'less-context'),
                               ('set-a', 'set-b'), ('fold-all', 'fold-every'),
                               ('next-thread', 'prev-thread'), ('search-next', 'search-prev')):
             self.assertNotEqual(labels[first], labels[second])
 
     def test_escape_asks_once_with_text(self):
-        self.assertTrue(tui.TextBox('').cancel())
-        self.assertTrue(tui.TextBox('  ').cancel())
-        box = tui.TextBox('Why?')
+        self.assertTrue(TextBox('').cancel())
+        self.assertTrue(TextBox('  ').cancel())
+        box = TextBox('Why?')
         self.assertFalse(box.cancel())
         self.assertTrue(box.discarding)
         # Any other key keeps the text and asks again next time
         box.keep()
         self.assertFalse(box.cancel())
         self.assertTrue(box.cancel())
-        self.assertEqual('again discards', dict(tui.box_keys(False, discarding=True))['Esc'])
-        self.assertEqual('send', dict(tui.box_keys(True, 'send'))['⏎'])
-        self.assertIn('C-g', dict(tui.box_keys(True)))
+        self.assertEqual('again discards', dict(box_keys(False, discarding=True))['Esc'])
+        self.assertEqual('send', dict(box_keys(True, 'send'))['⏎'])
+        self.assertIn('C-g', dict(box_keys(True)))
 
     def test_vote_choice(self):
-        choice = tui.Choice(core.vote_values(), 1)
+        choice = Choice(vote_values(), 1)
         self.assertEqual(' -2   -1    0  [+1]  +2 ', choice.text())
         choice.key(curses.KEY_RIGHT)
         choice.key(curses.KEY_RIGHT)
@@ -391,7 +401,7 @@ class UsabilityTest(unittest.TestCase):
         self.assertEqual(0, choice.value)
 
     def test_line_above(self):
-        diff = tui.DiffPane(None)
+        diff = DiffPane(None)
         # Line 1, a thread, line 2 wrapped onto two rows, a gap, line 3
         diff.rows = [('diff', 0), ('thread', 1, 0), ('diff', 1), ('diff', 2), ('diff', 3),
                      ('diff', 4)]
@@ -405,34 +415,34 @@ class UsabilityTest(unittest.TestCase):
 
     def test_threads_across_files(self):
         files = ['/COMMIT_MSG', 'a.py', 'b.py', 'c.py']
-        self.assertEqual('c.py', core.thread_file_after(files, 'a.py', {'c.py'}, 1))
-        self.assertEqual('/COMMIT_MSG', core.thread_file_after(files, 'b.py',
+        self.assertEqual('c.py', thread_file_after(files, 'a.py', {'c.py'}, 1))
+        self.assertEqual('/COMMIT_MSG', thread_file_after(files, 'b.py',
                                                                {'/COMMIT_MSG', 'c.py'}, -1))
-        self.assertIsNone(core.thread_file_after(files, 'c.py', {'a.py'}, 1))
-        self.assertEqual('a.py', core.thread_file_after(files, None, {'a.py'}, 1))
+        self.assertIsNone(thread_file_after(files, 'c.py', {'a.py'}, 1))
+        self.assertEqual('a.py', thread_file_after(files, None, {'a.py'}, 1))
 
     def test_comments_pane_and_dashboard(self):
-        def comment(number, unresolved, author=core.REVIEWER):
-            return core.Comment(number, 'a.py:1', 1, [core.Message(author, 'x',
+        def comment(number, unresolved, author=REVIEWER):
+            return Comment(number, 'a.py:1', 1, [Message(author, 'x',
                                                                    unresolved=unresolved)])
         comments = [comment(1, False), comment(2, True), comment(3, False), comment(4, True)]
-        self.assertEqual([2, 4, 1, 3], [c.number for c in core.threads_in_list_order(comments)])
+        self.assertEqual([2, 4, 1, 3], [c.number for c in threads_in_list_order(comments)])
         answered = comment(5, True)
-        answered.messages.append(core.Message(core.AUTHOR, 'Because.'))
-        self.assertTrue(core.answered_by_author(answered))
-        self.assertFalse(core.answered_by_author(comments[1]))
+        answered.messages.append(Message(AUTHOR, 'Because.'))
+        self.assertTrue(answered_by_author(answered))
+        self.assertFalse(answered_by_author(comments[1]))
         change = types.SimpleNamespace(comments=comments)
-        self.assertEqual('2 open · 2 done', core.comment_counts(change, short=True))
-        self.assertEqual('2 unresolved, 2 resolved', core.comment_counts(change))
+        self.assertEqual('2 open · 2 done', comment_counts(change, short=True))
+        self.assertEqual('2 unresolved, 2 resolved', comment_counts(change))
 
     def test_relevant_reviewed_next_and_last_pane(self):
-        vim, emacs, gerrit = (tui.Keymap(preset) for preset in ('vim', 'emacs', 'gerrit'))
+        vim, emacs, gerrit = (Keymap(preset) for preset in ('vim', 'emacs', 'gerrit'))
         self.assertEqual(('next-relevant', None), feed(vim, ']', 'n'))
         self.assertEqual(('prev-relevant', None), feed(vim, '[', 'n'))
-        self.assertEqual(('next-relevant', None), feed(emacs, tui.META | ord(']')))
-        self.assertEqual(('prev-relevant', None), feed(emacs, tui.META | ord('[')))
-        self.assertEqual(('next-relevant', None), feed(gerrit, tui.META | ord('N')))
-        self.assertEqual(('prev-relevant', None), feed(gerrit, tui.META | ord('P')))
+        self.assertEqual(('next-relevant', None), feed(emacs, META | ord(']')))
+        self.assertEqual(('prev-relevant', None), feed(emacs, META | ord('[')))
+        self.assertEqual(('next-relevant', None), feed(gerrit, META | ord('N')))
+        self.assertEqual(('prev-relevant', None), feed(gerrit, META | ord('P')))
         for keymap in (vim, emacs, gerrit):
             with self.subTest(keymap.preset):
                 self.assertEqual(('reviewed-next', None), feed(keymap, 'M'))
@@ -446,17 +456,17 @@ class StickyCursorTest(unittest.TestCase):
     """The sidebar's cursors stay on their item when the list changes."""
 
     def test_keyed_cursor(self):
-        self.assertEqual((2, 'b'), tui.keyed_cursor(['x', 'a', 'b'], 'b', 0))
+        self.assertEqual((2, 'b'), keyed_cursor(['x', 'a', 'b'], 'b', 0))
         # Gone: the nearest position, now on another item
-        self.assertEqual((1, 'c'), tui.keyed_cursor(['a', 'c'], 'b', 1))
-        self.assertEqual((1, 'c'), tui.keyed_cursor(['a', 'c'], 'b', 5))
-        self.assertEqual((0, 'b'), tui.keyed_cursor([], 'b', 3))
+        self.assertEqual((1, 'c'), keyed_cursor(['a', 'c'], 'b', 1))
+        self.assertEqual((1, 'c'), keyed_cursor(['a', 'c'], 'b', 5))
+        self.assertEqual((0, 'b'), keyed_cursor([], 'b', 3))
 
     def test_thread_and_file_cursor_follow_reordering(self):
         class Thread:  # pylint: disable=too-few-public-methods
             def __init__(self, identifier):
                 self.id = identifier
-        view = tui.ChangeView.__new__(tui.ChangeView)
+        view = ChangeView.__new__(ChangeView)
         threads = [Thread('t1'), Thread('t2'), Thread('t3')]
         view._comments = lambda: threads  # pylint: disable=protected-access
         view._comment_index = 1  # pylint: disable=protected-access
@@ -477,18 +487,18 @@ class SidebarHeightsTest(unittest.TestCase):
     """The heights of the sidebar's panes: stack, message, files, comments."""
 
     def test_short_content_leaves_rows_to_the_comments(self):
-        self.assertEqual([3, 5, 3, 29], tui.sidebar_heights(40, [1, 5, 2, 4]))
+        self.assertEqual([3, 5, 3, 29], sidebar_heights(40, [1, 5, 2, 4]))
 
     def test_max_min_fair(self):
         # A long message and one file: the message gets the room
-        self.assertEqual([3, 20, 3, 14], tui.sidebar_heights(40, [2, 30, 2, 14]))
+        self.assertEqual([3, 20, 3, 14], sidebar_heights(40, [2, 30, 2, 14]))
         # Nothing fits: equal shares, the odd rows to the lowest panes
-        self.assertEqual([3, 4, 4, 4], tui.sidebar_heights(15, [10, 10, 20, 20]))
-        self.assertEqual([3, 7, 7, 7], tui.sidebar_heights(24, [3, 30, 20, 20]))
+        self.assertEqual([3, 4, 4, 4], sidebar_heights(15, [10, 10, 20, 20]))
+        self.assertEqual([3, 7, 7, 7], sidebar_heights(24, [3, 30, 20, 20]))
 
     def test_tiny_screen(self):
-        self.assertEqual([2, 2, 3, 3], tui.sidebar_heights(10, [10, 10, 20, 20]))
+        self.assertEqual([2, 2, 3, 3], sidebar_heights(10, [10, 10, 20, 20]))
         for rows in range(4, 60):
-            heights = tui.sidebar_heights(rows, [10, 1, 20, 20])
+            heights = sidebar_heights(rows, [10, 1, 20, 20])
             self.assertEqual(rows, sum(heights), rows)
             self.assertGreaterEqual(min(heights), 3 if rows >= 12 else 1)

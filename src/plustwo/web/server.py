@@ -1,126 +1,68 @@
 # SPDX-License-Identifier: Zlib
-"""Web interface of plustwo, for the reviewer. Started by `plustwo serve`.
-
-A thin frontend like the terminal interface: a small HTTP server on
-127.0.0.1 that serves the page in web/ and a JSON API over the core's
-functions. Nothing of the review logic lives here.
-
-Any web page open in the browser could send requests to 127.0.0.1. So the
-server makes a random token at start, puts it into the page it serves and
-refuses API requests without it, and it refuses requests whose Host or
-Origin is not its own address.
-"""
+"""The web interface: a local HTTP server for the page and the JSON API."""
 
 import hashlib
 import json
 import re
 import secrets
-import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-WEB_DIRECTORY = Path(__file__).resolve().parent / 'web'
+from plustwo.review import dashboard as review_dashboard
+from plustwo.config.key_presets import ACTIONS, ACTION_NAMES, PRESETS
+from plustwo.config.registry import registered_repositories, repository_name
+from plustwo.config.settings import base_branch, settings_section
+from plustwo.config.user import current_user
+from plustwo.config.view_state import (
+    SECTION_TITLES, folded_sections, follows_latest, set_follows_latest, set_section_order,
+    toggle_section)
+from plustwo.diff.contrast import readable_colours
+from plustwo.diff.syntax import syntax_segments
+from plustwo.git.commit_message import commit_message, commit_message_parts
+from plustwo.git.errors import ChangeError
+from plustwo.git.files import file_lines, files_of, renames_of
+from plustwo.model.comment import ACK, DONE, RESOLVED
+from plustwo.model.place import COMMIT_MSG, NEW_SIDE, place_label, split_place
+from plustwo.model.roles import REVIEWER
+from plustwo.model.vote import CODE_REVIEW
+from plustwo.review.changes import changes_in_stack, find_change
+from plustwo.review.compare import compare_label, compared_files, diff_endpoints, old_path_of
+from plustwo.review.file_diff import file_diff_rows
+from plustwo.review.history import message_patch_sets, patch_set_history
+from plustwo.review.moves import move_text, move_thread
+from plustwo.review.porting import comment_place, thread_place
+from plustwo.review.rebase_lines import rebase_lines
+from plustwo.review.reply import quick_approve, reply
+from plustwo.review.reviewed import is_reviewed, toggle_reviewed
+from plustwo.review.stacks import needs_rebase, stack_version
+from plustwo.review.threads import (
+    add_comment, add_message, delete_draft, edit_draft, toggle_draft_status)
+from plustwo.review.touched import touched_threads
+from plustwo.review.votes import set_vote
+from plustwo.web.json import change_summary, comment_json, half_json, history_list, vote_json
+
+
+WEB_DIRECTORY = Path(__file__).resolve().parent / 'page'
+
+
 STATIC_FILES = {'/app.js': 'application/javascript', '/style.css': 'text/css'}
+
+
 TOKEN_HEADER = 'X-Plustwo-Token'
+
+
 DEFAULT_PORT = 8022
+
+
 # bat themes for the page's light and dark colours
 THEMES = {'light': 'GitHub', 'dark': 'Monokai Extended'}
-
-
-# ── what the API sends: the core's objects as JSON ────────────────────────
-
-def message_json(core, message, patch_set=None):
-    """A message for the page: text to edit, shown as the core shows it."""
-    return {'author': message.author, 'text': message.text, 'shown': core.message_text(message),
-            'sent': message.sent, 'unresolved': message.sets_unresolved(), 'patch_set': patch_set}
-
-
-def comment_json(core, comment, patch_sets=()):
-    """A thread for the page. patch_sets are its messages' patch sets, see
-    core.message_patch_sets().
-    """
-    path, _, line = comment.place.rpartition(':')
-    if not path or not line.isdigit():
-        path, line = comment.place, ''
-    return {'number': comment.number, 'id': comment.id, 'place': comment.place,
-            'place_label': comment.place_label(), 'path': path,
-            'line': int(line) if line else None, 'side': comment.side,
-            'patch_set': comment.patch_set, 'status': comment.status,
-            'draft_status': comment.draft_status(), 'is_draft': comment.is_draft(),
-            'has_draft': comment.has_draft(),
-            'messages': [message_json(core, message,
-                                      patch_sets[index] if index < len(patch_sets) else None)
-                         for index, message in enumerate(comment.messages)],
-            'moves': moves_json(core, comment)}
-
-
-def moves_json(core, comment):
-    """A thread's moves by hand for the page: the text and how many of its
-    messages come before it, see Comment.entries().
-    """
-    moves, before = [], 0
-    for entry in comment.entries():
-        if isinstance(entry, core.Message):
-            before += 1
-        else:
-            moves.append({'shown': core.move_text(entry), 'after': before})
-    return moves
-
-
-def history_list(core, history):
-    """core.patch_set_history() for the page, the reviewer's newest send
-    marked on its last event (last_send), see core.last_send().
-    """
-    last = core.last_send(history)
-    result = [history_json(core, entry) for entry in history]
-    for entry in result:
-        for index, event in enumerate(entry['events']):
-            event['last_send'] = (entry['number'], index) == last
-        entry['last_send'] = bool(last) and last[0] == entry['number']
-    return result
-
-
-def history_json(core, entry):
-    """One patch set of core.patch_set_history() for the page."""
-    return {'number': entry.number, 'uploaded': entry.uploaded, 'uploader': entry.uploader,
-            'kind': entry.kind, 'code_review': entry.vote_label(core.CODE_REVIEW),
-            'verified': entry.vote_label(core.VERIFIED), 'comments': entry.comments_label(),
-            'open': len(entry.open_threads()),
-            'events': [{'kind': event.kind, 'time': event.time, 'author': event.author,
-                        'text': event.text, 'number': event.number, 'place': event.place,
-                        'place_label': core.place_label(event.place),
-                        'status': event.status, 'draft': event.draft, 'open': event.is_open(),
-                        'yours': event.is_yours()}
-                       for event in entry.events]}
-
-
-def vote_json(vote):
-    return {'label': vote.label, 'value': vote.value, 'by': vote.by,
-            'patch_set': vote.patch_set, 'message': vote.message,
-            'copied_from': vote.copied_from}
-
-
-def change_summary(core, change, repository):
-    return {'id': change.change_id, 'short_id': change.short_id(), 'subject': change.subject,
-            'topic': change.topic, 'base': change.base, 'state': change.state(),
-            'patch_set': change.latest_patch_set(), 'turn': change.turn(),
-            'code_review': core.vote_label(change, core.CODE_REVIEW),
-            'verified': core.vote_label(change, core.VERIFIED),
-            'comments': core.comment_counts(change), 'wip': change.wip,
-            'repo_name': change.repo}
-
-
-def half_json(half, colours):
-    return {'kind': half.kind, 'number': half.number, 'text': half.text, 'edits': half.edits,
-            'moved': half.moved, 'whole': half.whole, 'colours': colours}
 
 
 class Server:
     """The repositories served and the caches the API keeps."""
 
-    def __init__(self, core, repositories, port):
-        self.core = core
+    def __init__(self, repositories, port):
         self.repositories = [str(Path(repository).resolve()) for repository in repositories]
         self.port = port
         self.token = secrets.token_hex(16)
@@ -129,124 +71,120 @@ class Server:
     def repository(self, query):
         index = int(query.get('repo', '0'))
         if not 0 <= index < len(self.repositories):
-            raise self.core.ChangeError(f'no repository {index}')
+            raise ChangeError(f'no repository {index}')
         return self.repositories[index]
 
     def change(self, query):
         repository = self.repository(query)
-        return self.core.find_change(query['id'], repository), repository
+        return find_change(query['id'], repository), repository
 
     def colours(self, version, path, lines, repository, theme):
         """Syntax colours of a file's version, kept per version."""
         key = (repository, version, path, theme)
         if key not in self._colours:
-            self._colours[key] = self.core.syntax_segments(lines or [], path, THEMES[theme])
+            self._colours[key] = syntax_segments(lines or [], path, THEMES[theme])
         return self._colours[key]
 
     # ── GET ───────────────────────────────────────────────────────────────
 
     def version(self, _query):
-        text = '\n'.join(self.core.stack_version(repository) for repository in self.repositories)
+        text = '\n'.join(stack_version(repository) for repository in self.repositories)
         return {'version': hashlib.sha1(text.encode()).hexdigest()}
 
     def repos(self, _query):
-        return {'repositories': [self.core.repository_name(repository)
+        return {'repositories': [repository_name(repository)
                                  for repository in self.repositories]}
 
     def stacks(self, query):
-        core = self.core
         repository = self.repository(query)
         stacks = {}
-        for change in core.changes_in_stack(repository):
-            stacks.setdefault(change.topic, []).append(change_summary(core, change, repository))
-        return {'base': core.base_branch(repository),
+        for change in changes_in_stack(repository):
+            stacks.setdefault(change.topic, []).append(change_summary(change, repository))
+        return {'base': base_branch(repository),
                 'stacks': [{'topic': topic, 'base': changes[0]['base'],
-                            'needs_rebase': core.needs_rebase(topic, repository),
+                            'needs_rebase': needs_rebase(topic, repository),
                             'changes': changes} for topic, changes in stacks.items()]}
 
     def dashboard(self, _query):
         """The dashboard over all served repositories: every section in the
         user's order, folded ones with their count only.
         """
-        core = self.core
         changes = [change for repository in self.repositories
-                   for change in core.changes_in_stack(repository)]
-        names = {path: name for name, path in core.registered_repositories().items()}
+                   for change in changes_in_stack(repository)]
+        names = {path: name for name, path in registered_repositories().items()}
         index = {repository: number for number, repository in enumerate(self.repositories)}
-        folded = core.folded_sections()
+        folded = folded_sections()
         behind = {(change.repository, change.topic) for change in changes
-                  if change.rebase_requested or core.needs_rebase(change.topic, change.repository)}
+                  if change.rebase_requested or needs_rebase(change.topic, change.repository)}
         sections = []
-        for section, entries in core.dashboard(changes):
+        for section, entries in review_dashboard.dashboard(changes):
             sections.append({
-                'name': section, 'title': core.SECTION_TITLES[section], 'count': len(entries),
+                'name': section, 'title': SECTION_TITLES[section], 'count': len(entries),
                 'folded': section in folded,
                 'changes': [] if section in folded else [
-                    {**change_summary(core, change, change.repository),
+                    {**change_summary(change, change.repository),
                      'number': number, 'repo': index.get(change.repository, 0),
                      'repo_name': names.get(change.repository, change.repo),
                      'needs_rebase': (change.repository, change.topic) in behind,
-                     'your_turn': 'your-turn' in change.sections(core.current_user())}
+                     'your_turn': 'your-turn' in change.sections(current_user())}
                     for number, change in entries]})
         return {'sections': sections}
 
     def change_details(self, query):
-        core = self.core
         change, repository = self.change(query)
-        renames = core.renames_of(change.commit, repository)
+        renames = renames_of(change.commit, repository)
         # Counts between the compared versions, unchanged files greyed
         try:
-            compared = core.compared_files(change, query.get('a') or 'base',
+            compared = compared_files(change, query.get('a') or 'base',
                                            query.get('b') or 'latest', repository)
-        except core.ChangeError:
+        except ChangeError:
             compared = None
         # Threads the comparison leaves as they were are quiet on the page.
-        touched = core.touched_threads(change, query.get('a') or 'base',
+        touched = touched_threads(change, query.get('a') or 'base',
                                        query.get('b') or 'latest', repository)
-        paths = [core.COMMIT_MSG] + sorted(core.files_of(change.commit, repository))
+        paths = [COMMIT_MSG] + sorted(files_of(change.commit, repository))
         files = []
         for path in paths:
             added, removed = (compared or {}).get(path, (0, 0))
             files.append({'path': path, 'added': added, 'removed': removed,
                           'changed': compared is None or path in compared,
-                          'reviewed': core.is_reviewed(change, path, repository),
+                          'reviewed': is_reviewed(change, path, repository),
                           'renamed_from': renames.get(path)})
-        return {**change_summary(core, change, repository),
-                'message': core.commit_message(change.commit, repository),
+        return {**change_summary(change, repository),
+                'message': commit_message(change.commit, repository),
                 'message_parts': dict(zip(('subject', 'body', 'trailers'),
-                                          core.commit_message_parts(change.commit, repository))),
+                                          commit_message_parts(change.commit, repository))),
                 'patch_sets': sorted(change.patch_sets),
                 'verified_required': change.verified_required,
                 'problems': change.submit_problems(),
                 'files': files,
-                'comments': [{**comment_json(core, comment, core.message_patch_sets(
+                'comments': [{**comment_json(comment, message_patch_sets(
                     change, comment, int(query['b']) if query.get('b', '').isdigit() else None)),
                     'touched': comment.number in touched} for comment in change.comments],
                 # Drafts go with the patch set shown on the right
-                'history': history_list(core, core.patch_set_history(
+                'history': history_list(patch_set_history(
                     change, int(query['b']) if query.get('b', '').isdigit() else None,
                     repository)),
                 'votes': [vote_json(vote) for vote in change.votes]}
 
     def diff(self, query):
-        core = self.core
         change, repository = self.change(query)
         path = query['path']
         first, second = query.get('a') or 'base', query.get('b') or 'latest'
         context = None if 'all' == query.get('context') else int(query.get('context', '10'))
         whitespace = query.get('whitespace', 'none')
-        rows = core.file_diff_rows(change, first, second, path, context, repository, whitespace)
-        comparing = core.compare_label(change, first, second, follow=core.follows_latest())
+        rows = file_diff_rows(change, first, second, path, context, repository, whitespace)
+        comparing = compare_label(change, first, second, follow=follows_latest())
         if rows is None:
             return {'binary': True, 'rows': [], 'comparing': comparing}
-        old, new, paths = core.diff_endpoints(change, first, second, path, repository)
-        old_path = core.old_path_of(change, first, second, paths[0], repository) or paths[0]
+        old, new, paths = diff_endpoints(change, first, second, path, repository)
+        old_path = old_path_of(change, first, second, paths[0], repository) or paths[0]
         theme = 'light' if 'light' == query.get('theme') else 'dark'
-        old_colours = self.colours(old, old_path, core.file_lines(old, old_path, repository),
+        old_colours = self.colours(old, old_path, file_lines(old, old_path, repository),
                                    repository, theme)
-        new_colours = self.colours(new, paths[0], core.file_lines(new, paths[0], repository),
+        new_colours = self.colours(new, paths[0], file_lines(new, paths[0], repository),
                                    repository, theme)
-        from_below, partly = core.rebase_lines(change, first, second, path, repository)
+        from_below, partly = rebase_lines(change, first, second, path, repository)
 
         def colours_of(half, colours):
             if colours is None or half.number is None or half.number > len(colours):
@@ -257,10 +195,10 @@ class Server:
         # thread's, its place there
         threads = {}
         for comment in change.comments:
-            shown = core.thread_place(change, comment, first, second, repository)
+            shown = thread_place(change, comment, first, second, repository)
             threads[comment.number] = {'path': shown.path, 'line': shown.line, 'side': shown.side,
                                        'origin': shown.origin, 'note': shown.note}
-        # Syntax colours lifted on the page's shades, see core.readable()
+        # Syntax colours lifted on the page's shades, see readable()
         used = {segment[1] for colours in (old_colours, new_colours) for line in colours or ()
                 for segment in line if segment[1]}
         try:
@@ -269,7 +207,7 @@ class Server:
         except (ValueError, AttributeError, TypeError):
             shades = {}
         return {'binary': False, 'comparing': comparing,
-                'readable': core.readable_colours(used, shades), 'renamed_from': None if old_path == paths[0] else old_path,
+                'readable': readable_colours(used, shades), 'renamed_from': None if old_path == paths[0] else old_path,
                 'threads': threads,
                 'from_below': [sorted(lines) for lines in from_below],
                 'partly': [sorted(lines) for lines in partly],
@@ -278,86 +216,83 @@ class Server:
                           'skipped': row.skipped} for row in rows]}
 
     def keys(self, _query):
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        import plustwo_tui  # pylint: disable=import-outside-toplevel
-        overrides = self.core.settings_section('keys', self.repositories[0])
+        overrides = settings_section('keys', self.repositories[0])
         preset = overrides.pop('preset', 'vim')
-        if preset not in plustwo_tui.PRESETS:
+        if preset not in PRESETS:
             preset = 'vim'
-        keys = {**plustwo_tui.PRESETS[preset],
+        keys = {**PRESETS[preset],
                 **{name: value for name, value in overrides.items()
-                   if name in plustwo_tui.ACTION_NAMES}}
-        return {'preset': preset, 'keys': keys, 'follow_latest': self.core.follows_latest(),
+                   if name in ACTION_NAMES}}
+        return {'preset': preset, 'keys': keys, 'follow_latest': follows_latest(),
                 'actions': [{'name': name, 'group': group, 'label': label,
                              'description': description}
-                            for name, group, label, description in plustwo_tui.ACTIONS]}
+                            for name, group, label, description in ACTIONS]}
 
     # ── POST ──────────────────────────────────────────────────────────────
 
     def act(self, body):
         """One write, named by body['action'], on the change body['id']."""
-        core = self.core
         if 'fold' == body.get('action'):
-            return {'folded': core.toggle_section(body['section'])}
+            return {'folded': toggle_section(body['section'])}
         if 'order' == body.get('action'):
-            core.set_section_order(body['sections'])
+            set_section_order(body['sections'])
             return {}
         if 'follow-latest' == body.get('action'):
-            core.set_follows_latest(bool(body.get('on')))
-            return {'on': core.follows_latest()}
+            set_follows_latest(bool(body.get('on')))
+            return {'on': follows_latest()}
         repository = self.repository(body)
-        change = core.find_change(body['id'], repository)
+        change = find_change(body['id'], repository)
         change_id = change.change_id
         action = body['action']
         number = body.get('number')
         if 'comment' == action:
-            path, line = core.split_place(body['place'])
-            place, side, patch_set = core.comment_place(
-                change, path, line, body.get('side', core.NEW_SIDE), body.get('a') or 'base',
+            path, line = split_place(body['place'])
+            place, side, patch_set = comment_place(
+                change, path, line, body.get('side', NEW_SIDE), body.get('a') or 'base',
                 body.get('b') or 'latest', repository)
-            return {'number': core.add_comment(change_id, place, body['text'], sent=False,
+            return {'number': add_comment(change_id, place, body['text'], sent=False,
                                                side=side, repository=repository,
                                                patch_set=patch_set)}
         if 'move' == action:
-            path, line = core.split_place(body['place'])
-            place, side, patch_set = core.comment_place(
-                change, path, line, body.get('side', core.NEW_SIDE), body.get('a') or 'base',
+            path, line = split_place(body['place'])
+            place, side, patch_set = comment_place(
+                change, path, line, body.get('side', NEW_SIDE), body.get('a') or 'base',
                 body.get('b') or 'latest', repository)
-            move = core.move_thread(change_id, number, place, side, patch_set,
+            move = move_thread(change_id, number, place, side, patch_set,
                                     repository=repository)
-            return {'shown': core.move_text(move) if move
-                    else f'now on {core.place_label(place, side)}'}
+            return {'shown': move_text(move) if move
+                    else f'now on {place_label(place, side)}'}
         if 'reply' == action:
-            core.add_message(change_id, number, core.REVIEWER, body['text'], sent=False,
+            add_message(change_id, number, REVIEWER, body['text'], sent=False,
                              repository=repository)
         elif action in ('done', 'ack'):
-            core.add_message(change_id, number, core.REVIEWER,
-                             core.DONE if 'done' == action else core.ACK, sent=False,
-                             status=core.RESOLVED, repository=repository)
+            add_message(change_id, number, REVIEWER,
+                             DONE if 'done' == action else ACK, sent=False,
+                             status=RESOLVED, repository=repository)
         elif 'resolve' == action:
-            return {'status': core.toggle_draft_status(change_id, number, repository)}
+            return {'status': toggle_draft_status(change_id, number, repository)}
         elif 'edit-draft' == action:
             if body['text']:
-                core.edit_draft(change_id, number, body['text'], repository)
+                edit_draft(change_id, number, body['text'], repository)
             else:
-                core.delete_draft(change_id, number, repository)
+                delete_draft(change_id, number, repository)
         elif 'delete-draft' == action:
-            core.delete_draft(change_id, number, repository)
+            delete_draft(change_id, number, repository)
         elif 'send' == action:
             vote = body.get('vote')
-            sent, _voted = core.reply(change_id, body.get('message', ''),
+            sent, _voted = reply(change_id, body.get('message', ''),
                                       None if vote is None else int(vote), repository)
             return {'sent': sent}
         elif 'vote' == action:
-            core.set_vote(change_id, body.get('label', core.CODE_REVIEW), int(body['value']),
+            set_vote(change_id, body.get('label', CODE_REVIEW), int(body['value']),
                           repository=repository)
         elif 'approve' == action:
-            patch_set, sent = core.quick_approve(change_id, bool(body.get('send')), repository)
+            patch_set, sent = quick_approve(change_id, bool(body.get('send')), repository)
             return {'patch_set': patch_set, 'sent': sent}
         elif 'reviewed' == action:
-            return {'reviewed': core.toggle_reviewed(change_id, body['path'], repository)}
+            return {'reviewed': toggle_reviewed(change_id, body['path'], repository)}
         else:
-            raise core.ChangeError(f'unknown action "{action}"')
+            raise ChangeError(f'unknown action "{action}"')
         return {}
 
 
@@ -396,7 +331,7 @@ class Handler(BaseHTTPRequestHandler):
         plustwo = self.server.plustwo
         try:
             self._send(200, call())
-        except plustwo.core.ChangeError as error:
+        except ChangeError as error:
             self._send(400, {'error': str(error)})
         except (KeyError, ValueError, TypeError) as error:
             self._send(400, {'error': f'bad request: {error}'})
@@ -443,19 +378,19 @@ class Handler(BaseHTTPRequestHandler):
         self._run(lambda: plustwo.act(body))
 
 
-def make_server(core, repositories, port=DEFAULT_PORT):
+def make_server(repositories, port=DEFAULT_PORT):
     """The HTTP server, bound to 127.0.0.1, not started yet. Port 0 picks
     a free one.
     """
     server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
     server.daemon_threads = True
-    server.plustwo = Server(core, repositories, server.server_address[1])
+    server.plustwo = Server(repositories, server.server_address[1])
     return server
 
 
-def serve(core, repositories, port=DEFAULT_PORT):
+def serve(repositories, port=DEFAULT_PORT):
     """Serves until stopped with Ctrl-C."""
-    server = make_server(core, repositories, port)
+    server = make_server(repositories, port)
     print(f'plustwo: http://127.0.0.1:{server.plustwo.port}/', flush=True)
     try:
         server.serve_forever()

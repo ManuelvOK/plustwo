@@ -1,29 +1,31 @@
 # plustwo
 
 `plustwo` (also `git change`), a Gerrit-like local review tool. See
-README.md for what it does and the docstring at the top of `plustwo` for
-every command.
+README.md for what it does, the docstring of `src/plustwo/cli/main.py` for
+every command and docs/architecture.md for the layers of the code.
 
 ## Files
 
-| File             | Content                                                       |
-|------------------|---------------------------------------------------------------|
-| `plustwo`        | core and command line (Python, no dependencies)               |
-| `git-change`     | link to `plustwo`, the old name, which older hooks call       |
-| `plustwo_tui.py` | curses interface for the reviewer, imported by the core       |
-| `plustwo_web.py` | web interface (`plustwo serve`), stdlib HTTP server, JSON API |
-| `web/`           | the page: index.html, app.js, style.css, no build step        |
-| `AGENTS.md`      | guide for agents as authors, printed by `plustwo guide`       |
-| `tests/`         | `make test`: diff rows, flows, settings, web, edits by hand   |
-| `TESTING.md`     | manual walkthrough for the user, in a throwaway repository    |
-| `LICENSE`        | zlib, SPDX line (`Zlib`) in every source file                 |
-| `Makefile`       | `check`, `test`, `install`, `link`, `uninstall`               |
+| File                    | Content                                                        |
+|-------------------------|----------------------------------------------------------------|
+| `plustwo`               | launcher: finds `src/` through its real path, runs the CLI     |
+| `git-change`            | link to `plustwo`, the old name, which older hooks call        |
+| `src/plustwo/`          | the package (Python, no dependencies), a sub-package per layer |
+| `src/plustwo/web/page/` | the page: index.html, app.js, style.css, no build step         |
+| `docs/architecture.md`  | the layers, what each may use, the rules of the layout         |
+| `tools/check_layers.py` | checks the imports against the layer table, in `make check`    |
+| `AGENTS.md`             | guide for agents as authors, printed by `plustwo guide`        |
+| `tests/`                | `make test`: diff rows, flows, settings, web, edits by hand    |
+| `TESTING.md`            | manual walkthrough for the user, in a throwaway repository     |
+| `LICENSE`               | zlib, SPDX line (`Zlib`) in every source file                  |
+| `Makefile`              | `check`, `test`, `install`, `link`, `uninstall`                |
 
 ## Design rules
 
-- All review logic lives in plain functions in `plustwo`. The command
+- All review logic lives in plain functions in the layers below the
+  interfaces (`review` and down, see docs/architecture.md). The command
   line, the curses interface and the web interface are thin frontends
-  that call them. Never put logic into argparse handlers, curses code,
+  that call them. Imports point downwards only. Never put logic into argparse handlers, curses code,
   HTTP handlers or the page's JavaScript.
 - The web server binds to 127.0.0.1 and requires its random token on
   every API request and checks Host and Origin, because any page in the
@@ -84,7 +86,8 @@ every command.
 
 ## Checking changes
 
-- `make check` only compiles. pylint crashes on Python 3.14 (astroid on
+- `make check` compiles and checks the imports against the layer table
+  (`tools/check_layers.py`). pylint crashes on Python 3.14 (astroid on
   `import curses`), and pyflakes/flake8 are not installed.
 - `make test` checks the diff rows the interface draws: against git (every
   line once, in order, the changed ones exactly git's edits) and delta (same

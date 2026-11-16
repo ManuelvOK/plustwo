@@ -13,21 +13,24 @@ repositories: this one, and those in TEST_REPOS (separated by colons).
 TEST_COMMITS limits how many commits per repository are checked.
 """
 
-import importlib.machinery
-import importlib.util
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import sys
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-_loader = importlib.machinery.SourceFileLoader('plustwo', str(ROOT / 'plustwo'))
-_spec = importlib.util.spec_from_loader('plustwo', _loader)
-core = importlib.util.module_from_spec(_spec)
-_loader.exec_module(core)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'src'))
+from plustwo.diff.contrast import MIN_CONTRAST, contrast, readable, readable_colours
+from plustwo.diff.edits import edits_of
+from plustwo.diff.intraline import intraline_edits
+from plustwo.diff.moved import moved_lines
+from plustwo.diff.pairing import paired_lines
+from plustwo.diff.rows import ADDED, CONTEXT, REMOVED, side_by_side_rows
+from plustwo.git.files import file_lines
 
 COMMITS_PER_REPOSITORY = int(os.environ.get('TEST_COMMITS', '200'))
 ANSI = re.compile(r'\x1b\[[0-9;]*m')
@@ -88,8 +91,8 @@ class Checks:
         self.assertEqual([half.text for half in old_back], old_lines, label)
         self.assertEqual([half.text for half in new_back], new_lines, label)
         self.assertFalse(any(row.skipped for row in rows), label)
-        removed = {half.number for half in old_back if core.REMOVED == half.kind}
-        added = {half.number for half in new_back if core.ADDED == half.kind}
+        removed = {half.number for half in old_back if REMOVED == half.kind}
+        added = {half.number for half in new_back if ADDED == half.kind}
         self.assertEqual(removed, {line for edit in edits for line in range(edit[0], edit[1])},
                          label)
         self.assertEqual(added, {line for edit in edits for line in range(edit[2], edit[3])},
@@ -103,7 +106,7 @@ class Checks:
         """With context, gaps account for exactly the lines left out, and
         every changed line is still there.
         """
-        rows = core.side_by_side_rows(old_lines, new_lines, edits, context)
+        rows = side_by_side_rows(old_lines, new_lines, edits, context)
         old_seen = new_seen = 0
         for row in rows:
             if row.skipped:
@@ -119,7 +122,7 @@ class Checks:
                 self.assertEqual(row.new.number, new_seen + 1, label)
                 new_seen += 1
         self.assertEqual((old_seen, new_seen), (len(old_lines), len(new_lines)), label)
-        whole = core.side_by_side_rows(old_lines, new_lines, edits)
+        whole = side_by_side_rows(old_lines, new_lines, edits)
         changed = [row for row in whole if CONTEXT_KINDS != (row.old.kind, row.new.kind)]
         shown = [row for row in rows if CONTEXT_KINDS != (row.old.kind, row.new.kind)
                  and not row.skipped]
@@ -128,20 +131,20 @@ class Checks:
 
     def check_version_pair(self, repository, old, new, path):
         """All checks of one file between two versions."""
-        old_lines = core.file_lines(old, path, repository)
-        new_lines = core.file_lines(new, path, repository)
+        old_lines = file_lines(old, path, repository)
+        new_lines = file_lines(new, path, repository)
         if old_lines is None or new_lines is None:
             return False
         label = f'{repository.name} {new[:8]} {path}'
-        edits = core.edits_of(old, new, path, repository)
-        rows = core.side_by_side_rows(old_lines, new_lines, edits)
+        edits = edits_of(old, new, path, repository)
+        rows = side_by_side_rows(old_lines, new_lines, edits)
         self.check_whole_file(old_lines, new_lines, edits, rows, label)
         for context in (0, 3, 10):
             self.check_context(old_lines, new_lines, edits, context, label)
         return True
 
 
-CONTEXT_KINDS = (core.CONTEXT, core.CONTEXT)
+CONTEXT_KINDS = (CONTEXT, CONTEXT)
 
 
 class FixtureTest(Checks, unittest.TestCase):
@@ -192,7 +195,7 @@ class FixtureTest(Checks, unittest.TestCase):
                 self.assertEqual(checked, not name.endswith('.bin'))
 
     def test_pairs_lines_in_order(self):
-        rows = core.side_by_side_rows(['1', '2', '3', '4'], ['1', 'x', '4', '5', '6'],
+        rows = side_by_side_rows(['1', '2', '3', '4'], ['1', 'x', '4', '5', '6'],
                                       [(2, 4, 2, 3), (5, 5, 4, 6)])
         self.assertEqual([(row.old.number, row.new.number) for row in rows],
                          [(1, 1), (2, None), (3, None), (None, 2), (4, 3), (None, 4),
@@ -200,38 +203,38 @@ class FixtureTest(Checks, unittest.TestCase):
 
     def test_pairs_by_similarity(self):
         # A rewritten block: the similar lines pair, the others stand alone
-        pairs = core.paired_lines(['first = 1', 'second = 2', 'third = 3'],
+        pairs = paired_lines(['first = 1', 'second = 2', 'third = 3'],
                                   ['completely new', 'second = 22', 'third = 33'])
         self.assertEqual(pairs, [(0, None), (None, 0), (1, 1), (2, 2)])
-        self.assertEqual(core.paired_lines(['a = 1'], ['b = 2', 'a = 10']),
+        self.assertEqual(paired_lines(['a = 1'], ['b = 2', 'a = 10']),
                          [(None, 0), (0, 1)])
-        self.assertEqual(core.paired_lines(['x'], []), [(0, None)])
+        self.assertEqual(paired_lines(['x'], []), [(0, None)])
 
     def test_moved_lines(self):
         block = ['def helper(value):', '    return value * 2']
         old_lines = ['import os'] + block + ['', 'def main():', '    pass']
         new_lines = ['import os', '', 'def main():', '    pass'] + block
         edits = [(2, 4, 2, 2), (7, 7, 5, 7)]
-        self.assertEqual(core.moved_lines(old_lines, new_lines, edits), ({2, 3}, {5, 6}))
-        rows = core.side_by_side_rows(old_lines, new_lines, edits)
+        self.assertEqual(moved_lines(old_lines, new_lines, edits), ({2, 3}, {5, 6}))
+        rows = side_by_side_rows(old_lines, new_lines, edits)
         self.assertEqual([half.number for row in rows for half in (row.old, row.new)
                           if half.moved], [2, 3, 5, 6])
         # Too few letters and digits to count as moved, like in git
-        self.assertEqual(core.moved_lines(['}', 'a', '}'], ['a', '}', '}'],
+        self.assertEqual(moved_lines(['}', 'a', '}'], ['a', '}', '}'],
                                           [(1, 2, 1, 1), (4, 4, 3, 4)]), (set(), set()))
 
     def test_intraline_whitespace(self):
         # What the whitespace mode ignores isn't marked
-        self.assertEqual(core.intraline_edits('a = b  ', 'a = c'), ([(4, 7)], [(4, 5)]))
-        self.assertEqual(core.intraline_edits('a = b  ', 'a = c', 'trailing'), ([(4, 5)], [(4, 5)]))
-        self.assertEqual(core.intraline_edits('if  (x) y', 'if (x) z', 'changed'),
+        self.assertEqual(intraline_edits('a = b  ', 'a = c'), ([(4, 7)], [(4, 5)]))
+        self.assertEqual(intraline_edits('a = b  ', 'a = c', 'trailing'), ([(4, 5)], [(4, 5)]))
+        self.assertEqual(intraline_edits('if  (x) y', 'if (x) z', 'changed'),
                          ([(8, 9)], [(7, 8)]))
-        self.assertEqual(core.intraline_edits('f(a,b) + 1', 'f(a, b) + 2', 'all'),
+        self.assertEqual(intraline_edits('f(a,b) + 1', 'f(a, b) + 2', 'all'),
                          ([(9, 10)], [(10, 11)]))
 
     def test_whole_lines(self):
         # Lines without a partner, or too different from it, are new text all over.
-        rows = core.side_by_side_rows(['x = 1', 'zzzz'], ['x = 2', 'completely other', 'new'],
+        rows = side_by_side_rows(['x = 1', 'zzzz'], ['x = 2', 'completely other', 'new'],
                                       [(1, 3, 1, 4)])
         whole = [(half.number, half.whole) for row in rows for half in (row.old, row.new)
                  if half.number]
@@ -241,7 +244,7 @@ class FixtureTest(Checks, unittest.TestCase):
         # A thread far from the edit keeps its line and context, the gap splits.
         old_lines = [f'line {number}' for number in range(1, 51)]
         new_lines = ['line one'] + old_lines[1:]
-        rows = core.side_by_side_rows(old_lines, new_lines, [(1, 2, 1, 2)], 3,
+        rows = side_by_side_rows(old_lines, new_lines, [(1, 2, 1, 2)], 3,
                                       shown=((), {30}))
         layout = [(row.skipped, row.new.number) if row.skipped else row.new.number
                   for row in rows]
@@ -249,15 +252,15 @@ class FixtureTest(Checks, unittest.TestCase):
         self.check_context(old_lines, new_lines, [(1, 2, 1, 2)], 3, 'shown lines')
 
     def test_intraline(self):
-        self.assertEqual(core.intraline_edits('return 1', 'return 2'), ([(7, 8)], [(7, 8)]))
-        self.assertEqual(core.intraline_edits('abc', 'xyz'), ([], []))
+        self.assertEqual(intraline_edits('return 1', 'return 2'), ([(7, 8)], [(7, 8)]))
+        self.assertEqual(intraline_edits('abc', 'xyz'), ([], []))
         # Whole words, not scattered letters
-        self.assertEqual(core.intraline_edits('total = count + 1', 'total = counter + 1'),
+        self.assertEqual(intraline_edits('total = count + 1', 'total = counter + 1'),
                          ([], [(8, 15)]))
-        self.assertEqual(core.intraline_edits('value = compute(alpha)', 'value = compete(alpha)'),
+        self.assertEqual(intraline_edits('value = compute(alpha)', 'value = compete(alpha)'),
                          ([(8, 15)], [(8, 15)]))
         # Edits a few characters apart become one, like in Gerrit
-        self.assertEqual(core.intraline_edits('f(a, b, c)', 'f(x, b, y)'),
+        self.assertEqual(intraline_edits('f(a, b, c)', 'f(x, b, y)'),
                          ([(2, 9)], [(2, 9)]))
 
 
@@ -267,18 +270,18 @@ class ContrastTest(unittest.TestCase):
     def test_comment_on_added_lines(self):
         # Monokai Extended's comments on the added shade: 2.2 to 1 before
         comment, added = (0x7c, 0x78, 0x65), (0x1f, 0x4d, 0x2a)
-        self.assertLess(core.contrast(comment, added), 3)
-        lifted = core.readable(comment, added)
-        self.assertGreaterEqual(core.contrast(lifted, added), core.MIN_CONTRAST)
+        self.assertLess(contrast(comment, added), 3)
+        lifted = readable(comment, added)
+        self.assertGreaterEqual(contrast(lifted, added), MIN_CONTRAST)
         self.assertTrue(all(new >= old for new, old in zip(lifted, comment)))
         # Readable colours stay, on light shades they get darker
-        self.assertEqual(core.readable((255, 255, 255), added), (255, 255, 255))
-        dark = core.readable((0xaa, 0xaa, 0xaa), (0xe6, 0xff, 0xec))
-        self.assertGreaterEqual(core.contrast(dark, (0xe6, 0xff, 0xec)), core.MIN_CONTRAST)
+        self.assertEqual(readable((255, 255, 255), added), (255, 255, 255))
+        dark = readable((0xaa, 0xaa, 0xaa), (0xe6, 0xff, 0xec))
+        self.assertGreaterEqual(contrast(dark, (0xe6, 0xff, 0xec)), MIN_CONTRAST)
         self.assertLess(dark[0], 0xaa)
 
     def test_web_map(self):
-        lifted = core.readable_colours({'#7c7865', '#ffffff'}, {'added': '#1f4d2a'})
+        lifted = readable_colours({'#7c7865', '#ffffff'}, {'added': '#1f4d2a'})
         self.assertEqual(list(lifted['added']), ['#7c7865'])
 
 
@@ -321,16 +324,16 @@ class DeltaTest(unittest.TestCase):
         count = 0
         for repository in test_repositories():
             for old, new, path in file_pairs(repository, limit=min(COMMITS_PER_REPOSITORY, 60)):
-                old_lines = core.file_lines(old, path, repository)
-                new_lines = core.file_lines(new, path, repository)
+                old_lines = file_lines(old, path, repository)
+                new_lines = file_lines(new, path, repository)
                 if old_lines is None or new_lines is None:
                     continue
                 # delta shows a submodule as a header without line numbers
                 if any(lines[:1] and lines[0].startswith('Subproject commit ')
                        for lines in (old_lines, new_lines)):
                     continue
-                rows = core.side_by_side_rows(old_lines, new_lines,
-                                              core.edits_of(old, new, path, repository))
+                rows = side_by_side_rows(old_lines, new_lines,
+                                              edits_of(old, new, path, repository))
                 theirs = self.delta_numbers(repository, old, new, path)
                 with self.subTest(f'{repository.name} {new[:8]} {path}'):
                     for side in (0, 1):

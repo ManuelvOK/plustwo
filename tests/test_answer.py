@@ -1,50 +1,52 @@
 # SPDX-License-Identifier: Zlib
 """The format of `plustwo answer`, the author's answers in one batch."""
 
-import importlib.machinery
-import importlib.util
+import sys
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-_loader = importlib.machinery.SourceFileLoader('plustwo', str(ROOT / 'plustwo'))
-_spec = importlib.util.spec_from_loader('plustwo', _loader)
-core = importlib.util.module_from_spec(_spec)
-_loader.exec_module(core)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'src'))
+from plustwo.git.errors import ChangeError
+from plustwo.model.acknowledgement import is_acknowledgement
+from plustwo.model.comment import DONE, RESOLVED, UNRESOLVED, Comment
+from plustwo.model.message import Message
+from plustwo.model.roles import AUTHOR, REVIEWER
+from plustwo.review.answers import parse_answers
 
 
 class AnswerFormatTest(unittest.TestCase):
 
     def test_lines(self):
-        answers = core.parse_answers('I3f2a #1 done\n'
+        answers = parse_answers('I3f2a #1 done\n'
                                      'shop I3f2a #2: Kept the loop.\n'
                                      '\n'
                                      'I3f2a #3 resolve: Yes.\n'
                                      'I3f2a #4 unresolve: Not yet.\n'
                                      'I3f2a #5 done: Done, renamed too.\n')
-        self.assertEqual(answers, [('I3f2a', 1, core.RESOLVED, core.DONE),
+        self.assertEqual(answers, [('I3f2a', 1, RESOLVED, DONE),
                                    ('I3f2a', 2, None, 'Kept the loop.'),
-                                   ('I3f2a', 3, core.RESOLVED, 'Yes.'),
-                                   ('I3f2a', 4, core.UNRESOLVED, 'Not yet.'),
-                                   ('I3f2a', 5, core.RESOLVED, 'Done, renamed too.')])
+                                   ('I3f2a', 3, RESOLVED, 'Yes.'),
+                                   ('I3f2a', 4, UNRESOLVED, 'Not yet.'),
+                                   ('I3f2a', 5, RESOLVED, 'Done, renamed too.')])
 
     def test_inbox_heads(self):
         # The head of an inbox line, patch set note included, then the answer
-        answers = core.parse_answers('claudel4 I996ea4f #5 (PS2, now :50) done\n'
+        answers = parse_answers('claudel4 I996ea4f #5 (PS2, now :50) done\n'
                                      'claudel4 I996ea4f #7 (PS2, line removed): Gone.\n'
                                      'claudel4 I996ea4f #8 (PS3) resolve: Yes.\n')
-        self.assertEqual(answers, [('I996ea4f', 5, core.RESOLVED, core.DONE),
+        self.assertEqual(answers, [('I996ea4f', 5, RESOLVED, DONE),
                                    ('I996ea4f', 7, None, 'Gone.'),
-                                   ('I996ea4f', 8, core.RESOLVED, 'Yes.')])
+                                   ('I996ea4f', 8, RESOLVED, 'Yes.')])
 
     def test_errors(self):
         for text in ('no answer here', 'I3f2a #2', 'I3f2a #2:'):
-            with self.subTest(text), self.assertRaises(core.ChangeError):
-                core.parse_answers(text)
+            with self.subTest(text), self.assertRaises(ChangeError):
+                parse_answers(text)
 
     def test_several_lines(self):
         # A line that doesn't start an answer goes on with the one before.
-        answers = core.parse_answers('I3f2a #1: Changed three things:\n'
+        answers = parse_answers('I3f2a #1: Changed three things:\n'
                                      '- the loop\n'
                                      '- the name\n'
                                      '\n'
@@ -55,14 +57,14 @@ class AnswerFormatTest(unittest.TestCase):
         self.assertEqual(answers, [
             ('I3f2a', 1, None, 'Changed three things:\n- the loop\n- the name\n\n'
              '1. first step\n2. second step'),
-            ('I3f2a', 2, core.RESOLVED, core.DONE)])
+            ('I3f2a', 2, RESOLVED, DONE)])
         # An answer can start on the line after its head
-        self.assertEqual(core.parse_answers('I3f2a #3 resolve:\n  Yes, see below.'),
-                         [('I3f2a', 3, core.RESOLVED, 'Yes, see below.')])
+        self.assertEqual(parse_answers('I3f2a #3 resolve:\n  Yes, see below.'),
+                         [('I3f2a', 3, RESOLVED, 'Yes, see below.')])
 
     def test_all_errors_at_once(self):
-        with self.assertRaises(core.ChangeError) as caught:
-            core.parse_answers('stray text\nmore stray\nI3f2a #1:\nI3f2a #2: fine\nI3f2a #3')
+        with self.assertRaises(ChangeError) as caught:
+            parse_answers('stray text\nmore stray\nI3f2a #1:\nI3f2a #2: fine\nI3f2a #3')
         message = str(caught.exception)
         for part in ('line 1 is no answer', 'line 2 is no answer', 'line 3 has no text',
                      'line 5 has no text'):
@@ -74,20 +76,20 @@ class AcknowledgementTest(unittest.TestCase):
     def test_words(self):
         for text in ('Ack.', 'ack', 'OK, thanks!', 'Ack, thanks 👍', 'Got it. LGTM',
                      'Thanks, makes sense!', 'Okay thank you'):
-            self.assertTrue(core.is_acknowledgement(text), text)
+            self.assertTrue(is_acknowledgement(text), text)
         for text in ('', '👍', 'why?', 'Ack, but rename it', 'OK, but not here'):
-            self.assertFalse(core.is_acknowledgement(text), text)
+            self.assertFalse(is_acknowledgement(text), text)
 
     def test_old_note(self):
         # Written before typed acknowledgements resolved: no flag on it.
-        comment = core.Comment(1, 'a.txt:3', 1, [
-            core.Message(core.REVIEWER, 'Why?'), core.Message(core.AUTHOR, 'Kept it.'),
-            core.Message(core.REVIEWER, 'Ack.')])
-        self.assertEqual(core.RESOLVED, comment.status)
+        comment = Comment(1, 'a.txt:3', 1, [
+            Message(REVIEWER, 'Why?'), Message(AUTHOR, 'Kept it.'),
+            Message(REVIEWER, 'Ack.')])
+        self.assertEqual(RESOLVED, comment.status)
         self.assertFalse(comment.wants_answer())
         # The author's "ok" doesn't resolve.
-        comment.messages[-1] = core.Message(core.AUTHOR, 'OK')
-        self.assertEqual(core.UNRESOLVED, comment.status)
+        comment.messages[-1] = Message(AUTHOR, 'OK')
+        self.assertEqual(UNRESOLVED, comment.status)
 
 
 if __name__ == '__main__':
