@@ -7,26 +7,38 @@ from plustwo.git.cache import cached_for_objects
 from plustwo.git.repository import git
 
 
-# Gerrit's whitespace modes and the git diff options for them
-WHITESPACE_OPTIONS = {'none': (), 'trailing': ('--ignore-space-at-eol',),
+# An edit of a diff: (old begin, old end, new begin, new end), line ranges
+# counted from 1, the ends not included. An insertion has an empty old
+# range, a deletion an empty new range.
+Edit = tuple[int, int, int, int]
+
+# Gerrit's whitespace modes, mapped to the git diff options for them
+_WHITESPACE_OPTIONS = {'none': (), 'trailing': ('--ignore-space-at-eol',),
                       'changed': ('--ignore-space-change',), 'all': ('--ignore-all-space',)}
-
-
-WHITESPACE_MODES = tuple(WHITESPACE_OPTIONS)
+WHITESPACE_MODES = tuple(_WHITESPACE_OPTIONS)
 
 
 @cached_for_objects(0, 1)
-def edits_of(old, new, path, repository=None, old_path=None, whitespace='none'):
-    """The edits of a file's diff: [(old begin, old end, new begin, new
-    end)], line ranges counted from 1, the end not included. An insertion
-    has an empty old range, a deletion an empty new range. old_path is the
-    file's path in old if it was renamed. whitespace is one of Gerrit's
-    modes, see WHITESPACE_OPTIONS.
+def edits_of(old: str, new: str, path: str, repository: str | None = None,
+             old_path: str | None = None, whitespace: str = 'none') -> list[Edit]:
+    """Finds the edits of a file's diff between two versions.
+
+    Args:
+        old: the old version, a commit or tree.
+        new: the new version, a commit or tree.
+        path: the file's path in the new version.
+        repository: the repository's directory, None for the current one.
+        old_path: the file's path in the old version if it was renamed,
+            None if it is path.
+        whitespace: one of Gerrit's whitespace modes, WHITESPACE_MODES.
+
+    Returns:
+        The edits, top to bottom, see Edit.
     """
     # Histogram is the algorithm of JGit, so the edits are the ones Gerrit
     # shows. The options make the user's diff settings not count.
     options = ('--no-color', '--no-ext-diff', '--no-textconv', '--no-renames', '--histogram',
-               '-U0', *WHITESPACE_OPTIONS.get(whitespace, ()))
+               '-U0', *_WHITESPACE_OPTIONS.get(whitespace, ()))
     output = '' if old_path else git('diff', *options, old, new, '--', path,
                                      repository=repository)
     if old_path or output.count('diff --git ') > 1:
@@ -40,10 +52,10 @@ def edits_of(old, new, path, repository=None, old_path=None, whitespace='none'):
         output = git('diff', *options, *blobs, repository=repository)
     edits = []
     for match in re.finditer(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@', output, re.MULTILINE):
-        old_start, old_count, new_start, new_count = (
+        old_start, n_old_lines, new_start, n_new_lines = (
             int(value) if value is not None else 1 for value in match.groups())
         # An empty range is given by the line before it.
-        old_begin = old_start if old_count else old_start + 1
-        new_begin = new_start if new_count else new_start + 1
-        edits.append((old_begin, old_begin + old_count, new_begin, new_begin + new_count))
+        old_begin = old_start if n_old_lines else old_start + 1
+        new_begin = new_start if n_new_lines else new_start + 1
+        edits.append((old_begin, old_begin + n_old_lines, new_begin, new_begin + n_new_lines))
     return edits

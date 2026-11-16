@@ -5,23 +5,33 @@ import functools
 import os
 import shutil
 import subprocess
+from collections.abc import Sequence
 
-from plustwo.diff.sgr import sgr_segments
+from plustwo.diff.sgr import Segment, sgr_segments
 
 
-def highlighter():
-    """The program that colours source code: bat (batcat on Debian), None
-    without it.
+def highlighter() -> str | None:
+    """Finds the program that colours source code.
+
+    Returns:
+        The path of bat (batcat on Debian), None without it.
     """
     return shutil.which('bat') or shutil.which('batcat')
 
 
-def syntax_segments(lines, path, theme=None):
-    """Syntax colours of a file's lines, from bat: for each line a list of
-    (text, colour, styles), see sgr_segments(). None without bat, or if
-    its output doesn't fit the lines. Both interfaces draw these. theme is
-    a bat theme, None for bat's own choice. Kept by the text, so the same
-    file isn't coloured twice.
+def syntax_segments(lines: Sequence[str], path: str,
+                    theme: str | None = None) -> list[list[Segment]] | None:
+    """Colours a file's lines with bat. Both interfaces draw the result.
+    Kept by the text, so the same file isn't coloured twice.
+
+    Args:
+        lines: the file's lines.
+        path: the file's path, from which bat picks the language.
+        theme: a bat theme, None for bat's own choice.
+
+    Returns:
+        A list of segments per line, see sgr_segments(). None without bat,
+        or if bat's output doesn't fit the lines.
     """
     if not lines:
         return None
@@ -29,8 +39,18 @@ def syntax_segments(lines, path, theme=None):
 
 
 @functools.lru_cache(maxsize=64)
-def _syntax_segments(lines, path, theme):
-    """syntax_segments() of lines as a tuple."""
+def _syntax_segments(lines: tuple[str, ...], path: str,
+                     theme: str | None) -> list[list[Segment]] | None:
+    """Colours lines with bat, see syntax_segments().
+
+    Args:
+        lines: the file's lines.
+        path: the file's path, from which bat picks the language.
+        theme: a bat theme, None for bat's own choice.
+
+    Returns:
+        A list of segments per line, None without bat or on a mismatch.
+    """
     program = highlighter()
     if not program:
         return None

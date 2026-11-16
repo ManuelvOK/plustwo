@@ -90,9 +90,9 @@ class Checks:
                          label)
         self.assertEqual([half.text for half in old_back], old_lines, label)
         self.assertEqual([half.text for half in new_back], new_lines, label)
-        self.assertFalse(any(row.skipped for row in rows), label)
-        removed = {half.number for half in old_back if REMOVED == half.kind}
-        added = {half.number for half in new_back if ADDED == half.kind}
+        self.assertFalse(any(row.n_skipped for row in rows), label)
+        removed = {half.number for half in old_back if REMOVED == half.type}
+        added = {half.number for half in new_back if ADDED == half.type}
         self.assertEqual(removed, {line for edit in edits for line in range(edit[0], edit[1])},
                          label)
         self.assertEqual(added, {line for edit in edits for line in range(edit[2], edit[3])},
@@ -109,11 +109,11 @@ class Checks:
         rows = side_by_side_rows(old_lines, new_lines, edits, context)
         old_seen = new_seen = 0
         for row in rows:
-            if row.skipped:
+            if row.n_skipped:
                 self.assertEqual(row.old.number, old_seen + 1, label)
                 self.assertEqual(row.new.number, new_seen + 1, label)
-                old_seen += row.skipped
-                new_seen += row.skipped
+                old_seen += row.n_skipped
+                new_seen += row.n_skipped
                 continue
             if row.old.number:
                 self.assertEqual(row.old.number, old_seen + 1, label)
@@ -123,9 +123,9 @@ class Checks:
                 new_seen += 1
         self.assertEqual((old_seen, new_seen), (len(old_lines), len(new_lines)), label)
         whole = side_by_side_rows(old_lines, new_lines, edits)
-        changed = [row for row in whole if CONTEXT_KINDS != (row.old.kind, row.new.kind)]
-        shown = [row for row in rows if CONTEXT_KINDS != (row.old.kind, row.new.kind)
-                 and not row.skipped]
+        changed = [row for row in whole if CONTEXT_KINDS != (row.old.type, row.new.type)]
+        shown = [row for row in rows if CONTEXT_KINDS != (row.old.type, row.new.type)
+                 and not row.n_skipped]
         self.assertEqual([(row.old.number, row.new.number) for row in changed],
                          [(row.old.number, row.new.number) for row in shown], label)
 
@@ -218,7 +218,7 @@ class FixtureTest(Checks, unittest.TestCase):
         self.assertEqual(moved_lines(old_lines, new_lines, edits), ({2, 3}, {5, 6}))
         rows = side_by_side_rows(old_lines, new_lines, edits)
         self.assertEqual([half.number for row in rows for half in (row.old, row.new)
-                          if half.moved], [2, 3, 5, 6])
+                          if half.is_moved], [2, 3, 5, 6])
         # Too few letters and digits to count as moved, like in git
         self.assertEqual(moved_lines(['}', 'a', '}'], ['a', '}', '}'],
                                           [(1, 2, 1, 1), (4, 4, 3, 4)]), (set(), set()))
@@ -236,7 +236,7 @@ class FixtureTest(Checks, unittest.TestCase):
         # Lines without a partner, or too different from it, are new text all over.
         rows = side_by_side_rows(['x = 1', 'zzzz'], ['x = 2', 'completely other', 'new'],
                                       [(1, 3, 1, 4)])
-        whole = [(half.number, half.whole) for row in rows for half in (row.old, row.new)
+        whole = [(half.number, half.is_whole) for row in rows for half in (row.old, row.new)
                  if half.number]
         self.assertEqual(whole, [(1, False), (1, False), (2, True), (2, True), (3, True)])
 
@@ -246,7 +246,7 @@ class FixtureTest(Checks, unittest.TestCase):
         new_lines = ['line one'] + old_lines[1:]
         rows = side_by_side_rows(old_lines, new_lines, [(1, 2, 1, 2)], 3,
                                       shown=((), {30}))
-        layout = [(row.skipped, row.new.number) if row.skipped else row.new.number
+        layout = [(row.n_skipped, row.new.number) if row.n_skipped else row.new.number
                   for row in rows]
         self.assertEqual(layout, [1, 2, 3, 4, (22, 5), 27, 28, 29, 30, 31, 32, 33, (17, 34)])
         self.check_context(old_lines, new_lines, [(1, 2, 1, 2)], 3, 'shown lines')

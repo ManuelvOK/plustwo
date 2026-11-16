@@ -213,7 +213,7 @@ class Server:
                 'partly': [sorted(lines) for lines in partly],
                 'rows': [{'old': half_json(row.old, colours_of(row.old, old_colours)),
                           'new': half_json(row.new, colours_of(row.new, new_colours)),
-                          'skipped': row.skipped} for row in rows]}
+                          'skipped': row.n_skipped} for row in rows]}
 
     def keys(self, _query):
         overrides = settings_section('keys', self.repositories[0])

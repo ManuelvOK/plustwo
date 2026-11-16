@@ -105,13 +105,13 @@ class DiffPane:
             rendered = [([('No differences in this file.', SECONDARY, -1, 0)], (None, None),
                           False, False, None, None)]
         else:
-            if self.expanded_gaps and any(row.skipped for row in rows):
+            if self.expanded_gaps and any(row.n_skipped for row in rows):
                 rows = expand_gaps(rows, self.expanded_gaps, file_lines(old, old_path),
                                         file_lines(new, paths[0]))
             colours = [self._colours(old, old_path), self._colours(new, paths[0])]
             rendered = rendered_rows(rows, width, colours, marks, search)
-        self._closed_gaps = [(row.old.number, row.new.number, row.skipped)
-                             for row in rows or () if row.skipped]
+        self._closed_gaps = [(row.old.number, row.new.number, row.n_skipped)
+                             for row in rows or () if row.n_skipped]
         self._sources = (old, old_path, new, paths[0])
         self._gaps = [entry[4] for entry in rendered]
         self._texts = [entry[5] for entry in rendered]
@@ -123,7 +123,7 @@ class DiffPane:
         marked = [any(numbers[side] in marks[side][kind]
                       for numbers in self._diff_numbers for side in (0, 1)) for kind in (0, 1)]
         self.marks_from_below = tuple(marked)
-        self.has_moved = any(row.old.moved or row.new.moved for row in rows)
+        self.has_moved = any(row.old.is_moved or row.new.is_moved for row in rows)
         if not is_other_file:
             if self.rows and not self._keep:
                 self._keep = (self.rows[self.cursor], self._anchors[self.cursor])

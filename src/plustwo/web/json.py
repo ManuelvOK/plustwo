@@ -91,5 +91,5 @@ def change_summary(change, repository):
 
 
 def half_json(half, colours):
-    return {'kind': half.kind, 'number': half.number, 'text': half.text, 'edits': half.edits,
-            'moved': half.moved, 'whole': half.whole, 'colours': colours}
+    return {'kind': half.type, 'number': half.number, 'text': half.text, 'edits': half.edits,
+            'moved': half.is_moved, 'whole': half.is_whole, 'colours': colours}

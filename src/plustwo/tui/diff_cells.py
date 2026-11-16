@@ -61,26 +61,26 @@ def half_cells(half, colours, marks, search=''):
     line numbers (from below, partly from below) on this side. The matches
     of a search are shown reversed.
     """
-    if half.kind in (REMOVED, ADDED):
+    if half.type in (REMOVED, ADDED):
         if half.number in marks[0] or half.number in marks[1]:
             partly = half.number not in marks[0]
             backgrounds = ((PARTLY_BASIC,) * 2 if partly else (FROM_BELOW_BASIC,) * 2) \
                 if curses.COLORS < 256 else (PARTLY_BACKGROUNDS if partly
                                              else FROM_BELOW_BACKGROUNDS)
-        elif half.moved:
+        elif half.is_moved:
             backgrounds = (MOVED_BASIC,) * 2 if curses.COLORS < 256 else MOVED_BACKGROUNDS
         elif curses.COLORS < 256:
-            backgrounds = ((REMOVED_BASIC,) if REMOVED == half.kind else (ADDED_BASIC,)) * 2
+            backgrounds = ((REMOVED_BASIC,) if REMOVED == half.type else (ADDED_BASIC,)) * 2
         else:
-            backgrounds = REMOVED_BACKGROUNDS if REMOVED == half.kind else ADDED_BACKGROUNDS
+            backgrounds = REMOVED_BACKGROUNDS if REMOVED == half.type else ADDED_BACKGROUNDS
         if tui_colours.TRUE_COLOUR:
             backgrounds = TRUE_SHADES[
                 'partly' if half.number in marks[1] and half.number not in marks[0]
-                else 'below' if half.number in marks[0] else 'moved' if half.moved
-                else half.kind]
+                else 'below' if half.number in marks[0] else 'moved' if half.is_moved
+                else half.type]
     else:
         backgrounds = (-1, -1)
-    if half.whole:
+    if half.is_whole:
         # New text all over gets the strong shade, see Half.
         backgrounds = (backgrounds[1],) * 2
     changed = set()
@@ -165,12 +165,12 @@ def rendered_rows(rows, width, colours, marks, search=''):
     text_width = half_width - digits - 1 - 2
     result = []
     for row in rows:
-        if row.skipped:
-            label = f' {row.skipped} common line{"s" if row.skipped > 1 else ""} '
+        if row.n_skipped:
+            label = f' {row.n_skipped} common line{"s" if row.n_skipped > 1 else ""} '
             result.append(([(label.center(width, '┄'), SECONDARY, -1, 0)],
                            (None, None), False, False, row.old.number, None))
             continue
-        changed = (CONTEXT, CONTEXT) != (row.old.kind, row.new.kind)
+        changed = (CONTEXT, CONTEXT) != (row.old.type, row.new.type)
         halves = []
         for half, side in ((row.old, 0), (row.new, 1)):
             line_colours = (colours[side][half.number - 1]
