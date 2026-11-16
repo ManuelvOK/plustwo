@@ -1,79 +1,151 @@
 # SPDX-License-Identifier: Zlib
-"""The repository commands act on, and running git in it."""
+"""A git repository, handed to everything that acts on one, and running git
+in it."""
 
-import contextvars
+import functools
 import subprocess
+from pathlib import Path
 
 from plustwo.git.errors import ChangeError
 
 
-# The repository commands without one act on: None for the working
-# directory. A frontend showing changes of several repositories sets it to
-# the one of the change it acts on. Per thread, so the web server's
-# requests don't mix.
-_REPOSITORY: contextvars.ContextVar[str | None] = contextvars.ContextVar('repository',
-                                                                         default=None)
+class Repository:
+    """A repository: its working tree and what belongs to it alone.
 
+    There is no current repository. Whoever acts on one gets the object
+    handed in. Repositories are equal when their paths are.
 
-def use_repository(repository: object) -> None:
-    """Makes later calls without a repository act on this one.
-
-    Args:
-        repository: the repository's directory, a string or a path. None or
-            '' for the working directory.
+    Attributes:
+        path: the absolute path of the repository's working tree.
     """
-    _REPOSITORY.set(str(repository) if repository else None)
 
+    def __init__(self, path: str | Path) -> None:
+        """Wraps the working tree of a repository, without asking git.
 
-def current_repository(repository: str | None = None) -> str | None:
-    """Finds the repository a call acts on.
+        Args:
+            path: the working tree's directory, as git's --show-toplevel
+                prints it. Use of_directory() for any directory inside.
+        """
+        self.path = Path(path).absolute()
 
-    Args:
-        repository: the repository's directory, None if the call names none.
+    @classmethod
+    def of_directory(cls, directory: str | Path) -> 'Repository':
+        """Finds the repository a directory is in.
 
-    Returns:
-        The given repository, else the one set by use_repository(), else
-        None for the working directory.
-    """
-    return repository or _REPOSITORY.get()
+        Args:
+            directory: a directory in the repository.
 
+        Returns:
+            The repository.
 
-def git_command(repository: str | None = None) -> list[str]:
-    """Builds the start of a git command line that runs in a repository.
+        Raises:
+            ChangeError: the directory is in no repository. The message is
+                git's.
+        """
+        result = subprocess.run(['git', '-C', str(directory), 'rev-parse', '--show-toplevel'],
+                                capture_output=True, text=True)
+        if 0 != result.returncode or not result.stdout.strip():
+            raise ChangeError(result.stderr.strip() or 'not a git repository')
+        return cls(result.stdout.strip())
 
-    Args:
-        repository: the repository's directory, None for the current one
-            (see current_repository()).
+    @classmethod
+    def of_working_directory(cls) -> 'Repository':
+        """Finds the repository the working directory is in.
 
-    Returns:
-        The command's first words, like ['git', '-C', '/path'].
-    """
-    repository = current_repository(repository)
-    return ['git'] + (['-C', str(repository)] if repository else [])
+        Returns:
+            The repository.
 
+        Raises:
+            ChangeError: the working directory is in no repository.
+        """
+        return cls.of_directory(Path.cwd())
 
-def git(*arguments: str, input_text: str | None = None, check: bool = True,
-        repository: str | None = None) -> str:
-    """Runs git.
+    def __eq__(self, other: object) -> bool:
+        """Compares by path.
 
-    Args:
-        *arguments: git's arguments, the command first.
-        input_text: what git reads from its standard input, None for nothing.
-        check: whether a failing git is an error.
-        repository: the repository's directory, None for the current one
-            (see current_repository()).
+        Args:
+            other: what to compare with.
 
-    Returns:
-        git's output without the final newline.
+        Returns:
+            True for a repository with the same path.
+        """
+        return isinstance(other, Repository) and self.path == other.path
 
-    Raises:
-        ChangeError: git failed and check is set. Its message is git's.
-    """
-    command = git_command(repository) + list(arguments)
-    # Files need not be UTF-8, so bytes that aren't become replacement
-    # characters instead of an error.
-    result = subprocess.run(command, input=input_text, encoding='utf-8', errors='replace',
-                            capture_output=True)
-    if check and 0 != result.returncode:
-        raise ChangeError(result.stderr.strip() or f'git {arguments[0]} failed')
-    return result.stdout.rstrip('\n')
+    def __hash__(self) -> int:
+        """Hashes the path.
+
+        Returns:
+            The hash.
+        """
+        return hash(self.path)
+
+    def __repr__(self) -> str:
+        """Shows the path.
+
+        Returns:
+            The text.
+        """
+        return f'Repository({str(self.path)!r})'
+
+    def git_command(self) -> list[str]:
+        """Builds the start of a git command line that runs in the repository.
+
+        Returns:
+            The command's first words, like ['git', '-C', '/path'].
+        """
+        return ['git', '-C', str(self.path)]
+
+    def git(self, *arguments: str, input_text: str | None = None, check: bool = True) -> str:
+        """Runs git in the repository.
+
+        Args:
+            *arguments: git's arguments, the command first.
+            input_text: what git reads from its standard input, None for
+                nothing.
+            check: whether a failing git is an error.
+
+        Returns:
+            git's output without the final newline.
+
+        Raises:
+            ChangeError: git failed and check is set. Its message is git's.
+        """
+        command = self.git_command() + list(arguments)
+        # Files need not be UTF-8, so bytes that aren't become replacement
+        # characters instead of an error.
+        result = subprocess.run(command, input=input_text, encoding='utf-8', errors='replace',
+                                capture_output=True)
+        if check and 0 != result.returncode:
+            raise ChangeError(result.stderr.strip() or f'git {arguments[0]} failed')
+        return result.stdout.rstrip('\n')
+
+    def git_path(self, name: str) -> Path:
+        """Builds the absolute path of a file inside the .git directory.
+
+        Args:
+            name: the file's path relative to the .git directory.
+
+        Returns:
+            The absolute path, which git resolves for worktrees too.
+        """
+        path = Path(self.git('rev-parse', '--git-path', name))
+        return path if path.is_absolute() else (self.path / path).absolute()
+
+    @functools.cached_property
+    def git_directory(self) -> Path:
+        """The repository's .git directory, which git is asked for once.
+
+        Returns:
+            The absolute path.
+        """
+        return Path(self.git('rev-parse', '--absolute-git-dir'))
+
+    @functools.cached_property
+    def config_file(self) -> Path:
+        """The repository's settings file, inside .git, asked for once.
+
+        Returns:
+            The absolute path of the file, in git config syntax, which need
+            not exist.
+        """
+        return self.git_path('plustwo/config')

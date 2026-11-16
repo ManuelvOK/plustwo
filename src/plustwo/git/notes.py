@@ -6,33 +6,33 @@ import subprocess
 from typing import Any
 
 from plustwo.git.refs import NOTES_REF
-from plustwo.git.repository import git, git_command
+from plustwo.git.repository import Repository
 
 
-def notes_version(repository: str | None = None) -> str:
+def notes_version(repository: Repository) -> str:
     """Reads the version of all review notes.
 
     Args:
-        repository: the repository's directory, None for the current one.
+        repository: the repository.
 
     Returns:
         The object name of the notes ref, which changes with every write to
         any note. '' while there is no note.
     """
-    return git('rev-parse', '--verify', '--quiet', NOTES_REF, check=False, repository=repository)
+    return repository.git('rev-parse', '--verify', '--quiet', NOTES_REF, check=False)
 
 
-def read_note(commit: str, repository: str | None = None) -> dict[str, Any]:
+def read_note(repository: Repository, commit: str) -> dict[str, Any]:
     """Reads the review note of a commit.
 
     Args:
+        repository: the repository.
         commit: the commit, any name git understands.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         The note's JSON object, empty if the commit has no note.
     """
-    text = git('notes', f'--ref={NOTES_REF}', 'show', commit, check=False, repository=repository)
+    text = repository.git('notes', f'--ref={NOTES_REF}', 'show', commit, check=False)
     return parse_note(text)
 
 
@@ -53,13 +53,13 @@ def parse_note(text: str) -> dict[str, Any]:
     return note if isinstance(note, dict) else {}
 
 
-def read_notes(commits: list[str], repository: str | None = None) -> dict[str, dict[str, Any]]:
+def read_notes(repository: Repository, commits: list[str]) -> dict[str, dict[str, Any]]:
     """Reads the review notes of several commits, with two git calls for all
     of them.
 
     Args:
+        repository: the repository.
         commits: the commits' full object names.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         Each commit that has a note, mapped to the note's JSON object.
@@ -67,14 +67,14 @@ def read_notes(commits: list[str], repository: str | None = None) -> dict[str, d
     if not commits:
         return {}
     blobs = {}
-    output = git('notes', f'--ref={NOTES_REF}', 'list', check=False, repository=repository)
+    output = repository.git('notes', f'--ref={NOTES_REF}', 'list', check=False)
     for line in filter(None, output.split('\n')):
         blob, commit = line.split(' ')
         blobs[commit] = blob
     wanted = [(commit, blobs[commit]) for commit in commits if commit in blobs]
     if not wanted:
         return {}
-    command = [*git_command(repository), 'cat-file', '--batch']
+    command = [*repository.git_command(), 'cat-file', '--batch']
     data = subprocess.run(command, input=''.join(f'{blob}\n' for _, blob in wanted).encode(),
                           capture_output=True, check=True).stdout
     notes = {}
@@ -86,13 +86,13 @@ def read_notes(commits: list[str], repository: str | None = None) -> dict[str, d
     return notes
 
 
-def write_note(commit: str, note: dict[str, Any], repository: str | None = None) -> None:
+def write_note(repository: Repository, commit: str, note: dict[str, Any]) -> None:
     """Stores the review note of a commit, replacing the one it had.
 
     Args:
+        repository: the repository.
         commit: the commit, any name git understands.
         note: the note's JSON object.
-        repository: the repository's directory, None for the current one.
     """
-    git('notes', f'--ref={NOTES_REF}', 'add', '-f', '-F', '-', commit,
-        input_text=json.dumps(note, indent=2) + '\n', repository=repository)
+    repository.git('notes', f'--ref={NOTES_REF}', 'add', '-f', '-F', '-', commit,
+                   input_text=json.dumps(note, indent=2) + '\n')

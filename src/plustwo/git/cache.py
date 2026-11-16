@@ -6,7 +6,7 @@ import re
 from collections.abc import Callable
 from typing import Any
 
-from plustwo.git.repository import current_repository
+from plustwo.git.repository import Repository
 
 
 # Object names that never change: a full hash, or the parent of one. What
@@ -24,12 +24,13 @@ def cached_for_objects(*positions: int) -> Callable[[Callable[..., Any]], Any]:
     that never change (see IMMUTABLE_NAME).
 
     Commits and blobs don't change, so neither do their diffs. The
-    repository a call acts on is part of the key. Callers must not change
+    repository, the first argument, is part of the key. Callers must not change
     what they get, because the next caller gets the same object.
 
     Args:
         *positions: the positions of the arguments that must be immutable
-            object names for a result to be kept.
+            object names for a result to be kept, counted with the
+            repository at position 0.
 
     Returns:
         The decorator. The decorated function has cache_clear(), like one
@@ -45,12 +46,12 @@ def cached_for_objects(*positions: int) -> Callable[[Callable[..., Any]], Any]:
             The wrapper.
         """
         @functools.lru_cache(maxsize=CACHE_SIZE)
-        def cached(repository: str | None, arguments: tuple[Any, ...],
+        def cached(repository: Repository, arguments: tuple[Any, ...],
                    keywords: tuple[tuple[str, Any], ...]) -> Any:
             """Calls the function, once per key.
 
             Args:
-                repository: the repository the call acts on, part of the key.
+                repository: the repository.
                 arguments: the call's positional arguments.
                 keywords: the call's keyword arguments, sorted by name.
 
@@ -70,11 +71,11 @@ def cached_for_objects(*positions: int) -> Callable[[Callable[..., Any]], Any]:
             Returns:
                 The function's result.
             """
-            if all(position < len(arguments) and IMMUTABLE_NAME.match(str(arguments[position]))
-                   for position in positions):
+            if arguments and isinstance(arguments[0], Repository) and all(
+                    position < len(arguments) and IMMUTABLE_NAME.match(str(arguments[position]))
+                    for position in positions):
                 try:
-                    return cached(current_repository(keywords.get('repository')), arguments,
-                                  tuple(sorted(keywords.items())))
+                    return cached(arguments, tuple(sorted(keywords.items())))
                 except TypeError:
                     # An argument that can't be a key
                     pass

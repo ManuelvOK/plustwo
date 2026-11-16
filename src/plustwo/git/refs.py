@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: Zlib
 """The refs plustwo keeps, and reading refs and branches."""
 
-import os
 import subprocess
-from pathlib import Path
 
-from plustwo.git.repository import current_repository, git, git_command
+from plustwo.git.repository import Repository
 
 
 # ── the refs plustwo keeps ────────────────────────────────────────────────────
@@ -39,102 +37,59 @@ REVIEW_BRANCH_PREFIX = 'review/'
 
 # ── reading refs and branches ─────────────────────────────────────────────────
 
-# Each directory, mapped to the working tree of its repository, see
-# toplevel()
-_TOPLEVELS: dict[str, str] = {}
-
-
-def toplevel(repository: str | None = None) -> str | None:
-    """Finds the working tree of a repository, asking git once per directory.
-
-    Args:
-        repository: a directory in the repository, None for the current
-            one (see current_repository()).
-
-    Returns:
-        The working tree's absolute path, None outside a repository.
-    """
-    directory = os.path.abspath(current_repository(repository) or os.getcwd())
-    if directory not in _TOPLEVELS:
-        result = subprocess.run(['git', '-C', directory, 'rev-parse', '--show-toplevel'],
-                                capture_output=True, text=True)
-        found = result.stdout.strip() or None if 0 == result.returncode else None
-        if found is None:
-            # Not kept: the directory can become a repository.
-            return None
-        _TOPLEVELS[directory] = found
-    return _TOPLEVELS[directory]
-
-
-def refs_with_prefix(*prefixes: str, repository: str | None = None) -> dict[str, str]:
+def refs_with_prefix(repository: Repository, *prefixes: str) -> dict[str, str]:
     """Lists the refs below some prefixes.
 
     Args:
+        repository: the repository.
         *prefixes: the prefixes, like 'refs/plustwo/stacks/'.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         Each ref's full name, mapped to its object name.
     """
-    output = git('for-each-ref', '--format=%(refname) %(objectname)', *prefixes, check=False,
-                 repository=repository)
+    output = repository.git('for-each-ref', '--format=%(refname) %(objectname)', *prefixes,
+                            check=False)
     return dict(line.split(' ', 1) for line in output.split('\n') if line)
 
 
-def commits_between(start: str, end: str, repository: str | None = None) -> list[str]:
+def commits_between(repository: Repository, start: str, end: str) -> list[str]:
     """Lists the commits on end that are not on start.
 
     Args:
+        repository: the repository.
         start: the commit where the range starts, not included.
         end: the commit where the range ends, included.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         The commits' object names, oldest first.
     """
-    output = git('rev-list', '--reverse', f'{start}..{end}', check=False, repository=repository)
+    output = repository.git('rev-list', '--reverse', f'{start}..{end}', check=False)
     return output.split('\n') if output else []
 
 
-def current_branch(repository: str | None = None) -> str | None:
+def current_branch(repository: Repository) -> str | None:
     """Finds the checked out branch.
 
     Args:
-        repository: the repository's directory, None for the current one.
+        repository: the repository.
 
     Returns:
         The branch's short name, None on a detached HEAD.
     """
-    return git('symbolic-ref', '--quiet', '--short', 'HEAD', check=False,
-               repository=repository) or None
+    return repository.git('symbolic-ref', '--quiet', '--short', 'HEAD', check=False) or None
 
 
-def is_ancestor(commit: str, descendant: str, repository: str | None = None) -> bool:
+def is_ancestor(repository: Repository, commit: str, descendant: str) -> bool:
     """Tells whether a commit is on another one's history.
 
     Args:
+        repository: the repository.
         commit: the commit that may be an ancestor.
         descendant: the commit whose history is searched.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         True if commit is descendant or one of its ancestors.
     """
-    return 0 == subprocess.run([*git_command(repository),
+    return 0 == subprocess.run([*repository.git_command(),
                                 'merge-base', '--is-ancestor', commit, descendant],
                                capture_output=True).returncode
-
-
-def git_path(name: str, repository: str | None = None) -> Path:
-    """Builds the absolute path of a file inside the .git directory.
-
-    Args:
-        name: the file's path relative to the .git directory.
-        repository: the repository's directory, None for the current one.
-
-    Returns:
-        The absolute path, which git resolves for worktrees too.
-    """
-    repository = current_repository(repository)
-    path = Path(git('rev-parse', '--git-path', name, repository=repository))
-    return path if path.is_absolute() else (Path(repository or '.') / path).absolute()
