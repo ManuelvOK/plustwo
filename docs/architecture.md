@@ -63,6 +63,29 @@ work outside any repository, like `inbox` and `watch` over all registered
 ones or the user's settings, start from the registry. git calls without a
 repository, like `git config --file`, go through `run_git()`.
 
+## The curses interface
+
+`tui/interface.py`'s `Interface` runs the main loop: the stack of screens,
+keys, mouse, drawing and the bottom line. It holds `TextInput` (the comment
+box and the editor) and `Dialogs` (questions in the bottom line, boxes over
+the screen). Screens follow the `View` protocol in `tui/view.py`.
+
+`ChangeView`, the change screen, loads the change, keeps the compared
+versions, lays out the panes, moves the focus, routes the mouse and draws.
+Its `action()` looks the action up in a table of one handler each. It holds:
+
+1. One class per sidebar pane: `StackPane`, `MessagePane`, `FilesPane` and
+   `CommentsPane`. Each holds its cursor and draws itself from what the
+   screen hands it.
+2. `DiffThreads`: the threads at the diff's cursor, folding, going to them,
+   the comment box's place below them and moving them by hand.
+3. `DiffSearch`: the search in the diff.
+
+The last two read the change, the comparison and the diff through the
+screen's public properties. The interface reads its settings from the
+working directory's repository and the user's file, the change screen the
+diff's theme (`tui.theme`) from the repository of the change it shows.
+
 ## Starting
 
 `plustwo` at the top of the checkout is a small launcher. It puts the `src/`
