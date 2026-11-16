@@ -14,6 +14,7 @@ every command and docs/architecture.md for the layers of the code.
 | `src/plustwo/web/page/` | the page: index.html, app.js, style.css, no build step         |
 | `docs/architecture.md`  | the layers, what each may use, the rules of the layout         |
 | `tools/check_layers.py` | checks the imports against the layer table, in `make check`    |
+| `tools/check_style.py`  | checks comments, line lengths and docstrings, in `make check`  |
 | `AGENTS.md`             | guide for agents as authors, printed by `plustwo guide`        |
 | `tests/`                | `make test`: diff rows, flows, settings, web, edits by hand    |
 | `TESTING.md`            | manual walkthrough for the user, in a throwaway repository     |
@@ -25,8 +26,8 @@ every command and docs/architecture.md for the layers of the code.
 - All review logic lives in plain functions in the layers below the
   interfaces (`review` and down, see docs/architecture.md). The command
   line, the curses interface and the web interface are thin frontends
-  that call them. Imports point downwards only. Never put logic into argparse handlers, curses code,
-  HTTP handlers or the page's JavaScript.
+  that call them. Imports point downwards only. Never put logic into
+  argparse handlers, curses code, HTTP handlers or the page's JavaScript.
 - There is no global current repository. A function that acts on one
   takes a `Repository` (git/repository.py) as its first parameter, a
   function that takes a `Change` uses `change.repository`. The frontends
