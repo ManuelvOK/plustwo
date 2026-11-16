@@ -5,8 +5,10 @@ import hashlib
 import json
 import re
 import secrets
+from collections.abc import Callable, Iterable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from plustwo.review import dashboard as review_dashboard
@@ -18,10 +20,13 @@ from plustwo.config.view_state import (
     SECTION_TITLES, folded_sections, follows_latest, set_follows_latest, set_section_order,
     toggle_section)
 from plustwo.diff.contrast import readable_colours
+from plustwo.diff.rows import Half
+from plustwo.diff.sgr import Segment
 from plustwo.diff.syntax import syntax_segments
 from plustwo.git.commit_message import commit_message, commit_message_parts
 from plustwo.git.errors import ChangeError
 from plustwo.git.files import file_lines, files_of, renames_of
+from plustwo.model.change import Change
 from plustwo.model.comment import ACK, DONE, RESOLVED
 from plustwo.model.place import COMMIT_MSG, NEW_SIDE, place_label, split_place
 from plustwo.model.roles import REVIEWER
@@ -59,45 +64,109 @@ DEFAULT_PORT = 8022
 THEMES = {'light': 'GitHub', 'dark': 'Monokai Extended'}
 
 
+Query = dict[str, str]
+
+
 class Server:
     """The repositories served and the caches the API keeps."""
 
-    def __init__(self, repositories, port):
+    def __init__(self, repositories: Iterable[str], port: int) -> None:
+        """Starts serving repositories.
+
+        Args:
+            repositories: the repositories' directories.
+            port: the port the HTTP server listens on.
+        """
         self.repositories = [str(Path(repository).resolve()) for repository in repositories]
         self.port = port
         self.token = secrets.token_hex(16)
-        self._colours = {}
+        self._colour_cache: dict[tuple[str, str, str, str], list[list[Segment]] | None] = {}
 
-    def repository(self, query):
+    def _repository(self, query: Query | dict[str, Any]) -> str:
+        """Finds the repository a request is about.
+
+        Args:
+            query: the request's parameters, "repo" is the index.
+
+        Returns:
+            The repository's directory.
+
+        Raises:
+            ChangeError: if there is no such repository.
+        """
         index = int(query.get('repo', '0'))
         if not 0 <= index < len(self.repositories):
             raise ChangeError(f'no repository {index}')
         return self.repositories[index]
 
-    def change(self, query):
-        repository = self.repository(query)
+    def _change(self, query: Query) -> tuple[Change, str]:
+        """Finds the change a request is about.
+
+        Args:
+            query: the request's parameters, "id" and "repo".
+
+        Returns:
+            The change and its repository.
+        """
+        repository = self._repository(query)
         return find_change(query['id'], repository), repository
 
-    def colours(self, version, path, lines, repository, theme):
-        """Syntax colours of a file's version, kept per version."""
+    def _syntax_colours(self, version: str, path: str, lines: list[str] | None,
+                        repository: str, theme: str) -> list[list[Segment]] | None:
+        """Syntax colours of a file's version, kept per version.
+
+        Args:
+            version: the version's commit.
+            path: the file's path.
+            lines: the file's lines, None for none.
+            repository: the repository's directory.
+            theme: light or dark.
+
+        Returns:
+            The segments per line, None without colours.
+        """
         key = (repository, version, path, theme)
-        if key not in self._colours:
-            self._colours[key] = syntax_segments(lines or [], path, THEMES[theme])
-        return self._colours[key]
+        if key not in self._colour_cache:
+            self._colour_cache[key] = syntax_segments(lines or [], path, THEMES[theme])
+        return self._colour_cache[key]
 
     # ── GET ───────────────────────────────────────────────────────────────────
 
-    def version(self, _query):
+    def version(self, _query: Query) -> dict[str, Any]:
+        """A hash of every repository's stack state, the page polls it.
+
+        Args:
+            _query: unused.
+
+        Returns:
+            The JSON object.
+        """
         text = '\n'.join(stack_version(repository) for repository in self.repositories)
         return {'version': hashlib.sha1(text.encode()).hexdigest()}
 
-    def repos(self, _query):
+    def repos(self, _query: Query) -> dict[str, Any]:
+        """Lists the served repositories' names.
+
+        Args:
+            _query: unused.
+
+        Returns:
+            The JSON object.
+        """
         return {'repositories': [repository_name(repository)
                                  for repository in self.repositories]}
 
-    def stacks(self, query):
-        repository = self.repository(query)
-        stacks = {}
+    def stacks(self, query: Query) -> dict[str, Any]:
+        """Lists the stacks of a repository.
+
+        Args:
+            query: "repo" is the repository index.
+
+        Returns:
+            The JSON object.
+        """
+        repository = self._repository(query)
+        stacks: dict[str, list[dict[str, Any]]] = {}
         for change in changes_in_stack(repository):
             stacks.setdefault(change.topic, []).append(change_summary(change, repository))
         return {'base': base_branch(repository),
@@ -105,14 +174,22 @@ class Server:
                             'needs_rebase': needs_rebase(topic, repository),
                             'changes': changes} for topic, changes in stacks.items()]}
 
-    def dashboard(self, _query):
+    def dashboard(self, _query: Query) -> dict[str, Any]:
         """The dashboard over all served repositories: every section in the
         user's order, folded ones with their count only.
+
+        Args:
+            _query: unused.
+
+        Returns:
+            The JSON object.
         """
         changes = [change for repository in self.repositories
                    for change in changes_in_stack(repository)]
-        names = {path: name for name, path in registered_repositories().items()}
-        index = {repository: number for number, repository in enumerate(self.repositories)}
+        names: dict[str | None, str] = {
+            path: name for name, path in registered_repositories().items()}
+        index: dict[str | None, int] = {
+            repository: number for number, repository in enumerate(self.repositories)}
         folded = folded_sections()
         behind = {(change.repository, change.topic) for change in changes
                   if change.rebase_is_requested or needs_rebase(change.topic, change.repository)}
@@ -130,8 +207,16 @@ class Server:
                     for number, change in entries]})
         return {'sections': sections}
 
-    def change_details(self, query):
-        change, repository = self.change(query)
+    def change_details(self, query: Query) -> dict[str, Any]:
+        """Gives one change with its files, threads, history and votes.
+
+        Args:
+            query: "id", "repo", and "a" and "b", the versions compared.
+
+        Returns:
+            The JSON object.
+        """
+        change, repository = self._change(query)
         renames = renames_of(change.commit, repository)
         # Counts between the compared versions, unchanged files greyed
         try:
@@ -167,8 +252,17 @@ class Server:
                     repository)),
                 'votes': [vote_json(vote) for vote in change.votes]}
 
-    def diff(self, query):
-        change, repository = self.change(query)
+    def diff(self, query: Query) -> dict[str, Any]:
+        """Gives the diff rows of one file.
+
+        Args:
+            query: "id", "repo", "path", "a" and "b", "context", "whitespace",
+                "theme" and "shades".
+
+        Returns:
+            The JSON object.
+        """
+        change, repository = self._change(query)
         path = query['path']
         first, second = query.get('a') or 'base', query.get('b') or 'latest'
         context = None if 'all' == query.get('context') else int(query.get('context', '10'))
@@ -180,20 +274,29 @@ class Server:
         old, new, paths = diff_endpoints(change, first, second, path, repository)
         old_path = old_path_of(change, first, second, paths[0], repository) or paths[0]
         theme = 'light' if 'light' == query.get('theme') else 'dark'
-        old_colours = self.colours(old, old_path, file_lines(old, old_path, repository),
+        old_colours = self._syntax_colours(old, old_path, file_lines(old, old_path, repository),
                                    repository, theme)
-        new_colours = self.colours(new, paths[0], file_lines(new, paths[0], repository),
+        new_colours = self._syntax_colours(new, paths[0], file_lines(new, paths[0], repository),
                                    repository, theme)
         from_below, partly = rebase_lines(change, first, second, path, repository)
 
-        def colours_of(half, colours):
+        def colours_of(half: Half, colours: list[list[Segment]] | None) -> list[Segment] | None:
+            """Finds the syntax segments of a diff half's line.
+
+            Args:
+                half: the half.
+                colours: the file's segments per line, None without colours.
+
+            Returns:
+                The line's segments, None if there are none.
+            """
             if colours is None or half.number is None or half.number > len(colours):
                 return None
             return colours[half.number - 1]
 
         # Where this diff shows each thread: on a newer patch set than the
         # thread's, its place there
-        threads = {}
+        threads: dict[int, dict[str, Any]] = {}
         for comment in change.comments:
             shown = thread_place(change, comment, first, second, repository)
             threads[comment.number] = {'path': shown.path, 'line': shown.line, 'side': shown.side,
@@ -207,7 +310,8 @@ class Server:
         except (ValueError, AttributeError, TypeError):
             shades = {}
         return {'binary': False, 'comparing': comparing,
-                'readable': readable_colours(used, shades), 'renamed_from': None if old_path == paths[0] else old_path,
+                'readable': readable_colours(list(used), shades),
+                'renamed_from': None if old_path == paths[0] else old_path,
                 'threads': threads,
                 'from_below': [sorted(lines) for lines in from_below],
                 'partly': [sorted(lines) for lines in partly],
@@ -215,7 +319,15 @@ class Server:
                           'new': half_json(row.new, colours_of(row.new, new_colours)),
                           'skipped': row.n_skipped} for row in rows]}
 
-    def keys(self, _query):
+    def keys(self, _query: Query) -> dict[str, Any]:
+        """Gives the key bindings and the follow-latest switch.
+
+        Args:
+            _query: unused.
+
+        Returns:
+            The JSON object.
+        """
         overrides = settings_section('keys', self.repositories[0])
         preset = overrides.pop('preset', 'vim')
         if preset not in PRESETS:
@@ -230,8 +342,18 @@ class Server:
 
     # ── POST ──────────────────────────────────────────────────────────────────
 
-    def act(self, body):
-        """One write, named by body['action'], on the change body['id']."""
+    def act(self, body: dict[str, Any]) -> dict[str, Any]:
+        """One write, named by body['action'], on the change body['id'].
+
+        Args:
+            body: the request's JSON object.
+
+        Returns:
+            The JSON object to answer with.
+
+        Raises:
+            ChangeError: if the action is unknown.
+        """
         if 'fold' == body.get('action'):
             return {'folded': toggle_section(body['section'])}
         if 'order' == body.get('action'):
@@ -240,11 +362,11 @@ class Server:
         if 'follow-latest' == body.get('action'):
             set_follows_latest(bool(body.get('on')))
             return {'on': follows_latest()}
-        repository = self.repository(body)
+        repository = self._repository(body)
         change = find_change(body['id'], repository)
         change_id = change.change_id
         action = body['action']
-        number = body.get('number')
+        number: Any = body.get('number')
         if 'comment' == action:
             path, line = split_place(body['place'])
             place, side, patch_set = comment_place(
@@ -296,18 +418,41 @@ class Server:
         return {}
 
 
-GET_ROUTES = {'/api/version': Server.version, '/api/repos': Server.repos,
-              '/api/stacks': Server.stacks, '/api/dashboard': Server.dashboard, '/api/change': Server.change_details,
-              '/api/diff': Server.diff, '/api/keys': Server.keys}
+GET_ROUTES: dict[str, Callable[[Server, Query], dict[str, Any]]] = {
+    '/api/version': Server.version, '/api/repos': Server.repos, '/api/stacks': Server.stacks,
+    '/api/dashboard': Server.dashboard, '/api/change': Server.change_details,
+    '/api/diff': Server.diff, '/api/keys': Server.keys}
+
+
+class PlustwoServer(ThreadingHTTPServer):
+    """The HTTP server, which carries the Server the handlers use."""
+
+    plustwo: Server
 
 
 class Handler(BaseHTTPRequestHandler):
     """One request. The Server is in self.server.plustwo."""
 
-    def log_message(self, *_arguments):
-        """Quiet: the terminal only shows the URL."""
+    server: PlustwoServer
 
-    def _send(self, status, body, content_type='application/json'):
+    def log_message(self, format: str,  # pylint: disable=redefined-builtin
+                    *_arguments: Any) -> None:
+        """Quiet: the terminal only shows the URL.
+
+        Args:
+            format: unused.
+            _arguments: unused.
+        """
+
+    def _send(self, status: int, body: bytes | dict[str, Any],
+              content_type: str = 'application/json') -> None:
+        """Sends a response.
+
+        Args:
+            status: the HTTP status.
+            body: the bytes to send, or an object to send as JSON.
+            content_type: the content type.
+        """
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
         self.send_response(status)
         self.send_header('Content-Type', f'{content_type}; charset=utf-8')
@@ -316,8 +461,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _allowed(self, needs_token):
-        """Whether the request comes from our own page."""
+    def _allowed(self, needs_token: bool) -> bool:
+        """Whether the request comes from our own page.
+
+        Args:
+            needs_token: whether the request has to carry the token.
+
+        Returns:
+            True if it may be answered.
+        """
         plustwo = self.server.plustwo
         hosts = {f'127.0.0.1:{plustwo.port}', f'localhost:{plustwo.port}'}
         origin = self.headers.get('Origin')
@@ -327,8 +479,12 @@ class Handler(BaseHTTPRequestHandler):
         return not needs_token or secrets.compare_digest(
             self.headers.get(TOKEN_HEADER, ''), plustwo.token)
 
-    def _run(self, call):
-        plustwo = self.server.plustwo
+    def _run(self, call: Callable[[], dict[str, Any]]) -> None:
+        """Answers with what a call returns, or its error as status 400.
+
+        Args:
+            call: the function that makes the answer.
+        """
         try:
             self._send(200, call())
         except ChangeError as error:
@@ -336,7 +492,8 @@ class Handler(BaseHTTPRequestHandler):
         except (KeyError, ValueError, TypeError) as error:
             self._send(400, {'error': f'bad request: {error}'})
 
-    def do_GET(self):  # pylint: disable=invalid-name
+    def do_GET(self) -> None:  # pylint: disable=invalid-name
+        """Answers a GET: the page, its files or an API call."""
         url = urlparse(self.path)
         plustwo = self.server.plustwo
         if url.path.startswith('/api/'):
@@ -361,7 +518,8 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, b'not found', 'text/plain')
 
-    def do_POST(self):  # pylint: disable=invalid-name
+    def do_POST(self) -> None:  # pylint: disable=invalid-name
+        """Answers a POST: an API action."""
         plustwo = self.server.plustwo
         if '/api/action' != urlparse(self.path).path:
             self._send(404, {'error': 'not found'})
@@ -378,18 +536,30 @@ class Handler(BaseHTTPRequestHandler):
         self._run(lambda: plustwo.act(body))
 
 
-def make_server(repositories, port=DEFAULT_PORT):
+def make_server(repositories: Iterable[str], port: int = DEFAULT_PORT) -> PlustwoServer:
     """The HTTP server, bound to 127.0.0.1, not started yet. Port 0 picks
     a free one.
+
+    Args:
+        repositories: the repositories' directories.
+        port: the port.
+
+    Returns:
+        The server.
     """
-    server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
+    server = PlustwoServer(('127.0.0.1', port), Handler)
     server.daemon_threads = True
     server.plustwo = Server(repositories, server.server_address[1])
     return server
 
 
-def serve(repositories, port=DEFAULT_PORT):
-    """Serves until stopped with Ctrl-C."""
+def serve(repositories: Iterable[str], port: int = DEFAULT_PORT) -> None:
+    """Serves until stopped with Ctrl-C.
+
+    Args:
+        repositories: the repositories' directories.
+        port: the port.
+    """
     server = make_server(repositories, port)
     print(f'plustwo: http://127.0.0.1:{server.plustwo.port}/', flush=True)
     try:

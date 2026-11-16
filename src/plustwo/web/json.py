@@ -1,23 +1,46 @@
 # SPDX-License-Identifier: Zlib
 """What the API sends: the core's objects as JSON."""
 
+from collections.abc import Sequence
+from typing import Any
+
+from plustwo.diff.rows import Half
+from plustwo.diff.sgr import Segment
+from plustwo.model.change import Change
+from plustwo.model.comment import Comment
 from plustwo.model.message import Message
 from plustwo.model.place import place_label
-from plustwo.model.vote import CODE_REVIEW, VERIFIED
+from plustwo.model.vote import CODE_REVIEW, VERIFIED, Vote
+from plustwo.review.history import PatchSetEntry
 from plustwo.review.labels import comment_counts, message_text, vote_label
 from plustwo.review.last_send import last_send
 from plustwo.review.moves import move_text
 
 
-def message_json(message, patch_set=None):
-    """A message for the page: text to edit, shown as the core shows it."""
+def message_json(message: Message, patch_set: int | None = None) -> dict[str, Any]:
+    """A message for the page: text to edit, shown as the core shows it.
+
+    Args:
+        message: the message.
+        patch_set: the message's patch set, None if unknown.
+
+    Returns:
+        The JSON object.
+    """
     return {'author': message.author, 'text': message.text, 'shown': message_text(message),
             'sent': message.sent, 'unresolved': message.sets_unresolved(), 'patch_set': patch_set}
 
 
-def comment_json(comment, patch_sets=()):
+def comment_json(comment: Comment, patch_sets: Sequence[int] = ()) -> dict[str, Any]:
     """A thread for the page. patch_sets are its messages' patch sets, see
     message_patch_sets().
+
+    Args:
+        comment: the thread.
+        patch_sets: the patch set of each message.
+
+    Returns:
+        The JSON object.
     """
     path, _, line = comment.place.rpartition(':')
     if not path or not line.isdigit():
@@ -34,11 +57,18 @@ def comment_json(comment, patch_sets=()):
             'moves': moves_json(comment)}
 
 
-def moves_json(comment):
+def moves_json(comment: Comment) -> list[dict[str, Any]]:
     """A thread's moves by hand for the page: the text and how many of its
     messages come before it, see Comment.entries().
+
+    Args:
+        comment: the thread.
+
+    Returns:
+        The JSON objects, one per move.
     """
-    moves, before = [], 0
+    moves: list[dict[str, Any]] = []
+    before = 0
     for entry in comment.entries():
         if isinstance(entry, Message):
             before += 1
@@ -47,21 +77,34 @@ def moves_json(comment):
     return moves
 
 
-def history_list(history):
+def history_list(history: list[PatchSetEntry]) -> list[dict[str, Any]]:
     """patch_set_history() for the page, the reviewer's newest send
     marked on its last event (last_send), see last_send().
+
+    Args:
+        history: the patch set history.
+
+    Returns:
+        The JSON objects, one per patch set.
     """
     last = last_send(history)
     result = [history_json(entry) for entry in history]
     for entry in result:
         for index, event in enumerate(entry['events']):
             event['last_send'] = (entry['number'], index) == last
-        entry['last_send'] = bool(last) and last[0] == entry['number']
+        entry['last_send'] = last is not None and last[0] == entry['number']
     return result
 
 
-def history_json(entry):
-    """One patch set of patch_set_history() for the page."""
+def history_json(entry: PatchSetEntry) -> dict[str, Any]:
+    """One patch set of patch_set_history() for the page.
+
+    Args:
+        entry: the patch set's entry.
+
+    Returns:
+        The JSON object.
+    """
     return {'number': entry.number, 'uploaded': entry.upload_time, 'uploader': entry.uploader,
             'kind': entry.type, 'code_review': entry.vote_label(CODE_REVIEW),
             'verified': entry.vote_label(VERIFIED), 'comments': entry.comments_label(),
@@ -74,13 +117,30 @@ def history_json(entry):
                        for event in entry.events]}
 
 
-def vote_json(vote):
+def vote_json(vote: Vote) -> dict[str, Any]:
+    """A vote for the page.
+
+    Args:
+        vote: the vote.
+
+    Returns:
+        The JSON object.
+    """
     return {'label': vote.label, 'value': vote.value, 'by': vote.by,
             'patch_set': vote.patch_set, 'message': vote.message,
             'copied_from': vote.copied_from}
 
 
-def change_summary(change, repository):
+def change_summary(change: Change, repository: str | None) -> dict[str, Any]:
+    """A change's line in a list for the page.
+
+    Args:
+        change: the change.
+        repository: the repository's directory, unused.
+
+    Returns:
+        The JSON object.
+    """
     return {'id': change.change_id, 'short_id': change.short_id(), 'subject': change.subject,
             'topic': change.topic, 'base': change.base, 'state': change.state(),
             'patch_set': change.latest_patch_set(), 'turn': change.turn(),
@@ -90,6 +150,15 @@ def change_summary(change, repository):
             'repo_name': change.repository_name}
 
 
-def half_json(half, colours):
+def half_json(half: Half, colours: list[Segment] | None) -> dict[str, Any]:
+    """One side of a diff row for the page.
+
+    Args:
+        half: the side.
+        colours: the line's syntax segments, None without colours.
+
+    Returns:
+        The JSON object.
+    """
     return {'kind': half.type, 'number': half.number, 'text': half.text, 'edits': half.edits,
             'moved': half.is_moved, 'whole': half.is_whole, 'colours': colours}
