@@ -46,13 +46,13 @@ def cached_for_objects(*positions: int) -> Callable[[Callable[..., Any]], Any]:
             The wrapper.
         """
         @functools.lru_cache(maxsize=CACHE_SIZE)
-        def cached(repository: Repository, arguments: tuple[Any, ...],
+        def cached(arguments: tuple[Any, ...],
                    keywords: tuple[tuple[str, Any], ...]) -> Any:
             """Calls the function, once per key.
 
             Args:
-                repository: the repository.
-                arguments: the call's positional arguments.
+                arguments: the call's positional arguments, the repository
+                    first.
                 keywords: the call's keyword arguments, sorted by name.
 
             Returns:
