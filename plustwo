@@ -83,6 +83,16 @@ Usage:
                                         "I3f2a #2: text" or "I3f2a #3
                                         resolve: text". Lines up to the
                                         next such line go on with its text.
+                                        "I3f2a #4 move a.cc:12" moves the
+                                        thread, see move.
+    plustwo move CHANGE NUMBER PLACE [--patch-set N] [--old] [--author]
+                                        moves a thread whose line got lost
+                                        to PLACE on the newest patch set
+                                        (or N), "a.cc:12 (old)" or --old
+                                        for the old version. Older patch
+                                        sets keep where it was. upload
+                                        lists the threads that lost their
+                                        line.
     plustwo done CHANGE NUMBER [TEXT]
                                         answers "Done" (or TEXT) and resolves
                                         the thread
@@ -211,7 +221,7 @@ import signal
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 NOTES_REF = 'refs/notes/review'
@@ -238,6 +248,8 @@ OLD_STATUSES = {'open': UNRESOLVED, 'agreed': UNRESOLVED, 'dropped': RESOLVED, '
 # The replies Gerrit offers with one click. Both resolve the thread.
 DONE = 'Done'
 ACK = 'Ack'
+# The verb of an answer that moves its thread, see parse_answers()
+MOVE = 'move'
 # Replies that only acknowledge, compared without case and end punctuation.
 # A reviewer's reply like this resolves its thread, as the Ack key does.
 ACKNOWLEDGEMENTS = {'ack', 'acked', 'acknowledged', 'ok', 'okay', 'k', 'thanks', 'thank you',
@@ -349,6 +361,21 @@ class Message:
 
 
 @dataclass
+class Move:
+    """A thread moved by hand to the place it belongs to on a patch set,
+    when porting lost it. From that patch set on the thread is ported from
+    here, older ones keep where it was. Not a message: it doesn't change
+    whose turn it is.
+    """
+    patch_set: int
+    place: str
+    side: str = NEW_SIDE
+    by: str = REVIEWER
+    # When it was moved, seconds since 1970
+    time: int = 0
+
+
+@dataclass
 class Comment:
     """A comment thread on one place of a change.
 
@@ -367,6 +394,32 @@ class Comment:
     # Never changes, unlike a place. Numbers don't change either: deleting a
     # draft thread leaves a gap.
     id: str = ''
+    # Moves by hand, in the order they were made, see anchored()
+    moves: list[Move] = field(default_factory=list)
+
+    def anchored(self, patch_set=None):
+        """The thread with the place it has on a patch set, None for the
+        newest: the newest move up to that patch set, the place it was
+        written on without one. The same object when it wasn't moved.
+        """
+        moves = [(move.patch_set, index, move) for index, move in enumerate(self.moves)
+                 if patch_set is None or move.patch_set <= patch_set]
+        if not moves:
+            return self
+        move = max(moves, key=lambda entry: entry[:2])[2]
+        return replace(self, place=move.place, side=move.side, patch_set=move.patch_set)
+
+    def entries(self):
+        """The messages and moves in the order they happened. Moves go
+        before the drafts, messages of old notes without a time first.
+        """
+        moves = sorted(self.moves, key=lambda move: move.time)
+        entries = []
+        for message in self.messages:
+            while moves and (not message.sent or moves[0].time < message.time):
+                entries.append(moves.pop(0))
+            entries.append(message)
+        return entries + moves
 
     @property
     def status(self):
@@ -1517,6 +1570,7 @@ def _change_from(commit, topic, note, repository, change_id, subject, patch_sets
         if RESOLVED == old_status and sent and all(message.unresolved is None
                                                   for message in messages):
             sent[-1].unresolved = False
+        comment['moves'] = [Move(**move) for move in comment.get('moves', [])]
         comment.setdefault('id', hashlib.sha1(
             f'{change_id} {comment["number"]} {comment["place"]}'.encode()).hexdigest()[:12])
         comments.append(Comment(**comment, messages=messages))
@@ -1546,7 +1600,9 @@ def note_of(change):
                           'place': comment.place,
                           'patch_set': comment.patch_set,
                           'side': comment.side,
-                          'messages': [vars(message) for message in comment.messages]}
+                          'messages': [vars(message) for message in comment.messages],
+                          **({'moves': [vars(move) for move in comment.moves]}
+                             if comment.moves else {})}
                          for comment in change.comments],
             'votes': [vars(vote) for vote in change.votes],
             'verified_required': change.verified_required,
@@ -2349,6 +2405,55 @@ def add_comment(change_id, place, text, sent=True, side=NEW_SIDE, author=REVIEWE
     return update_change(change_id, edit, repository)
 
 
+def move_place(text):
+    """A place to move a thread to as written: "a.cc:12", "a.cc:12 (old)"
+    for the old side, as place_label() shows it. Returns (place, side).
+    """
+    text = text.strip()
+    if text.endswith('(old)'):
+        return text[:-len('(old)')].strip(), OLD_SIDE
+    return text, NEW_SIDE
+
+
+def place_move(change, comment, place, side=NEW_SIDE, patch_set=0, by=REVIEWER,
+               repository=None):
+    """Moves a thread of change to place on a patch set, the newest for 0,
+    see comment_place() for a line of a diff. Checks the place like a new
+    thread's. A thread that is only a draft just gets the new place, else
+    the move is kept and shown (see Move). Returns the Move, None for a
+    draft.
+    """
+    patch_set = patch_set or change.latest_patch_set()
+    if patch_set not in change.patch_sets:
+        raise ChangeError(f'{change.short_id()} has no patch set {patch_set}')
+    path, _line = split_place(place)
+    if path in (PATCHSET_LEVEL, CHANGE_PLACE):
+        place, side = PATCHSET_LEVEL, NEW_SIDE
+    check_place(change, replace(comment, place=place, side=side, patch_set=patch_set),
+                repository)
+    if comment.is_draft():
+        comment.place, comment.side, comment.patch_set = place, side, patch_set
+        return None
+    move = Move(patch_set=patch_set, place=place, side=side, by=by, time=int(time.time()))
+    comment.moves.append(move)
+    return move
+
+
+def move_thread(change_id, number, place, side=NEW_SIDE, patch_set=0, by=REVIEWER,
+                repository=None):
+    """Moves a thread by hand, see place_move(), under the lock."""
+    def edit(change):
+        return place_move(change, comment_of(change, number), place, side, patch_set, by,
+                          repository)
+
+    return update_change(change_id, edit, repository)
+
+
+def move_text(move):
+    """A move for display, like "moved by author to a.cc:12 (PS3)"."""
+    return f'moved by {move.by} to {place_label(move.place, move.side)} (PS{move.patch_set})'
+
+
 def check_place(change, comment, repository=None):
     """Raises ChangeError when a new thread's file isn't in the version it
     counts in, see thread_version(), or its line is past the file's end.
@@ -2392,12 +2497,14 @@ def add_message(change_id, number, author, text, sent=True, status=None, reposit
 # A line of `plustwo answer`: Change-Id prefix, thread, optional verb, text
 ANSWER_PATTERN = re.compile(
     r'^\s*(?:\S+\s+)?(I[0-9a-f]+)\s+#(\d+)\s*(?:\(PS\d+[^)]*\)\s*)?'
-    r'(resolve|unresolve|done)?\s*:?\s*(.*)$')
+    r'(resolve|unresolve|done|move)?\s*:?\s*(.*)$')
 
 
 def parse_answers(text):
     """The author's answers, each starting on a line like "I3f2a #2 done",
-    "I3f2a #3: text", "I3f2a #4 resolve: text" or "unresolve: text". A
+    "I3f2a #3: text", "I3f2a #4 resolve: text" or "unresolve: text", or
+    "I3f2a #5 move a.cc:12" (status MOVE, the place as text, see
+    move_place()), which moves the thread to the newest patch set. A
     repository name before the Change-Id and a patch set note after the
     number, as inbox prints them, are allowed. The lines up to the next
     such line continue the answer's text, so it can have lists and
@@ -2422,10 +2529,11 @@ def _parsed_answers(text):
             errors.append(f'line {number} is no answer: {line.strip()}')
     result = []
     for number, prefix, thread, verb, lines in answers:
-        status = {'resolve': RESOLVED, 'done': RESOLVED, 'unresolve': UNRESOLVED}.get(verb)
+        status = {'resolve': RESOLVED, 'done': RESOLVED, 'unresolve': UNRESOLVED,
+                  'move': MOVE}.get(verb)
         message = '\n'.join(lines).strip() or (DONE if 'done' == verb else '')
-        if not message and status is None:
-            errors.append(f'line {number} has no text')
+        if not message and status in (None, MOVE):
+            errors.append(f'line {number} has no ' + ('place' if MOVE == status else 'text'))
         result.append((number, prefix, thread, status, message))
     if errors:
         raise ChangeError('; '.join(errors))
@@ -2444,7 +2552,11 @@ def answer(text, repository=None):
         # is written. All of them are named, so one retry is enough.
         try:
             change = find_change(prefix, repository)
-            comment_of(change, number)
+            comment = comment_of(change, number)
+            if MOVE == status:
+                # Checked on a copy, the change is only read here
+                place_move(change, replace(comment, moves=list(comment.moves)),
+                           *move_place(message), by=AUTHOR, repository=repository)
         except ChangeError as error:
             errors.append(f'line {line}: {error}')
             continue
@@ -2454,6 +2566,10 @@ def answer(text, repository=None):
     for change_id, entries in by_change.items():
         def edit(change, entries=entries):
             for number, status, message in entries:
+                if MOVE == status:
+                    place_move(change, comment_of(change, number), *move_place(message),
+                               by=AUTHOR, repository=repository)
+                    continue
                 comment_of(change, number).messages.append(Message(
                     author=AUTHOR, text=message, sent=True, time=int(time.time()),
                     unresolved=None if status is None else UNRESOLVED == status))
@@ -3786,17 +3902,23 @@ def port_thread(change, comment, target=None, repository=None):
     to the whole change, like Gerrit.
     """
     target = target or change.latest_patch_set()
+    # A thread moved by hand is ported from its newest move up to target.
+    anchor = comment.anchored(None if CURRENT == target else target)
+    here = None if anchor is comment else PortedPlace(
+        anchor.place, split_place(anchor.place)[1], MOVED, target)
     if CURRENT == target:
         commit = change.commit
-    elif target in change.patch_sets and comment.patch_set < target:
+    elif target in change.patch_sets and anchor.patch_set < target:
         commit = change.patch_sets[target]
     else:
-        return None
-    version = thread_version(change, comment, repository)
-    if version is None or change.patch_sets[comment.patch_set] == commit:
-        return None
-    place, line, state = _place_in(change, comment, version, commit if OLD_SIDE != comment.side
+        return here
+    version = thread_version(change, anchor, repository)
+    if version is None or change.patch_sets[anchor.patch_set] == commit:
+        return here
+    place, line, state = _place_in(change, anchor, version, commit if OLD_SIDE != anchor.side
                                    else f'{commit}^', commit, repository)
+    if anchor is not comment and SAME == state:
+        state = MOVED
     return PortedPlace(place, line, state, target)
 
 
@@ -3859,7 +3981,10 @@ def thread_place(change, comment, first=None, second=None, repository=None):
     one on the whole change (path PATCHSET_LEVEL), its note keeps the old
     place: "file gone: a.txt:30".
     """
-    (first_label, left), (_second_label, right) = versions_to_compare(change, first, second)
+    (first_label, left), (second_label, right) = versions_to_compare(change, first, second)
+    # A thread moved by hand counts from its newest move up to the right
+    # version, see Comment.anchored().
+    comment = comment.anchored(int(second_label) if second_label.isdigit() else None)
     path, line = split_place(comment.place)
     version = thread_version(change, comment, repository)
     if version is None:
@@ -4311,6 +4436,30 @@ def news_lines(name, change):
         lines.append(f'fyi {name} {change.short_id()} #{comment.number} (resolved) '
                      + comment.place_label())
         lines += [f'    {line}' for line in message_text(comment.last_sent()).split('\n')]
+    return lines
+
+
+def lost_threads(changes, repository=None):
+    """The unresolved threads of changes whose line the newest patch set
+    lost or changed (file gone, line removed or edited), for the author to
+    move where they belong: lines like 'I3f2a #4 a.cc:12 (PS1, line
+    removed): int x = 3;', as answer heads.
+    """
+    lines = []
+    for change in changes:
+        for comment in change.comments:
+            if PATCHSET_LEVEL == comment.place or not comment.is_unresolved():
+                continue
+            ported = port_thread(change, comment, repository=repository)
+            if ported is None or ported.state not in (FILE_GONE, REMOVED, EDITED):
+                continue
+            anchor = comment.anchored(ported.patch_set)
+            version = thread_version(change, anchor, repository)
+            _path, line = split_place(anchor.place)
+            text = version_line(version, line, repository) if version and line else ''
+            note = patch_set_note(change, comment, repository)
+            lines.append(f'{change.short_id()} #{comment.number} {note}{anchor.place_label()}'
+                         + (f': {text[:60]}' if text else ''))
     return lines
 
 
@@ -4789,6 +4938,11 @@ def parse_arguments(argv):
                     + other.current_votes(VERIFIED)]
             print(f'{other.short_id()}: patch set {number}' + (f', {kind}' if kind else '')
                   + (f', keeps {" ".join(kept)}' if kept else ''))
+        lost = lost_threads([find_change(other.change_id) for other, _number, _kind in uploaded])
+        if lost:
+            print('threads that lost their line, move the ones you know with '
+                  '`plustwo answer` lines like "I3f2a #4 move a.cc:12":')
+            print('\n'.join(f'  {line}' for line in lost))
 
     def rebase_command(arguments):
         topic = arguments.topic
@@ -4837,6 +4991,15 @@ def parse_arguments(argv):
     def done_command(arguments):
         add_message(find_change(arguments.change).change_id, arguments.number, AUTHOR,
                     arguments.text or DONE, status=RESOLVED)
+
+    def move_command(arguments):
+        change = find_change(arguments.change)
+        place, side = move_place(arguments.place)
+        move = move_thread(change.change_id, arguments.number, place,
+                           OLD_SIDE if arguments.old else side, arguments.patch_set or 0,
+                           AUTHOR if arguments.author else REVIEWER)
+        print(f'{change.short_id()}: comment #{arguments.number} '
+              + (move_text(move) if move else f'now on {place_label(place, side)}'))
 
     def answer_command(_arguments):
         count = answer(sys.stdin.read())
@@ -4951,6 +5114,11 @@ def parse_arguments(argv):
     reply.add_argument('--resolve', action='store_true', help='and resolve the thread')
     reply.add_argument('--unresolve', action='store_true', help='and make it unresolved again')
     command('answer', answer_command, 'answer several threads at once, from stdin')
+    move = command('move', move_command, 'move a thread to where it belongs', 'change',
+                   ('number', {'type': lambda text: int(text.lstrip('#'))}), 'place')
+    move.add_argument('--patch-set', type=int, help='the patch set PLACE is on, else the newest')
+    move.add_argument('--old', action='store_true', help='PLACE is in the old version')
+    move.add_argument('--author', action='store_true', help="the author moves it")
     command('done', done_command, 'answer "Done" and resolve the thread', 'change', number,
             ('text', optional))
     command('status', status_command, 'resolve a thread or make it unresolved again', 'change',

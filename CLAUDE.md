@@ -60,7 +60,10 @@ every command.
   the next one. `rebase_requested` marks a stack the author has to rebase. A message's `unresolved` (true, false or null) sets its thread's
   state, like in Gerrit. Older notes (a `status` per thread, `requests`)
   are converted when read. Threads have a stable `id` and numbers that
-  never change. Messages and votes carry a `time`, `uploads` the patch
+  never change. `moves` (patch set, place, side, by, time) are moves by hand:
+  from a move's patch set on, the thread is ported from it, older patch
+  sets keep the place it was written on (`Comment.anchored()`). A draft
+  thread just changes its place. Messages and votes carry a `time`, `uploads` the patch
   sets' upload times: whose turn it is follows from them. `reviewed` maps
   files to a hash of their own diff. `/PATCHSET_LEVEL` threads are
   messages on the whole change. `submit` (time, topic, base) is written

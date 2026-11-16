@@ -84,7 +84,13 @@ touches your branch. `plustwo pull` brings it in.
        GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash <base>
 
 5. Upload once: `plustwo upload` in the branch. Every changed change of
-   the stack gets a new patch set.
+   the stack gets a new patch set. If your changes moved code so that
+   threads lost their line (file gone, line removed or edited), upload
+   lists them. You know where the code went: move each one you can place
+   to its line in the new patch set, in the same `answer` call as your
+   answers (`I3f2a #4 move b.py:12`, `... move a.py:7 (old)` for the old
+   version). The reviewer sees who moved it, older patch sets keep the
+   old place. Leave a thread alone if its code is really gone.
 6. Then answer all threads in one call with `plustwo answer` (below). Your
    messages are sent immediately, so answering after the upload makes
    "Done" refer to a patch set the reviewer can already see.

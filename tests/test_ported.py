@@ -466,6 +466,93 @@ class InboxTest(unittest.TestCase):
         self.assertFalse(on_line.wants_answer())
 
 
+class MoveTest(unittest.TestCase):
+    """Threads moved by hand to where they belong."""
+
+    def setUp(self):
+        self.directory = tempfile.mkdtemp(prefix='plustwo-move-')
+        self.repo = test_stacks.Repository(self.directory)
+        self.repo.git('switch', '--quiet', '-c', 'feature')
+        self.repo.write('b.txt', LINES)
+        self.repo.git('add', 'b.txt')
+        self.repo.commit('a.txt', LINES, 'Add a')
+        self.repo.change('upload')
+
+    def tearDown(self):
+        shutil.rmtree(self.directory)
+
+    def amend_upload(self, files):
+        for name, text in files.items():
+            if text is None:
+                self.repo.git('rm', '--quiet', name)
+            else:
+                self.repo.write(name, text)
+                self.repo.git('add', name)
+        self.repo.git('commit', '--quiet', '--amend', '--no-edit')
+        return self.repo.change('upload')
+
+    def test_move_per_patch_set(self):
+        self.repo.change('comment', '1', 'b.txt:2', 'On b')
+        change_id = core.changes_in_stack(self.directory)[0].change_id
+        # PS2 moves b.txt into c.txt, too changed for any detection
+        output = self.amend_upload({'b.txt': None, 'c.txt': 'other\n'})
+        self.assertIn('threads that lost their line', output)
+        self.assertIn('#1 (PS1, file gone) b.txt:2: line 2', output)
+        # The author moves it, the inbox and the report follow.
+        subprocess.run([str(test_stacks.ROOT / 'plustwo'), 'answer'], cwd=self.directory,
+                       input=f'{change_id[:8]} #1 move c.txt:1', text=True, check=True,
+                       capture_output=True, env=test_stacks.ENVIRONMENT)
+        change = core.find_change(change_id, self.directory)
+        comment = core.comment_of(change, 1)
+        self.assertEqual([(2, 'c.txt:1', core.NEW_SIDE, core.AUTHOR)],
+                         [(move.patch_set, move.place, move.side, move.by)
+                          for move in comment.moves])
+        self.assertIn('#1 (PS1, now c.txt:1) b.txt:2', self.repo.change('inbox'))
+        self.assertEqual(core.thread_place(change, comment, 'base', 'latest', self.directory),
+                         core.ShownThread('c.txt', 1, core.NEW_SIDE))
+        # PS1 keeps where it was.
+        self.assertEqual(core.thread_place(change, comment, 'base', '1', self.directory),
+                         core.ShownThread('b.txt', 2, core.NEW_SIDE))
+        # PS3 ports it from the move.
+        output = self.amend_upload({'c.txt': 'top\nother\n'})
+        self.assertNotIn('lost their line', output)
+        change = core.find_change(change_id, self.directory)
+        comment = core.comment_of(change, 1)
+        self.assertEqual(core.thread_place(change, comment, 'base', 'latest', self.directory),
+                         core.ShownThread('c.txt', 2, core.NEW_SIDE, 'PS2', ''))
+        self.assertEqual(core.move_text(comment.moves[0]), 'moved by author to c.txt:1 (PS2)')
+        self.assertEqual([type(entry).__name__ for entry in comment.entries()],
+                         ['Message', 'Move'])
+        # A bad place changes nothing.
+        with self.assertRaises(core.ChangeError):
+            core.move_thread(change_id, 1, 'c.txt:9', repository=self.directory)
+        with self.assertRaises(core.ChangeError):
+            core.move_thread(change_id, 1, 'gone.txt:1', repository=self.directory)
+        # On the old side, by the reviewer, through the command line
+        output = self.repo.change('move', change_id[:8], '#1', 'base.txt:1 (old)')
+        self.assertIn('moved by reviewer to base.txt:1 (old) (PS3)', output)
+
+    def test_draft_moves_without_a_trace(self):
+        change_id = core.changes_in_stack(self.directory)[0].change_id
+        number = core.add_comment(change_id, 'a.txt:2', 'Draft', sent=False,
+                                  repository=self.directory)
+        self.assertIsNone(core.move_thread(change_id, number, 'b.txt:4',
+                                           repository=self.directory))
+        comment = core.comment_of(core.find_change(change_id, self.directory), number)
+        self.assertEqual(('b.txt:4', []), (comment.place, comment.moves))
+
+    def test_answer_checks_moves_first(self):
+        self.repo.change('comment', '1', 'a.txt:2', 'One')
+        change_id = core.changes_in_stack(self.directory)[0].change_id
+        result = subprocess.run([str(test_stacks.ROOT / 'plustwo'), 'answer'],
+                                cwd=self.directory, text=True, capture_output=True,
+                                input=f'{change_id[:8]} #1: Fine\n{change_id[:8]} #1 move x:1',
+                                env=test_stacks.ENVIRONMENT)
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual(1, len(core.comment_of(core.find_change(change_id, self.directory),
+                                                1).messages))
+
+
 class PollTest(unittest.TestCase):
 
     def test_one_git_call_per_poll(self):
