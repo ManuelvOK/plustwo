@@ -4,7 +4,7 @@
 import re
 
 from plustwo.git.cache import cached_for_objects
-from plustwo.git.repository import git
+from plustwo.git.repository import Repository
 
 
 # An edit of a diff: (old begin, old end, new begin, new end), line ranges
@@ -18,16 +18,16 @@ _WHITESPACE_OPTIONS = {'none': (), 'trailing': ('--ignore-space-at-eol',),
 WHITESPACE_MODES = tuple(_WHITESPACE_OPTIONS)
 
 
-@cached_for_objects(0, 1)
-def edits_of(old: str, new: str, path: str, repository: str | None = None,
-             old_path: str | None = None, whitespace: str = 'none') -> list[Edit]:
+@cached_for_objects(1, 2)
+def edits_of(repository: Repository, old: str, new: str, path: str, old_path: str | None = None,
+             whitespace: str = 'none') -> list[Edit]:
     """Finds the edits of a file's diff between two versions.
 
     Args:
+        repository: the repository.
         old: the old version, a commit or tree.
         new: the new version, a commit or tree.
         path: the file's path in the new version.
-        repository: the repository's directory, None for the current one.
         old_path: the file's path in the old version if it was renamed,
             None if it is path.
         whitespace: one of Gerrit's whitespace modes, WHITESPACE_MODES.
@@ -39,17 +39,16 @@ def edits_of(old: str, new: str, path: str, repository: str | None = None,
     # shows. The options make the user's diff settings not count.
     options = ('--no-color', '--no-ext-diff', '--no-textconv', '--no-renames', '--histogram',
                '-U0', *_WHITESPACE_OPTIONS.get(whitespace, ()))
-    output = '' if old_path else git('diff', *options, old, new, '--', path,
-                                     repository=repository)
+    output = '' if old_path else repository.git('diff', *options, old, new, '--', path)
     if old_path or output.count('diff --git ') > 1:
         # A file that became a symbolic link or the other way round is a
         # deletion and an addition to git. Its lines are diffed as blobs.
         # A renamed file is diffed the same way.
-        blobs = [git('rev-parse', '--verify', '--quiet', f'{version}:{version_path}',
-                     check=False, repository=repository)
-                 or git('hash-object', '-w', '--stdin', input_text='', repository=repository)
+        blobs = [repository.git('rev-parse', '--verify', '--quiet', f'{version}:{version_path}',
+                                check=False)
+                 or repository.git('hash-object', '-w', '--stdin', input_text='')
                  for version, version_path in ((old, old_path or path), (new, path))]
-        output = git('diff', *options, *blobs, repository=repository)
+        output = repository.git('diff', *options, *blobs)
     edits = []
     for match in re.finditer(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@', output, re.MULTILINE):
         old_start, n_old_lines, new_start, n_new_lines = (

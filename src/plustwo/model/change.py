@@ -3,6 +3,7 @@
 
 from dataclasses import dataclass, field
 
+from plustwo.git.repository import Repository
 from plustwo.model.acknowledgement import says_nothing
 from plustwo.model.comment import Comment
 from plustwo.model.place import PATCHSET_LEVEL
@@ -36,6 +37,7 @@ class Change:
         topic: the topic of the change's stack.
         comments: the threads, by number.
         patch_sets: each patch set's number, mapped to its commit.
+        repository: the repository the change is in.
         votes: the votes on all patch sets.
         needs_verified: whether submitting needs Verified+1 (note key
             verified_required).
@@ -54,8 +56,6 @@ class Change:
             submitted_change(), not in a stack.
         is_wip: whether the change is work in progress, like Gerrit's WIP:
             shown, but not to be reviewed (note key wip).
-        repository: the repository's working tree, None for the current
-            one.
         repository_name: the repository's registered name, for showing
             changes of several repositories.
         base: the base branch of the change's stack, see stack_base().
@@ -66,6 +66,7 @@ class Change:
     topic: str
     comments: list[Comment]
     patch_sets: dict[int, str]
+    repository: Repository
     votes: list[Vote] = field(default_factory=list)
     needs_verified: bool = False
     rebase_is_requested: bool = False
@@ -75,7 +76,6 @@ class Change:
     uploaders: dict[int, str] = field(default_factory=dict)
     is_submitted: bool = False
     is_wip: bool = False
-    repository: str | None = None
     repository_name: str = ''
     base: str = ''
 
