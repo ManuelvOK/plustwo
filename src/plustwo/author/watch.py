@@ -42,9 +42,9 @@ def events_of(repository, topic=None, changes=None, submitted=()):
                 events.add(('vote', change.change_id, vote.label, vote.value, vote.patch_set,
                             vote.by))
     # Rebases are told per stack, by its top change
-    tops = {change.topic: change for change in changes if not change.submitted}
+    tops = {change.topic: change for change in changes if not change.is_submitted}
     for topic, top in tops.items():
-        if top.rebase_requested:
+        if top.rebase_is_requested:
             events.add(('rebase', topic, top.change_id))
         if top.rebased_patch_set:
             events.add(('rebased', topic, top.change_id, top.rebased_patch_set))
@@ -114,7 +114,7 @@ def submitted_since(repository, since, topic=None, changes=None):
         if record.get('time', 0) >= since and (not topic or topic == record.get('topic')):
             change = change_from(commit, record.get('topic', ''), notes[commit], repository,
                                  change_id)
-            change.submitted = True
+            change.is_submitted = True
             submitted.append(change)
     return submitted
 
@@ -273,7 +273,7 @@ def watch(repositories, output=sys.stdout, topic=None, since=None, minutes=None)
                             is_ancestor(commit, base, repository):
                         change = change_from(commit, '', read_note(commit, repository),
                                              repository, change_id)
-                        change.submitted = True
+                        change.is_submitted = True
                         submitted.append(change)
             events = events_of(repository, topic, current, submitted)
             new = events - known[repository]

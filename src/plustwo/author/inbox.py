@@ -27,7 +27,7 @@ def inbox_lines(repositories, topic=None):
         for change in changes_in_stack(repository):
             if topic and topic != change.topic:
                 continue
-            if change.rebase_requested:
+            if change.rebase_is_requested:
                 lines.append(f'rebase {name} {change.topic}: conflicts with '
                              f'{change.base}, rebase locally and upload')
             for label in LABEL_RANGES:

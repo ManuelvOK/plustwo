@@ -86,8 +86,8 @@ def change_summary(change, repository):
             'patch_set': change.latest_patch_set(), 'turn': change.turn(),
             'code_review': vote_label(change, CODE_REVIEW),
             'verified': vote_label(change, VERIFIED),
-            'comments': comment_counts(change), 'wip': change.wip,
-            'repo_name': change.repo}
+            'comments': comment_counts(change), 'wip': change.is_wip,
+            'repo_name': change.repository_name}
 
 
 def half_json(half, colours):

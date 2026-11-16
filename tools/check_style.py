@@ -15,7 +15,7 @@ is any finding, else with 0. The checks for Python files:
   belongs on the left
 - every module, class and function has a docstring. A function's names
   each parameter under "Args:", has "Returns:" when the function returns a
-  value or yields, and "Raises:" when it raises
+  value or yields (not for a property), and "Raises:" when it raises
 
 Other files (JavaScript, CSS, HTML, Markdown) get the first two checks.
 """
@@ -152,7 +152,11 @@ def docstring_section_findings(function: ast.FunctionDef | ast.AsyncFunctionDef,
                   and not (isinstance(node.value, ast.Constant) and node.value.value is None)
                   for node in nodes)
     yields = any(isinstance(node, (ast.Yield, ast.YieldFrom)) for node in nodes)
-    if (returns or yields) and 'Returns:' not in docstring and 'Yields:' not in docstring:
+    # A property's docstring describes the value, like an attribute's.
+    is_property = any(isinstance(decorator, ast.Name) and 'property' == decorator.id
+                      for decorator in function.decorator_list)
+    if (returns or yields) and not is_property and 'Returns:' not in docstring \
+            and 'Yields:' not in docstring:
         findings.append((function.lineno, f'{function.name}: no Returns: section'))
     if any(isinstance(node, ast.Raise) and node.exc is not None for node in nodes) \
             and 'Raises:' not in docstring:

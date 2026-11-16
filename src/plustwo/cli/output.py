@@ -25,7 +25,7 @@ def print_overview(arguments):
         if not rows:
             print('     (none)')
         for number, change in rows:
-            print(f'{number:>4}  {change.short_id()}  {change.repo:<12.12} {change.topic:<14.14} '
+            print(f'{number:>4}  {change.short_id()}  {change.repository_name:<12.12} {change.topic:<14.14} '
                   f'{"→ " + change.base:<12.12} {change.subject:<40.40}  {vote_label(change, CODE_REVIEW):>2} '
                   f'{vote_label(change, VERIFIED):>2}  {change.turn():<11}  '
                   f'{comment_counts(change)}')
@@ -40,7 +40,7 @@ def print_comments(arguments):
             raise
         change = submitted_change(arguments.change, current_repository())
     print(f'{change.short_id()} ({change.state()}): {change.subject}')
-    if change.verified_required:
+    if change.needs_verified:
         print('Needs Verified+1.')
     for vote in change.votes:
         stale = '' if vote.patch_set == change.latest_patch_set() else ' (older patch set)'

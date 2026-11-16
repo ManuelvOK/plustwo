@@ -67,7 +67,7 @@ def vote_label(change, label):
     value = change.label_value(label)
     if value:
         return f'{value:+d}'
-    return '?' if VERIFIED == label and change.verified_required else ''
+    return '?' if VERIFIED == label and change.needs_verified else ''
 
 
 def version_label(change):

@@ -72,9 +72,9 @@ def vote_action(interface, change, action):
         interface.say(f'Code-Review{value:+d} on PS{number}.' if value
                       else 'Code-Review vote removed.')
     elif 'verified' == action:
-        require_verified(change.change_id, not change.verified_required)
+        require_verified(change.change_id, not change.needs_verified)
         interface.after_write()
-        interface.say('Needs Verified+1 now.' if not change.verified_required
+        interface.say('Needs Verified+1 now.' if not change.needs_verified
                       else 'Verified+1 is not needed any more.')
 
 

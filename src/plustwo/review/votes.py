@@ -48,6 +48,6 @@ def set_vote(change_id, label, value, by=None, patch_set=None, message='', repos
 def require_verified(change_id, required, repository=None):
     """Sets whether the change needs Verified+1 to be submitted."""
     def edit(change):
-        change.verified_required = required
+        change.needs_verified = required
 
     update_change(change_id, edit, repository)

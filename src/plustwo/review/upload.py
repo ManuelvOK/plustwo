@@ -98,9 +98,9 @@ def upload(branch=None, topic=None, repository=None, wip=None, at=None):
                 continue
             note = read_note(patch_sets[latest] if latest else commit, repository)
             change = change_from(commit, topic, note, repository)
-            change.rebase_requested = False
+            change.rebase_is_requested = False
             if mark is not None:
-                change.wip = mark
+                change.is_wip = mark
             uploaded.append((change, *add_patch_set(change, repository)))
             write_note(commit, note_of(change), repository)
         old_top = git('rev-parse', '--verify', '--quiet', stack_ref(topic), check=False,

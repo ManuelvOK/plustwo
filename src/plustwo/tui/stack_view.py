@@ -76,7 +76,7 @@ class StackView:
         self._changes = all_changes(self._interface.list_name)
         # Stacks the base branch moved away from, marked in the topic column
         self._behind = {(change.repository, change.topic) for change in self._changes
-                        if change.rebase_requested or needs_rebase(change.topic,
+                        if change.rebase_is_requested or needs_rebase(change.topic,
                                                                          change.repository)}
         # What draw() needs, so drawing runs no git command
         self._folded = folded = folded_sections()
@@ -142,11 +142,11 @@ class StackView:
             change = self._changes[row_content[1]]
             # Plain text on the reversed cursor row
             secondary_text = self._interface.dim(attributes)
-            dim = secondary_text if change.wip else 0
+            dim = secondary_text if change.is_wip else 0
             out(row, 1, ' ' * (area.width - 2), attributes)
             out(row, 1, f'{row_content[1] + 1:>3}  ', attributes | dim)
             out(row, 6, f'{change.short_id():<9} ', attributes | secondary_text)
-            out(row, 16, f'{change.repo:<12.12} ', attributes | dim)
+            out(row, 16, f'{change.repository_name:<12.12} ', attributes | dim)
             behind = (change.repository, change.topic) in self._behind
             out(row, 29, f'{("↻ " if behind else "") + change.topic:<14.14} ',
                 attributes | (curses.color_pair(3) if behind else secondary_text))
@@ -157,7 +157,7 @@ class StackView:
             column += 6
             for label, short in ((CODE_REVIEW, 'CR'), (VERIFIED, 'V')):
                 badge = vote_badge(self._interface, short, change.label_value(label),
-                                   VERIFIED == label and change.verified_required)
+                                   VERIFIED == label and change.needs_verified)
                 if badge:
                     out(row, column, badge[0], badge[1])
                 column += 8

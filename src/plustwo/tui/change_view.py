@@ -251,14 +251,14 @@ class ChangeView:
                 user = current_user()
                 self._yours = {other.change_id for other in self._stack
                                if 'your-turn' in other.sections(user)}
-                self._behind = ('conflicts' if any(other.rebase_requested for other in self._stack)
+                self._behind = ('conflicts' if any(other.rebase_is_requested for other in self._stack)
                                 else 'base moved' if needs_rebase(change.topic) else None)
                 self._diff.forget()
                 return
         self._interface.back()
         self._interface.say('The change is not in review any more.')
 
-    # ── layout and drawing ────────────────────────────────────────────────
+    # ── layout and drawing ────────────────────────────────────────────────────
 
     def _current_in_stack(self):
         """The row of the shown change in the stack pane, newest on top."""
@@ -334,7 +334,7 @@ class ChangeView:
         bar = self._interface.colour_pairs.attribute(15, tone(HEADER_BACKGROUND))
         header_dim = self._interface.dim(background=tone(HEADER_BACKGROUND))
         out(0, 0, ' ' * area.width, bar)
-        place = (f'{change.repo} › ' if change.repo else '') + f'{change.topic} on {change.base} ›'
+        place = (f'{change.repository_name} › ' if change.repository_name else '') + f'{change.topic} on {change.base} ›'
         out(0, 1, place, header_dim)
         out(0, 2 + len(place), change.subject, bar | curses.A_BOLD)
         state = f' {change.state()} '
@@ -348,7 +348,7 @@ class ChangeView:
             out(0, max(area.width - len(version) - len(state) - len(behind) - 2, 1), behind,
                 self._interface.colour_pairs.attribute(0, 1 if 'conflicts' == self._behind
                                                        else 3) | curses.A_BOLD)
-        drafts = change.draft_count()
+        drafts = change.n_drafts()
         if drafts:
             # Unsent drafts, in the drafts' colour, so they aren't forgotten
             label = f' {drafts} draft{"" if 1 == drafts else "s"} '
@@ -462,7 +462,7 @@ class ChangeView:
         """What the reviewer should know when leaving the change: drafts
         not sent yet.
         """
-        drafts = self._change.draft_count() if self._change else 0
+        drafts = self._change.n_drafts() if self._change else 0
         if not drafts:
             return ''
         return (f'{drafts} draft{"" if 1 == drafts else "s"} of {self._change.short_id()} '
@@ -496,7 +496,7 @@ class ChangeView:
         change = self._change
         for label in (CODE_REVIEW, VERIFIED):
             badge = vote_badge(self._interface, label, change.label_value(label),
-                               VERIFIED == label and change.verified_required)
+                               VERIFIED == label and change.needs_verified)
             if badge:
                 out(1, column, badge[0], badge[1])
                 column += len(badge[0]) + 1
@@ -746,7 +746,7 @@ class ChangeView:
             out(top + row, column, text, attributes, left + width)
             column += len(text)
 
-    # ── selection ─────────────────────────────────────────────────────────
+    # ── selection ─────────────────────────────────────────────────────────────
 
     def _selected_file(self):
         return self._files[self._file_index] if self._files else None
@@ -989,7 +989,7 @@ class ChangeView:
         expand = not any(self._is_expanded(comment) for comment in comments)
         self._expanded = {comment.number: expand for comment in comments}
 
-    # ── keys and mouse ────────────────────────────────────────────────────
+    # ── keys and mouse ────────────────────────────────────────────────────────
 
     def action(self, action, count=None):
         """Handles an action of the change view. count is a typed count,
@@ -1488,7 +1488,7 @@ def thread_action(interface, change, comment, action):
     if 'send' == action:
         # Like Gerrit's Reply dialog: the drafts, a message on the whole
         # change and the vote go in one step.
-        drafts = change.draft_count()
+        drafts = change.n_drafts()
         choice = None
         if change.patch_sets:
             choice = (f'Code-Review on PS{change.latest_patch_set()}',

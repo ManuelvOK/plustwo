@@ -105,7 +105,7 @@ class Interface:
         if self.sidebar not in SIDEBAR_MODES:
             self.sidebar = 'auto'
 
-    # ── state shared by the views ─────────────────────────────────────────
+    # ── state shared by the views ─────────────────────────────────────────────
 
     def say(self, message, kind=None):
         """Shows a message in the bottom line until the next key. kind is
@@ -129,7 +129,7 @@ class Interface:
             return True
         return False
 
-    # ── main loop ─────────────────────────────────────────────────────────
+    # ── main loop ─────────────────────────────────────────────────────────────
 
     def loop(self):
         """Draws, waits for a key or the reload interval, repeats. Keys
@@ -255,7 +255,7 @@ class Interface:
         self._version = self.version()
         self._views[-1].reload()
 
-    # ── drawing ───────────────────────────────────────────────────────────
+    # ── drawing ───────────────────────────────────────────────────────────────
 
     def _draw(self, refresh=True):
         """Draws the current view, its keys and the message line."""
@@ -345,7 +345,7 @@ class Interface:
         finally:
             self._screen.timeout(RELOAD_INTERVAL_MS)
 
-    # ── leaving the screen for other programs ─────────────────────────────
+    # ── leaving the screen for other programs ─────────────────────────────────
 
     def run_outside(self, command):
         """Runs a program on the real terminal, e.g. git diff with delta."""

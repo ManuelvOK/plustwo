@@ -62,14 +62,14 @@ def _change_from(commit, topic, note, repository, change_id, subject, patch_sets
                   patch_sets=(patch_sets if patch_sets is not None
                               else patch_sets_of(change_id, repository)),
                   votes=[Vote(**vote) for vote in note.get('votes', [])],
-                  verified_required=note.get('verified_required', False),
-                  rebase_requested=note.get('rebase_requested', False),
+                  needs_verified=note.get('verified_required', False),
+                  rebase_is_requested=note.get('rebase_requested', False),
                   rebased_patch_set=note.get('rebased_patch_set', 0),
                   uploads={int(number): time for number, time in note.get('uploads', {}).items()},
                   reviewed=note.get('reviewed', {}),
                   uploaders={int(number): name
                              for number, name in note.get('uploaders', {}).items()},
-                  wip=note.get('wip', False))
+                  is_wip=note.get('wip', False))
 
 
 def note_of(change):
@@ -84,13 +84,13 @@ def note_of(change):
                              if comment.moves else {})}
                          for comment in change.comments],
             'votes': [vars(vote) for vote in change.votes],
-            'verified_required': change.verified_required,
-            'rebase_requested': change.rebase_requested,
+            'verified_required': change.needs_verified,
+            'rebase_requested': change.rebase_is_requested,
             'rebased_patch_set': change.rebased_patch_set,
             'uploads': {str(number): time for number, time in change.uploads.items()},
             'reviewed': change.reviewed,
             'uploaders': {str(number): name for number, name in change.uploaders.items()},
-            'wip': change.wip}
+            'wip': change.is_wip}
 
 
 def changes_in_stack(repository=None):
@@ -125,7 +125,7 @@ def changes_in_stack(repository=None):
     root = toplevel(repository)
     for change in changes:
         change.repository = root
-        change.repo = Path(root).name if root else ''
+        change.repository_name = Path(root).name if root else ''
         change.base = bases.get(change.topic, default)
     return changes
 
@@ -139,7 +139,7 @@ def all_changes(list_name=None):
     changes = []
     for repository in review_repositories(list_name):
         for change in changes_in_stack(repository):
-            change.repo = names.get(change.repository, change.repo)
+            change.repository_name = names.get(change.repository, change.repository_name)
             changes.append(change)
     return changes
 
@@ -168,7 +168,7 @@ def find_change(reference, repository=None):
         changes = all_changes()
         name, colon, rest = reference.rpartition(':')
         if colon:
-            changes = [change for change in changes if name in (change.repo, Path(
+            changes = [change for change in changes if name in (change.repository_name, Path(
                 change.repository or '').name)]
             if not changes:
                 raise ChangeError(f'no repository {name} with changes in review')
@@ -210,10 +210,10 @@ def submitted_change(reference, repository=None):
         if base is not None:
             change = change_from(commit, '', read_note(commit, path), path, change_id,
                                  patch_sets=patch_sets)
-            change.submitted = True
+            change.is_submitted = True
             change.base = base
             change.repository = toplevel(path)
-            change.repo = Path(change.repository).name
+            change.repository_name = Path(change.repository).name
             return change
     raise ChangeError(f'no change with a Change-Id starting with "{prefix}"')
 

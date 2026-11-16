@@ -59,7 +59,7 @@ def rebase_stack(topic, repository=None):
         uploaded = []
         for old, new in rebased:
             change = change_from(new, topic, read_note(old, repository), repository)
-            change.rebase_requested = False
+            change.rebase_is_requested = False
             number, kind = add_patch_set(change, repository)
             change.rebased_patch_set = number
             write_note(new, note_of(change), repository)

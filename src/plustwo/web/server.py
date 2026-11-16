@@ -85,7 +85,7 @@ class Server:
             self._colours[key] = syntax_segments(lines or [], path, THEMES[theme])
         return self._colours[key]
 
-    # ── GET ───────────────────────────────────────────────────────────────
+    # ── GET ───────────────────────────────────────────────────────────────────
 
     def version(self, _query):
         text = '\n'.join(stack_version(repository) for repository in self.repositories)
@@ -115,7 +115,7 @@ class Server:
         index = {repository: number for number, repository in enumerate(self.repositories)}
         folded = folded_sections()
         behind = {(change.repository, change.topic) for change in changes
-                  if change.rebase_requested or needs_rebase(change.topic, change.repository)}
+                  if change.rebase_is_requested or needs_rebase(change.topic, change.repository)}
         sections = []
         for section, entries in review_dashboard.dashboard(changes):
             sections.append({
@@ -124,7 +124,7 @@ class Server:
                 'changes': [] if section in folded else [
                     {**change_summary(change, change.repository),
                      'number': number, 'repo': index.get(change.repository, 0),
-                     'repo_name': names.get(change.repository, change.repo),
+                     'repo_name': names.get(change.repository, change.repository_name),
                      'needs_rebase': (change.repository, change.topic) in behind,
                      'your_turn': 'your-turn' in change.sections(current_user())}
                     for number, change in entries]})
@@ -155,7 +155,7 @@ class Server:
                 'message_parts': dict(zip(('subject', 'body', 'trailers'),
                                           commit_message_parts(change.commit, repository))),
                 'patch_sets': sorted(change.patch_sets),
-                'verified_required': change.verified_required,
+                'verified_required': change.needs_verified,
                 'problems': change.submit_problems(),
                 'files': files,
                 'comments': [{**comment_json(comment, message_patch_sets(
@@ -228,7 +228,7 @@ class Server:
                              'description': description}
                             for name, group, label, description in ACTIONS]}
 
-    # ── POST ──────────────────────────────────────────────────────────────
+    # ── POST ──────────────────────────────────────────────────────────────────
 
     def act(self, body):
         """One write, named by body['action'], on the change body['id']."""
