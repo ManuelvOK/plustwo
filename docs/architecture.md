@@ -82,7 +82,9 @@ Its `action()` looks the action up in a table of one handler each. It holds:
 3. `DiffSearch`: the search in the diff.
 
 The last two read the change, the comparison and the diff through the
-screen's public properties. The interface reads its settings from the
+screen's public properties. Helpers they share live in small modules:
+`tui/file_names.py` (a file's label, the file whose diff shows a thread) and
+`tui/pane_frame.py` (the frame around a pane). The interface reads its settings from the
 working directory's repository and the user's file, the change screen the
 diff's theme (`tui.theme`) from the repository of the change it shows.
 
