@@ -8,8 +8,10 @@ import select
 import sys
 import time
 
+from plustwo.diff.contrast import Rgb
 
-def keys_as_keys():
+
+def keys_as_keys() -> None:
     """Lets C-s, C-q and C-c arrive as keys: turns off the terminal's flow
     control (XON/XOFF), which stops the output, and its interrupt key,
     which ends the program (the emacs keys use C-c). C-z still suspends.
@@ -22,58 +24,79 @@ def keys_as_keys():
         attributes[0] &= ~(termios.IXON | termios.IXOFF)
         attributes[6] = list(attributes[6])
         # No character is the interrupt key, like stty intr undef
-        attributes[6][termios.VINTR] = bytes([termios_disabled()])
+        attributes[6][termios.VINTR] = bytes([_termios_disabled()])
         termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, attributes)
     except termios.error:
         return
     curses.def_prog_mode()
 
 
-def termios_disabled():
-    """The value that turns a terminal key off, _POSIX_VDISABLE: 0 on
-    Linux, 0xff on the BSDs and macOS.
+def _termios_disabled() -> int:
+    """Finds the value that turns a terminal key off, _POSIX_VDISABLE.
+
+    Returns:
+        0 on Linux, 0xff on the BSDs and macOS.
     """
     return 0 if sys.platform.startswith('linux') else 0xff
 
 
 # The reply to OSC 11, the question for the terminal's background
-BACKGROUND_REPLY = re.compile(r'\x1b\]11;rgb:([0-9a-fA-F]{1,4})/([0-9a-fA-F]{1,4})/'
+_BACKGROUND_REPLY = re.compile(r'\x1b\]11;rgb:([0-9a-fA-F]{1,4})/([0-9a-fA-F]{1,4})/'
                               r'([0-9a-fA-F]{1,4})(?:\x1b\\|\x07)')
 
 
 # The reply to DA1, which every terminal answers, after the one to OSC 11
-ATTRIBUTES_REPLY = re.compile(r'\x1b\[\?[0-9;]*c')
+_ATTRIBUTES_REPLY = re.compile(r'\x1b\[\?[0-9;]*c')
 
 
 # How long to wait for the terminal's replies, in seconds
-QUERY_TIMEOUT = 0.1
+_QUERY_TIMEOUT = 0.1
 
 
-def parse_background_reply(text):
-    """(red, green, blue) from a terminal's reply to OSC 11, like
-    "\\e]11;rgb:1c1c/1c1c/1c1c\\e\\", 1 to 4 hex digits a channel, ended by
-    ST or BEL. None if text has none.
+def parse_background_reply(text: str) -> Rgb | None:
+    """Reads the colour of a terminal's reply to OSC 11: ESC ]11, then
+    rgb:1c1c/1c1c/1c1c after a separator, with 1 to 4 hex digits a
+    channel, ended by ST or BEL.
+
+    Args:
+        text: what the terminal sent.
+
+    Returns:
+        (red, green, blue), None if the text has no such reply.
     """
-    match = BACKGROUND_REPLY.search(text)
+    match = _BACKGROUND_REPLY.search(text)
     if match is None:
         return None
-    return tuple(round(int(value, 16) * 255 / (16 ** len(value) - 1)) for value in match.groups())
+    red, green, blue = (round(int(value, 16) * 255 / (16 ** len(value) - 1))
+                        for value in match.groups())
+    return red, green, blue
 
 
-def parse_colour(text):
-    """(red, green, blue) of a colour like #1c1c1c, None for anything else."""
+def parse_colour(text: str) -> Rgb | None:
+    """Reads a colour.
+
+    Args:
+        text: the colour, like #1c1c1c.
+
+    Returns:
+        (red, green, blue), None for anything else.
+    """
     match = re.fullmatch(r'#?([0-9a-fA-F]{6})', text.strip())
     if match is None:
         return None
-    return tuple(int(match.group(1)[index:index + 2], 16) for index in (0, 2, 4))
+    digits = match.group(1)
+    return int(digits[0:2], 16), int(digits[2:4], 16), int(digits[4:6], 16)
 
 
-def query_background():
-    """The terminal's background, asked with OSC 11 before curses starts,
-    None if it doesn't say. DA1 is asked after it: every terminal answers
-    that, in order, so once its reply is there, no other one can come late
-    and be read as keys. QUERY_TIMEOUT bounds the wait for terminals that
-    answer neither.
+def query_background() -> Rgb | None:
+    """Asks the terminal for its background with OSC 11, before curses
+    starts. DA1 is asked after it: every terminal answers that, in order,
+    so once its reply is there, no other one can come late and be read as
+    keys. _QUERY_TIMEOUT bounds the wait for terminals that answer
+    neither.
+
+    Returns:
+        (red, green, blue), None if the terminal doesn't say.
     """
     try:
         import termios  # pylint: disable=import-outside-toplevel
@@ -90,10 +113,10 @@ def query_background():
     try:
         tty.setraw(descriptor)
         os.write(descriptor, b'\x1b]11;?\x1b\\\x1b[c')
-        deadline = time.monotonic() + QUERY_TIMEOUT
-        while not ATTRIBUTES_REPLY.search(reply):
-            left = deadline - time.monotonic()
-            if left <= 0 or not select.select([descriptor], [], [], left)[0]:
+        deadline = time.monotonic() + _QUERY_TIMEOUT
+        while not _ATTRIBUTES_REPLY.search(reply):
+            seconds_left = deadline - time.monotonic()
+            if seconds_left <= 0 or not select.select([descriptor], [], [], seconds_left)[0]:
                 break
             reply += os.read(descriptor, 256).decode('latin-1')
     finally:
@@ -103,8 +126,15 @@ def query_background():
     return parse_background_reply(reply)
 
 
-def has_terminfo(name):
-    """Whether the terminal database has an entry of this name."""
+def _has_terminfo(name: str) -> bool:
+    """Tells whether the terminal database has an entry.
+
+    Args:
+        name: the entry's name, like st-direct.
+
+    Returns:
+        True if the entry exists.
+    """
     try:
         curses.setupterm(name, sys.stdout.fileno())
     except (curses.error, OSError, ValueError):
@@ -112,13 +142,19 @@ def has_terminfo(name):
     return True
 
 
-def true_colour_terminal(mode):
-    """Whether to draw in true colour, for the setting tui.colours: auto,
-    true or 256. ncurses draws RGB colours only with a terminfo entry for
-    them, like xterm-direct: with auto or true, and COLORTERM saying the
-    terminal can, TERM changes to its -direct entry if there is one, like
-    st-256color to st-direct. The keys of both entries are the same.
-    Without such an entry, it stays at 256 colours.
+def true_colour_terminal(mode: str) -> bool:
+    """Decides whether to draw in true colour. ncurses draws RGB colours
+    only with a terminfo entry for them, like xterm-direct: with auto or
+    true, and COLORTERM saying the terminal can, TERM changes to its
+    -direct entry if there is one, like st-256color to st-direct. The keys
+    of both entries are the same. Without such an entry, it stays at 256
+    colours.
+
+    Args:
+        mode: the setting tui.colours: auto, true or 256.
+
+    Returns:
+        True for true colour.
     """
     term = os.environ.get('TERM', '')
     if '256' == mode or not term:
@@ -128,18 +164,20 @@ def true_colour_terminal(mode):
     if term.endswith('-direct'):
         return True
     direct = re.sub(r'-256colou?r$', '', term) + '-direct'
-    if not has_terminfo(direct):
+    if not _has_terminfo(direct):
         return False
     os.environ['TERM'] = direct
     return True
 
 
-def pager_environment():
-    """Environment for programs the interface hands over to.
+def pager_environment() -> dict[str, str]:
+    """Makes the environment for programs the interface hands over to. git
+    starts less with LESS=FRX, and delta with --quit-if-one-screen. Both
+    make the pager quit at once when the text fits on one screen, so a
+    short diff would only flash. Here the pager stays until q is pressed.
 
-    git starts less with LESS=FRX, and delta with --quit-if-one-screen. Both
-    make the pager quit at once when the text fits on one screen, so a short
-    diff would only flash. Here the pager stays until q is pressed.
+    Returns:
+        The environment.
     """
     environment = dict(os.environ)
     environment['LESS'] = '-R'

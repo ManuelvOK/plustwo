@@ -9,7 +9,7 @@ is any finding, else with 0. The checks for Python files:
 
 - lines are at most MAX_COLUMNS columns long
 - no Unicode ellipsis and no em dash, anywhere
-- comments and docstrings contain no semicolon
+- comments and docstrings contain no semicolon, except in quoted code
 - section comments ("# ── name ───") end at column SECTION_WIDTH
 - constants first in == and != comparisons: a literal or an ALL_CAPS name
   belongs on the left
@@ -38,6 +38,9 @@ FORBIDDEN_CHARACTERS = {
     '\u2026': 'Unicode ellipsis, write "..." instead',
     '\u2014': 'em dash, rephrase or use ":" or "-"',
 }
+
+# Quoted code in prose: "...", '...' or `...`, which may hold semicolons
+QUOTED = re.compile(r'"[^"\n]*"|\'[^\'\n]*\'|`[^`\n]*`')
 
 # An ALL_CAPS name: a constant by convention
 CONSTANT_NAME = re.compile(r'^_?[A-Z][A-Z0-9_]*$')
@@ -76,7 +79,7 @@ def comment_findings(text: str) -> list[tuple[int, str]]:
         if tokenize.COMMENT != token.type:
             continue
         number = token.start[0]
-        if ';' in token.string:
+        if ';' in QUOTED.sub('', token.string):
             findings.append((number, 'semicolon in a comment, write two sentences'))
         line = text.split('\n')[number - 1]
         if SECTION_PATTERN.match(line) and SECTION_WIDTH != len(line):
@@ -183,7 +186,7 @@ def tree_findings(tree: ast.Module) -> list[tuple[int, str]]:
                 name = getattr(node, 'name', 'module')
                 findings.append((number, f'{name} has no docstring'))
             else:
-                if ';' in docstring:
+                if ';' in QUOTED.sub('', docstring):
                     findings.append((number, 'semicolon in a docstring, write two sentences'))
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     findings += docstring_section_findings(node, docstring)

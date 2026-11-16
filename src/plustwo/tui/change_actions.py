@@ -2,7 +2,9 @@
 """Actions on changes that both screens offer."""
 
 import curses
+from typing import TYPE_CHECKING
 
+from plustwo.model.change import Change
 from plustwo.model.vote import CODE_REVIEW
 from plustwo.review.rebase import rebase_stack
 from plustwo.review.reply import quick_approve
@@ -13,11 +15,18 @@ from plustwo.tui.choice import Choice
 from plustwo.tui.colours import VOTE_COLOURS
 from plustwo.tui.messages import ERROR, OK
 
+if TYPE_CHECKING:
+    from plustwo.tui.interface import Interface
 
-def approve(interface, change):
-    """Code-Review+2 on the latest patch set, after asking like quitting:
-    the approve key again or y gives it. Then the drafts go along if the
-    reviewer wants.
+
+def approve(interface: 'Interface', change: Change) -> None:
+    """Votes Code-Review+2 on the latest patch set, after asking like
+    quitting: the approve key again or y gives it. Then the drafts go
+    along if the reviewer wants.
+
+    Args:
+        interface: the interface.
+        change: the change.
     """
     key = interface.ask_key(f'Code-Review+2 on PS{change.latest_patch_set()} of '
                             f'{change.short_id()} {change.subject}? '
@@ -25,17 +34,22 @@ def approve(interface, change):
     if key not in interface.keymap.single_keys('approve') | {ord('y')}:
         interface.say('No vote given.')
         return
-    drafts = sum(not message.sent for comment in change.comments for message in comment.messages)
-    send = bool(drafts) and ord('y') == interface.ask_key(
-        f'{drafts} draft(s) unsent. Send them along? (y/N)')
-    number, sent = quick_approve(change.change_id, send)
+    n_drafts = change.n_drafts()
+    do_send = bool(n_drafts) and ord('y') == interface.ask_key(
+        f'{n_drafts} draft(s) unsent. Send them along? (y/N)')
+    number, n_sent = quick_approve(change.change_id, do_send)
     interface.after_write()
-    interface.say(f'Code-Review+2 on PS{number}' + (f', {sent} draft(s) sent.' if sent else '.'), OK)
+    interface.say(f'Code-Review+2 on PS{number}'
+                  + (f', {n_sent} draft(s) sent.' if n_sent else '.'), OK)
 
 
-def rebase_with_confirmation(interface, change):
-    """B: rebases the change's stack onto the base branch, after asking.
-    On a conflict the author is asked to do it.
+def rebase_with_confirmation(interface: 'Interface', change: Change) -> None:
+    """Rebases the change's stack onto the base branch, after asking. On a
+    conflict the author is asked to do it.
+
+    Args:
+        interface: the interface.
+        change: a change of the stack.
     """
     if not needs_rebase(change.topic):
         interface.say(f'{change.topic} is on {change.base} already.')
@@ -50,14 +64,28 @@ def rebase_with_confirmation(interface, change):
                   OK if rebased is not None else ERROR)
 
 
-def vote_attribute(value):
-    """Colour for a vote's value."""
-    return curses.color_pair(VOTE_COLOURS.get(value, 0)) | (curses.A_BOLD if abs(value) > 1 else 0)
+def vote_attribute(value: int) -> int:
+    """Finds the look of a vote's value.
+
+    Args:
+        value: the vote.
+
+    Returns:
+        The curses attribute, see VOTE_COLOURS, bold for the highest and
+        lowest votes.
+    """
+    return curses.color_pair(VOTE_COLOURS.get(value, 0)) | (curses.A_BOLD if abs(value) > 1
+                                                            else 0)
 
 
-def vote_action(interface, change, action):
-    """vote votes Code-Review, verified switches whether Verified+1 is
-    needed.
+def vote_action(interface: 'Interface', change: Change, action: str) -> None:
+    """Runs a vote action.
+
+    Args:
+        interface: the interface.
+        change: the change.
+        action: vote votes Code-Review, verified switches whether
+            Verified+1 is needed.
     """
     if 'vote' == action:
         if not change.patch_sets:
@@ -78,18 +106,24 @@ def vote_action(interface, change, action):
                       else 'Verified+1 is not needed any more.')
 
 
-def submit_with_confirmation(interface, change):
-    """Asks before submitting. Lists the changes that get submitted along
-    and the unresolved threads. Says first what is missing, if
-    a change lacks votes or an upload.
+def submit_with_confirmation(interface: 'Interface', change: Change) -> None:
+    """Submits a change after asking. Lists the changes that get submitted
+    along and the unresolved threads. Says first what is missing, if a
+    change lacks votes or an upload.
+
+    Args:
+        interface: the interface.
+        change: the change.
     """
     submitted = changes_submitted_with(change)
     problems = [problem for other in submitted for problem in other.submit_problems()]
     if problems:
-        interface.show_lines(['Cannot submit yet:', ''] + [f'  {problem}' for problem in problems]
+        interface.show_lines(['Cannot submit yet:', '']
+                             + [f'  {problem}' for problem in problems]
                              + ['', f'{interface.keymap.label("approve")} gives Code-Review+2. '
                                 'Verified comes from a check.'])
         return
+    # What goes, what is left open
     lines = [f'Submit to {change.base}:']
     lines += [f'  {other.short_id()}  {other.subject}' for other in submitted]
     unfinished = [(other, comment) for other in submitted
@@ -97,13 +131,15 @@ def submit_with_confirmation(interface, change):
     lines.append('')
     if unfinished:
         lines.append('These comments are unresolved:')
-        lines += [f'  {other.short_id()} #{comment.number} [{comment.status}] {comment.place_label()}: '
-                  f'{(comment.messages[0].text.splitlines() or [""])[0]}' for other, comment in unfinished]
+        lines += [f'  {other.short_id()} #{comment.number} [{comment.status}] '
+                  f'{comment.place_label()}: '
+                  f'{(comment.messages[0].text.splitlines() or [""])[0]}'
+                  for other, comment in unfinished]
     else:
         lines.append('All comments are resolved.')
-    drafts = sum(comment.has_draft() for other in submitted for comment in other.comments)
-    if drafts:
-        lines += ['', f'{drafts} draft(s) are not sent and stay unsent.']
+    n_drafts = sum(comment.has_draft() for other in submitted for comment in other.comments)
+    if n_drafts:
+        lines += ['', f'{n_drafts} draft(s) are not sent and stay unsent.']
     if interface.confirm(lines, 'Submit?'):
         submit(change.change_id, do_force=True)
         interface.after_write()

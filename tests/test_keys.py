@@ -171,7 +171,7 @@ class OverrideTest(unittest.TestCase):
 class TextBoxTest(unittest.TestCase):
 
     def test_emacs_editing(self):
-        box = TextBox('hello world', emacs=True)
+        box = TextBox('hello world', has_emacs_keys=True)
         box.key('\x01')
         self.assertEqual(0, box.position)
         box.key('\x06')
@@ -375,12 +375,12 @@ class UsabilityTest(unittest.TestCase):
         self.assertTrue(TextBox('  ').cancel())
         box = TextBox('Why?')
         self.assertFalse(box.cancel())
-        self.assertTrue(box.discarding)
+        self.assertTrue(box.is_discarding)
         # Any other key keeps the text and asks again next time
         box.keep()
         self.assertFalse(box.cancel())
         self.assertTrue(box.cancel())
-        self.assertEqual('again discards', dict(box_keys(False, discarding=True))['Esc'])
+        self.assertEqual('again discards', dict(box_keys(False, is_discarding=True))['Esc'])
         self.assertEqual('send', dict(box_keys(True, 'send'))['⏎'])
         self.assertIn('C-g', dict(box_keys(True)))
 

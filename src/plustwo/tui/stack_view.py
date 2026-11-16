@@ -2,11 +2,13 @@
 """The dashboard: the changes of all repositories."""
 
 import curses
+from typing import TYPE_CHECKING, Any
 
 from plustwo.config.user import current_user
-from plustwo.config.view_state import SECTION_TITLES, folded_sections, move_section, toggle_section
+from plustwo.config.view_state import (
+    SECTION_TITLES, folded_sections, move_section, toggle_section)
 from plustwo.git.repository import use_repository
-from plustwo.model.change import SUBMITTABLE
+from plustwo.model.change import SUBMITTABLE, Change
 from plustwo.model.vote import CODE_REVIEW, VERIFIED
 from plustwo.review.changes import all_changes
 from plustwo.review.compare import diff_command
@@ -17,8 +19,22 @@ from plustwo.tui.change_actions import (
     approve, rebase_with_confirmation, submit_with_confirmation, vote_action)
 from plustwo.tui.change_view import ChangeView
 from plustwo.tui.colours import HEADER_BACKGROUND, tone, vote_badge
-from plustwo.tui.lists import LIST_ACTIONS, move, wheel_action
+from plustwo.tui.lists import LIST_ACTIONS, position_after, wheel_action
 from plustwo.tui.mouse import DOUBLE_CLICK
+from plustwo.tui.sidebar import FooterEntry
+
+if TYPE_CHECKING:
+    from plustwo.tui.area import Area
+    from plustwo.tui.interface import Interface
+
+
+# Each turn, mapped to how the dashboard shows it
+_TURN_LABELS = {'reviewer': 'reviewer', 'author': 'author', 'submittable': 'submit',
+                'wip': 'WIP'}
+
+# A row of the dashboard: ('section', name, number of changes), ('change',
+# index into the changes) or ('none',) for an empty section
+DashboardRow = tuple[Any, ...]
 
 
 class StackView:
@@ -27,10 +43,33 @@ class StackView:
     be in several sections. Sections fold and move.
     """
 
-    def footer(self):
-        """The actions that work on the cursor row: fold and move on a
+    # First screen row of the list
+    TOP = 3
+
+    def __init__(self, interface: 'Interface') -> None:
+        """Starts the dashboard empty, see reload().
+
+        Args:
+            interface: the interface.
+        """
+        self._interface = interface
+        self._changes: list[Change] = []
+        # The stacks the base branch moved away from: (repository, topic)
+        self._behind: set[tuple[str | None, str]] = set()
+        # The sections of each change and the folded sections, see reload()
+        self._sections: list[list[str]] = []
+        self._folded: set[str] = set()
+        self._rows: list[DashboardRow] = []
+        self._selected = 0
+        self._scroll = 0
+
+    def footer(self) -> list[FooterEntry]:
+        """Lists the actions that work on the cursor row: fold and move on a
         heading, open, +2, submit or rebase on a change, as its state
         allows.
+
+        Returns:
+            The footer's entries.
         """
         row = self._rows[self._selected] if self._selected < len(self._rows) else None
         if row and 'section' == row[0]:
@@ -48,26 +87,15 @@ class StackView:
         return entries + [(('next-turn',), 'my turn'), (('quit',), 'quit'),
                           (('help',), 'all keys')]
 
-    # First screen row of the list
-    TOP = 3
+    def _selectable(self) -> list[int]:
+        """Lists the rows the cursor can be on: headings and changes.
 
-    def __init__(self, interface):
-        self._interface = interface
-        self._changes = []
-        self._behind = set()
-        # The sections of each change and the folded sections, see reload()
-        self._sections = []
-        self._folded = set()
-        # ('section', name, count), ('change', index) or ('none',)
-        self._rows = []
-        self._selected = 0
-        self._scroll = 0
-
-    def _selectable(self):
-        """Indexes of the rows the cursor can be on: headings and changes."""
+        Returns:
+            The rows' indexes.
+        """
         return [index for index, row in enumerate(self._rows) if 'none' != row[0]]
 
-    def reload(self):
+    def reload(self) -> None:
         """Reads the changes of all shown repositories and lays out the
         sections.
         """
@@ -95,25 +123,34 @@ class StackView:
             self._selected = next((index for index in selectable if index >= self._selected),
                                   selectable[-1] if selectable else 0)
 
-    def _selected_change(self):
-        """The change on the cursor row, None on a heading."""
-        row = self._rows[self._selected] if self._selected < len(self._rows) else None
-        return self._changes[row[1]] if row and 'change' == row[0] else None
+    def _selected_change(self) -> Change | None:
+        """Finds the change on the cursor row.
 
-    def draw(self, area):
+        Returns:
+            The change, None on a heading.
+        """
+        row = self._rows[self._selected] if self._selected < len(self._rows) else None
+        if row and 'change' == row[0]:
+            return self._changes[int(row[1])]
+        return None
+
+    def draw(self, area: 'Area') -> None:
         """Draws the header bar and the sections, a row per change with the
         repository, badges for votes and the turn.
+
+        Args:
+            area: the part of the screen to draw into.
         """
         out = self._interface.text
-        mine = sum('your-turn' in sections for sections in self._sections)
+        n_users_turns = sum('your-turn' in sections for sections in self._sections)
         bar = self._interface.colour_pairs.attribute(15, tone(HEADER_BACKGROUND))
         out(0, 0, ' ' * area.width, bar)
         title = 'plustwo' + (f'  list {self._interface.list_name}'
                              if self._interface.list_name else '')
         out(0, 1, title, bar | curses.A_BOLD)
-        repositories = len({change.repository for change in self._changes})
-        right = f'{len(self._changes)} in review in {repositories} repo(s)' + (
-            f', your turn on {mine}' if mine else '') + ' '
+        n_repositories = len({change.repository for change in self._changes})
+        right = f'{len(self._changes)} in review in {n_repositories} repo(s)' + (
+            f', your turn on {n_users_turns}' if n_users_turns else '') + ' '
         out(0, max(area.width - len(right), 1), right, bar)
         subject_width = max(area.width - 115, 16)
         out(2, 1, f'{"#":>3}  {"Change":<9} {"Repo":<12} {"Topic":<14} {"Base":<10} '
@@ -127,19 +164,20 @@ class StackView:
         for offset, row_content in enumerate(self._rows[self._scroll:self._scroll + height]):
             index = self._scroll + offset
             row = self.TOP + offset
-            selected = index == self._selected
-            attributes = curses.A_REVERSE if selected else 0
+            is_selected = index == self._selected
+            attributes = curses.A_REVERSE if is_selected else 0
             if 'section' == row_content[0]:
-                _, section, count = row_content
+                _, section, n_changes = row_content
                 mark = '▸' if section in folded else '▾'
                 out(row, 1, ' ' * (area.width - 2), attributes)
-                out(row, 1, f'{mark} {SECTION_TITLES[section]} ({count})',
+                out(row, 1, f'{mark} {SECTION_TITLES[section]} ({n_changes})',
                     attributes | curses.A_BOLD)
                 continue
             if 'none' == row_content[0]:
                 out(row, 6, '(none)', self._interface.dim())
                 continue
-            change = self._changes[row_content[1]]
+            change_index = row_content[1]
+            change = self._changes[change_index]
             # Plain text on the reversed cursor row
             secondary_text = self._interface.dim(attributes)
             dim = secondary_text if change.is_wip else 0
@@ -147,9 +185,9 @@ class StackView:
             out(row, 1, f'{row_content[1] + 1:>3}  ', attributes | dim)
             out(row, 6, f'{change.short_id():<9} ', attributes | secondary_text)
             out(row, 16, f'{change.repository_name:<12.12} ', attributes | dim)
-            behind = (change.repository, change.topic) in self._behind
-            out(row, 29, f'{("↻ " if behind else "") + change.topic:<14.14} ',
-                attributes | (curses.color_pair(3) if behind else secondary_text))
+            is_behind = (change.repository, change.topic) in self._behind
+            out(row, 29, f'{("↻ " if is_behind else "") + change.topic:<14.14} ',
+                attributes | (curses.color_pair(3) if is_behind else secondary_text))
             out(row, 44, f'{change.base:<10.10} ', attributes | secondary_text)
             out(row, 55, f'{change.subject:<{subject_width}.{subject_width}} ', attributes | dim)
             column = 56 + subject_width
@@ -157,44 +195,58 @@ class StackView:
             column += 6
             for label, short in ((CODE_REVIEW, 'CR'), (VERIFIED, 'V')):
                 badge = vote_badge(self._interface, short, change.label_value(label),
-                                   VERIFIED == label and change.needs_verified)
+                                   is_required=VERIFIED == label and change.needs_verified)
                 if badge:
                     out(row, column, badge[0], badge[1])
                 column += 8
             turn = change.turn()
-            yours = 'your-turn' in self._sections[row_content[1]]
+            is_users_turn = 'your-turn' in self._sections[change_index]
             # The same rule as the Your turn section: "you" there and here
-            mine = ('▶ submit' if SUBMITTABLE == turn else '▶ you') if yours else None
-            out(row, column, f'{mine or TURN_LABELS.get(turn, turn):<10} ',
-                attributes | (curses.A_BOLD | curses.color_pair(3) if yours
+            users_turn = (('▶ submit' if SUBMITTABLE == turn else '▶ you') if is_users_turn
+                          else None)
+            out(row, column, f'{users_turn or _TURN_LABELS.get(turn, turn):<10} ',
+                attributes | (curses.A_BOLD | curses.color_pair(3) if is_users_turn
                               else secondary_text))
             out(row, column + 11, comment_counts(change, is_short=True),
                 attributes | secondary_text)
 
-    def mouse(self, row, _column, kind):
-        """A click selects a row, a double click opens it."""
-        if wheel_action(kind):
-            self.action(wheel_action(kind))
+    def mouse(self, row: int, _column: int, mouse_event: str) -> None:
+        """Handles the mouse: a click selects a row, a double click opens it,
+        the wheel moves.
+
+        Args:
+            row: the screen row.
+            _column: the screen column, unused.
+            mouse_event: the event, see the module mouse.
+        """
+        wheel = wheel_action(mouse_event)
+        if wheel:
+            self.action(wheel)
             return
         index = self._scroll + row - self.TOP
         if 0 <= index < len(self._rows) and 'none' != self._rows[index][0]:
             self._selected = index
-            if DOUBLE_CLICK == kind or 'section' == self._rows[index][0]:
+            if DOUBLE_CLICK == mouse_event or 'section' == self._rows[index][0]:
                 self.action('open')
 
-    def action(self, action, count=None):
-        """Handles an action of the dashboard."""
+    def action(self, action: str, count: int | None = None) -> None:
+        """Handles an action of the dashboard.
+
+        Args:
+            action: the action's name.
+            count: the count typed before it, None for none.
+        """
         selectable = self._selectable()
         if action in LIST_ACTIONS and selectable:
             position = selectable.index(self._selected) if self._selected in selectable else 0
-            self._selected = selectable[move(position, action, len(selectable), count)]
+            self._selected = selectable[position_after(position, action, len(selectable), count)]
             return
         row = self._rows[self._selected] if self._selected < len(self._rows) else None
         if row and 'section' == row[0]:
             if 'open' == action:
-                toggle_section(row[1])
+                toggle_section(str(row[1]))
             elif action in ('section-down', 'section-up'):
-                move_section(row[1], 1 if 'section-down' == action else -1)
+                move_section(str(row[1]), 1 if 'section-down' == action else -1)
             else:
                 return
             self.reload()
@@ -203,10 +255,10 @@ class StackView:
             return
         if 'next-turn' == action:
             turns = [index for index in selectable if 'change' == self._rows[index][0]
-                     and 'your-turn' in self._sections[self._rows[index][1]]]
-            later = [index for index in turns if index > self._selected]
-            if later or turns:
-                self._selected = (later or turns)[0]
+                     and 'your-turn' in self._sections[int(self._rows[index][1])]]
+            later_turns = [index for index in turns if index > self._selected]
+            if later_turns or turns:
+                self._selected = (later_turns or turns)[0]
             else:
                 self._interface.say('It is your turn nowhere.')
             return
@@ -228,10 +280,3 @@ class StackView:
         else:
             vote_action(self._interface, change, action)
 
-
-# The turn as the stack list shows it, and the turns that are the reviewer's
-TURN_LABELS = {'reviewer': 'reviewer', 'author': 'author', 'submittable': 'submit',
-               'wip': 'WIP'}
-
-
-MY_TURNS = ('reviewer', 'submittable')
