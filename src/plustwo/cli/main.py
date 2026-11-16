@@ -142,9 +142,10 @@ repository. Registered repositories, lists and the dashboard's order and
 folding are state, not settings: files in git config syntax below
 $XDG_STATE_HOME/plustwo (~/.local/state/plustwo). Without any registered
 repository, the working directory's is the only one. A and B are patch set
-numbers or "current" for the commit as it is now. Without them, diff and rdiff compare the latest patch
-set with the current commit, or the last two patch sets if the commit is
-unchanged since. With a single patch set, they show the change itself.
+numbers or "current" for the commit as it is now. Without them, diff and
+rdiff compare the latest patch set with the current commit, or the last
+two patch sets if the commit is unchanged since. With a single patch set,
+they show the change itself.
 
 Like in Gerrit, submitting needs Code-Review+2 and no -2 on the latest patch
 set. A change can also require Verified+1 and no -1, for which a check (a
@@ -209,6 +210,8 @@ import argparse
 import contextlib
 import subprocess
 import sys
+from collections.abc import Callable
+from typing import Any
 
 from plustwo.author.inbox import inbox_lines, lost_threads
 from plustwo.author.watch import parse_time, watch
@@ -239,22 +242,448 @@ from plustwo.review.upload import upload
 from plustwo.review.votes import require_verified, set_vote
 
 
-def run_tui(arguments):
-    """Starts the terminal user interface."""
+# The parsed command line, see _parse_arguments()
+Arguments = argparse.Namespace
+
+# What runs a command: a function of the parsed command line
+CommandRun = Callable[[Arguments], None]
+
+# The port of plustwo serve without --port
+_DEFAULT_PORT = 8022
+
+
+# ── the commands ──────────────────────────────────────────────────────────────
+
+def _run_tui(arguments: Arguments) -> None:
+    """Starts the terminal user interface.
+
+    Args:
+        arguments: the command line, with the list of repositories.
+    """
     # Imported here, so other commands don't load curses.
     from plustwo.tui.interface import run  # pylint: disable=import-outside-toplevel
     run(arguments.list)
 
 
-def parse_arguments(argv):
-    """Parses the command line."""
-    parser = argparse.ArgumentParser(prog='plustwo', description=__doc__.split('\n')[0])
-    parser.set_defaults(run=run_tui, list=None)
+def _init_command(_arguments: Arguments) -> None:
+    """Sets up the current repository and registers it.
+
+    Args:
+        _arguments: the command line, unused.
+    """
+    moved = init_repository()
+    print('commit-msg hook installed, notes follow amends and rebases')
+    print(f'registered as {register_repository(do_number_on_clash=True)}')
+    print("agents: add 'run plustwo guide' to your AGENTS.md or CLAUDE.md")
+    for line in moved:
+        print(f'moved setting {line}')
+
+
+def _config_command(arguments: Arguments) -> None:
+    """Shows, sets or removes a setting, or lists them all.
+
+    Args:
+        arguments: the command line, with key, value, unset and user.
+
+    Raises:
+        ChangeError: the setting to show is not set.
+    """
+    if arguments.key is None:
+        print('\n'.join(list_settings()))
+    elif arguments.unset:
+        set_setting(arguments.key, None, arguments.user)
+    elif arguments.value is None:
+        value = setting(arguments.key)
+        if value is None:
+            raise ChangeError(f'{arguments.key} is not set')
+        print(value)
+    else:
+        set_setting(arguments.key, arguments.value, arguments.user)
+
+
+def _upload_command(arguments: Arguments) -> None:
+    """Uploads a stack and says what happened: new patch sets, marks, a
+    started check, and the threads that lost their line.
+
+    Args:
+        arguments: the command line, with change, topic, wip and ready.
+    """
+    is_wip = True if arguments.wip is not None else False if arguments.ready is not None \
+        else None
+    from_change = arguments.wip or arguments.ready or None
+    reference = arguments.change or from_change
+    branch = branch_with_change(reference) if reference else None
+    uploaded, topic, has_grown, moved_from = upload(branch, arguments.topic, is_wip=is_wip,
+                                                    from_change=from_change)
+    if start_check(topic):
+        print(f'{topic}: check started, it votes Verified')
+    if has_grown:
+        print(f'added to stack {topic}')
+    if moved_from:
+        print(f'{topic}: moved from {moved_from} to {stack_base(topic)}')
+    if is_wip is not None:
+        changes_text = (f'{from_change} and the changes ' + ('above' if is_wip else 'below')
+                        + ' it ' if from_change else '')
+        print(f'{topic}: ' + changes_text
+              + ('work in progress' if is_wip else 'ready for review'))
+    for other, number, patch_set_type in uploaded:
+        kept = [f'{vote.label}{vote.value:+d}' for vote in other.current_votes(CODE_REVIEW)
+                + other.current_votes(VERIFIED)]
+        print(f'{other.short_id()}: patch set {number}'
+              + (f', {patch_set_type}' if patch_set_type else '')
+              + (f', keeps {" ".join(kept)}' if kept else ''))
+    lost = lost_threads([find_change(other.change_id) for other, _number, _type in uploaded])
+    if lost:
+        print('threads that lost their line, move the ones you know with '
+              '`plustwo answer` lines like "I3f2a #4 move a.cc:12":')
+        print('\n'.join(f'  {line}' for line in lost))
+
+
+def _rebase_command(arguments: Arguments) -> None:
+    """Rebases a stack onto its base branch.
+
+    Args:
+        arguments: the command line, with topic or change.
+
+    Raises:
+        ChangeError: neither a topic nor a change names the stack.
+    """
+    topic = arguments.topic
+    if topic is None:
+        topic = find_change(arguments.change).topic if arguments.change else None
+    if topic is None:
+        raise ChangeError('name the stack: --topic TOPIC or a CHANGE of it')
+    rebased = rebase_stack(topic)
+    print(f'{topic}: rebased, {len(rebased)} new patch set(s)' if rebased is not None
+          else f'{topic}: conflicts, the author is asked to rebase')
+
+
+def _pull_command(_arguments: Arguments) -> None:
+    """Brings the reviewer's rebase or submit into the checked out branch.
+
+    Args:
+        _arguments: the command line, unused.
+    """
+    print(pull())
+
+
+def _check_command(arguments: Arguments) -> None:
+    """Runs the check of a stack now, which votes Verified.
+
+    Args:
+        arguments: the command line, with topic.
+
+    Raises:
+        ChangeError: no check is set up.
+    """
+    topic = arguments.topic or topic_of_branch(current_branch() or '')
+    value = run_check(topic)
+    if value is None:
+        raise ChangeError('no check set up: plustwo config checks.command "make check"')
+    print(f'{topic}: Verified{value:+d}, log in {git_path("plustwo/check.log")}')
+
+
+def _check_run_command(arguments: Arguments) -> None:
+    """Runs a check started in the background by an upload, see
+    start_check().
+
+    Args:
+        arguments: the command line, with topic and commit.
+    """
+    try:
+        run_check(arguments.topic, arguments.commit)
+    finally:
+        pid_file = git_path('plustwo/check.pid')
+        if pid_file.exists() and arguments.commit in pid_file.read_text():
+            pid_file.unlink()
+
+
+def _submit_command(arguments: Arguments) -> None:
+    """Submits a change and the ones below it.
+
+    Args:
+        arguments: the command line, with change.
+    """
+    submitted = submit(find_change(arguments.change).change_id)
+    print('Submitted: ' + ', '.join(change.short_id() for change in submitted))
+
+
+def _comment_command(arguments: Arguments) -> None:
+    """Starts a thread.
+
+    Args:
+        arguments: the command line, with change, place, text, author and
+            status.
+    """
+    change = find_change(arguments.change)
+    number = add_comment(change.change_id, arguments.place, arguments.text,
+                         author=AUTHOR if arguments.author else REVIEWER,
+                         status=arguments.status)
+    print(f'{change.short_id()}: comment #{number} added')
+
+
+def _reply_command(arguments: Arguments) -> None:
+    """Answers a thread as the author.
+
+    Args:
+        arguments: the command line, with change, number, text, resolve and
+            unresolve.
+    """
+    status = RESOLVED if arguments.resolve else UNRESOLVED if arguments.unresolve else None
+    add_message(find_change(arguments.change).change_id, arguments.number, AUTHOR,
+                arguments.text, status=status)
+
+
+def _done_command(arguments: Arguments) -> None:
+    """Answers "Done" as the author and resolves the thread.
+
+    Args:
+        arguments: the command line, with change, number and text.
+    """
+    add_message(find_change(arguments.change).change_id, arguments.number, AUTHOR,
+                arguments.text or DONE, status=RESOLVED)
+
+
+def _move_command(arguments: Arguments) -> None:
+    """Moves a thread to where it belongs.
+
+    Args:
+        arguments: the command line, with change, number, place, patch_set,
+            old and author.
+    """
+    change = find_change(arguments.change)
+    place, side = move_place(arguments.place)
+    move = move_thread(change.change_id, arguments.number, place,
+                       OLD_SIDE if arguments.old else side, arguments.patch_set or 0,
+                       AUTHOR if arguments.author else REVIEWER)
+    print(f'{change.short_id()}: comment #{arguments.number} '
+          + (move_text(move) if move else f'now on {place_label(place, side)}'))
+
+
+def _answer_command(_arguments: Arguments) -> None:
+    """Adds the author's answers read from the standard input.
+
+    Args:
+        _arguments: the command line, unused.
+    """
+    n_answers = answer(sys.stdin.read())
+    print(f'{n_answers} answer(s) added')
+
+
+def _status_command(arguments: Arguments) -> None:
+    """Resolves a thread as the author or makes it unresolved again.
+
+    Args:
+        arguments: the command line, with change, number, status and text.
+    """
+    change = find_change(arguments.change)
+    set_status(change.change_id, arguments.number, arguments.status, arguments.text)
+    print(f'{change.short_id()}: comment #{arguments.number} {status_name(arguments.status)}')
+
+
+def _vote_command(arguments: Arguments) -> None:
+    """Votes on a patch set.
+
+    Args:
+        arguments: the command line, with change, label, value, by,
+            patch_set and message.
+    """
+    change = find_change(arguments.change)
+    number = set_vote(change.change_id, arguments.label, arguments.value, arguments.by,
+                      arguments.patch_set, arguments.message or '')
+    print(f'{change.short_id()}: {label_name(arguments.label)}{arguments.value:+d} '
+          f'on PS{number}')
+
+
+def _require_verified_command(arguments: Arguments) -> None:
+    """Sets whether a change needs Verified+1.
+
+    Args:
+        arguments: the command line, with change and state.
+    """
+    require_verified(find_change(arguments.change).change_id, 'off' != arguments.state)
+
+
+def _diff_command(arguments: Arguments) -> None:
+    """Shows the diff between two versions of a change.
+
+    Args:
+        arguments: the command line, with change, first, second and tool.
+    """
+    change = find_change(arguments.change)
+    subprocess.run(diff_command(change, arguments.first, arguments.second, arguments.tool))
+
+
+def _range_diff_command(arguments: Arguments) -> None:
+    """Shows the range-diff between two patch sets of a change.
+
+    Args:
+        arguments: the command line, with change, first and second.
+    """
+    change = find_change(arguments.change)
+    subprocess.run(range_diff_command(change, arguments.first, arguments.second))
+
+
+def _author_repositories(arguments: Arguments) -> list[str]:
+    """Finds the repositories an author's command looks at.
+
+    Args:
+        arguments: the command line, with repositories, all and list.
+
+    Returns:
+        The named ones, else all registered ones outside a repository or
+        with --all, else the working directory's.
+    """
+    if arguments.repositories:
+        return list(arguments.repositories)
+    if arguments.all or toplevel() is None:
+        return review_repositories(arguments.list)
+    return ['.']
+
+
+def _inbox_command(arguments: Arguments) -> None:
+    """Prints what the author has to answer.
+
+    Args:
+        arguments: the command line, see _author_repositories(), and topic.
+    """
+    repositories: list[str | None] = list(_author_repositories(arguments))
+    print('\n'.join(inbox_lines(repositories, arguments.topic)) or 'Nothing to answer.')
+
+
+def _watch_command(arguments: Arguments) -> None:
+    """Prints new messages and votes until stopped.
+
+    Args:
+        arguments: the command line, see _author_repositories(), and topic,
+            since and minutes.
+    """
+    since = parse_time(arguments.since) if arguments.since else None
+    repositories: list[str | None] = list(_author_repositories(arguments))
+    with contextlib.suppress(KeyboardInterrupt):
+        watch(repositories, topic=arguments.topic, since=since, minutes=arguments.minutes)
+
+
+def _register_command(arguments: Arguments) -> None:
+    """Registers a repository for the dashboard.
+
+    Args:
+        arguments: the command line, with path, name and list.
+    """
+    name = register_repository(arguments.path, arguments.name, arguments.list)
+    print(f'registered as {name}')
+
+
+def _unregister_command(arguments: Arguments) -> None:
+    """Forgets a registered repository.
+
+    Args:
+        arguments: the command line, with name.
+    """
+    unregister_repository(arguments.name)
+
+
+def _repos_command(_arguments: Arguments) -> None:
+    """Prints the registered repositories and their lists.
+
+    Args:
+        _arguments: the command line, unused.
+    """
+    lists = repository_lists()
+    for name, path in registered_repositories().items():
+        member_of = [list_name for list_name, names in lists.items() if name in names]
+        print(f'{name:<16} {path}' + (f'  ({", ".join(member_of)})' if member_of else ''))
+
+
+def _stack_command(run: Callable[[str, str | None], None]) -> CommandRun:
+    """Makes the command of an action on a whole stack, named [REPO:]TOPIC.
+
+    Args:
+        run: the action, abandon_stack() or restore_stack().
+
+    Returns:
+        The command.
+    """
+    def stack_run(arguments: Arguments) -> None:
+        """Runs the action on the stack.
+
+        Args:
+            arguments: the command line, with topic.
+
+        Raises:
+            ChangeError: the repository is not registered.
+        """
+        name, colon, topic = arguments.topic.rpartition(':')
+        repository = registered_repositories().get(name) if colon else None
+        if colon and repository is None:
+            raise ChangeError(f'no registered repository {name}')
+        run(topic, repository)
+        print(f'{topic}: ' + ('abandoned' if abandon_stack == run else 'restored'))
+    return stack_run
+
+
+def _guide_command(_arguments: Arguments) -> None:
+    """Prints the guide for agents.
+
+    Args:
+        _arguments: the command line, unused.
+    """
+    print(guide_text(), end='')
+
+
+def _serve_command(arguments: Arguments) -> None:
+    """Runs the web interface.
+
+    Args:
+        arguments: the command line, with repositories, list and port.
+    """
+    # Imported here, so other commands don't load the HTTP server.
+    from plustwo.web.server import serve  # pylint: disable=import-outside-toplevel
+    repositories = arguments.repositories or review_repositories(arguments.list)
+    for repository in repositories:
+        ensure_layout(repository)
+    serve(repositories, arguments.port)
+
+
+def _hook_command(arguments: Arguments) -> None:
+    """Adds a Change-Id to a commit message, for the commit-msg hook.
+
+    Args:
+        arguments: the command line, with message_file.
+    """
+    add_change_id(arguments.message_file)
+
+
+# ── the command line ──────────────────────────────────────────────────────────
+
+def _parse_arguments(argv: list[str]) -> Arguments:
+    """Parses the command line.
+
+    Args:
+        argv: the arguments, without the program's name.
+
+    Returns:
+        The parsed command line. Its run is the command's function.
+    """
+    parser = argparse.ArgumentParser(prog='plustwo', description=(__doc__ or '').split('\n')[0])
+    parser.set_defaults(run=_run_tui, list=None)
     parser.add_argument('--list', help='the dashboard of this list of repositories')
     commands = parser.add_subparsers()
 
-    def command(name, run, help_text, *arguments):
-        """Adds a sub-command. Arguments are names or (name, options)."""
+    def command(name: str, run: CommandRun, help_text: str,
+                *arguments: str | tuple[str, dict[str, Any]]) -> argparse.ArgumentParser:
+        """Adds a sub-command.
+
+        Args:
+            name: the command's name.
+            run: the function that runs it.
+            help_text: the help line.
+            *arguments: the positional arguments: names, or (name, options of
+                add_argument()).
+
+        Returns:
+            The sub-command's parser, for more options.
+        """
         sub = commands.add_parser(name, help=help_text)
         for argument in arguments:
             if isinstance(argument, tuple):
@@ -264,243 +693,56 @@ def parse_arguments(argv):
         sub.set_defaults(run=run)
         return sub
 
-    def init_command(_arguments):
-        moved = init_repository()
-        print('commit-msg hook installed, notes follow amends and rebases')
-        print(f'registered as {register_repository(do_number_on_clash=True)}')
-        print("agents: add 'run plustwo guide' to your AGENTS.md or CLAUDE.md")
-        for line in moved:
-            print(f'moved setting {line}')
-
-    def config_command(arguments):
-        if arguments.key is None:
-            print('\n'.join(list_settings()))
-        elif arguments.unset:
-            set_setting(arguments.key, None, arguments.user)
-        elif arguments.value is None:
-            value = setting(arguments.key)
-            if value is None:
-                raise ChangeError(f'{arguments.key} is not set')
-            print(value)
-        else:
-            set_setting(arguments.key, arguments.value, arguments.user)
-
-    def upload_command(arguments):
-        wip = True if arguments.wip is not None else False if arguments.ready is not None \
-            else None
-        at = arguments.wip or arguments.ready or None
-        reference = arguments.change or at
-        branch = branch_with_change(reference) if reference else None
-        uploaded, topic, grown, moved = upload(branch, arguments.topic, is_wip=wip, from_change=at)
-        if start_check(topic):
-            print(f'{topic}: check started, it votes Verified')
-        if grown:
-            print(f'added to stack {topic}')
-        if moved:
-            print(f'{topic}: moved from {moved} to {stack_base(topic)}')
-        if wip is not None:
-            print(f'{topic}: ' + (f'{at} and the changes ' + ('above' if wip else 'below')
-                                  + ' it ' if at else '')
-                  + ('work in progress' if wip else 'ready for review'))
-        for other, number, kind in uploaded:
-            kept = [f'{vote.label}{vote.value:+d}' for vote in other.current_votes(CODE_REVIEW)
-                    + other.current_votes(VERIFIED)]
-            print(f'{other.short_id()}: patch set {number}' + (f', {kind}' if kind else '')
-                  + (f', keeps {" ".join(kept)}' if kept else ''))
-        lost = lost_threads([find_change(other.change_id) for other, _number, _kind in uploaded])
-        if lost:
-            print('threads that lost their line, move the ones you know with '
-                  '`plustwo answer` lines like "I3f2a #4 move a.cc:12":')
-            print('\n'.join(f'  {line}' for line in lost))
-
-    def rebase_command(arguments):
-        topic = arguments.topic
-        if topic is None:
-            topic = find_change(arguments.change).topic if arguments.change else None
-        if topic is None:
-            raise ChangeError('name the stack: --topic TOPIC or a CHANGE of it')
-        rebased = rebase_stack(topic)
-        print(f'{topic}: rebased, {len(rebased)} new patch set(s)' if rebased is not None
-              else f'{topic}: conflicts, the author is asked to rebase')
-
-    def pull_command(_arguments):
-        print(pull())
-
-    def check_command(arguments):
-        topic = arguments.topic or topic_of_branch(current_branch() or '')
-        value = run_check(topic)
-        if value is None:
-            raise ChangeError('no check set up: plustwo config checks.command "make check"')
-        print(f'{topic}: Verified{value:+d}, log in {git_path("plustwo/check.log")}')
-
-    def check_run_command(arguments):
-        try:
-            run_check(arguments.topic, arguments.commit)
-        finally:
-            pid_file = git_path('plustwo/check.pid')
-            if pid_file.exists() and arguments.commit in pid_file.read_text():
-                pid_file.unlink()
-
-    def submit_command(arguments):
-        submitted = submit(find_change(arguments.change).change_id)
-        print('Submitted: ' + ', '.join(change.short_id() for change in submitted))
-
-    def comment_command(arguments):
-        change = find_change(arguments.change)
-        number = add_comment(change.change_id, arguments.place, arguments.text,
-                             author=AUTHOR if arguments.author else REVIEWER,
-                             status=arguments.status)
-        print(f'{change.short_id()}: comment #{number} added')
-
-    def reply_command(arguments):
-        status = RESOLVED if arguments.resolve else UNRESOLVED if arguments.unresolve else None
-        add_message(find_change(arguments.change).change_id, arguments.number, AUTHOR,
-                    arguments.text, status=status)
-
-    def done_command(arguments):
-        add_message(find_change(arguments.change).change_id, arguments.number, AUTHOR,
-                    arguments.text or DONE, status=RESOLVED)
-
-    def move_command(arguments):
-        change = find_change(arguments.change)
-        place, side = move_place(arguments.place)
-        move = move_thread(change.change_id, arguments.number, place,
-                           OLD_SIDE if arguments.old else side, arguments.patch_set or 0,
-                           AUTHOR if arguments.author else REVIEWER)
-        print(f'{change.short_id()}: comment #{arguments.number} '
-              + (move_text(move) if move else f'now on {place_label(place, side)}'))
-
-    def answer_command(_arguments):
-        count = answer(sys.stdin.read())
-        print(f'{count} answer(s) added')
-
-    def status_command(arguments):
-        change = find_change(arguments.change)
-        set_status(change.change_id, arguments.number, arguments.status, arguments.text)
-        print(f'{change.short_id()}: comment #{arguments.number} {status_name(arguments.status)}')
-
-    def vote_command(arguments):
-        change = find_change(arguments.change)
-        number = set_vote(change.change_id, arguments.label, arguments.value, arguments.by,
-                          arguments.patch_set, arguments.message or '')
-        print(f'{change.short_id()}: {label_name(arguments.label)}{arguments.value:+d} on PS{number}')
-
-    def require_verified_command(arguments):
-        require_verified(find_change(arguments.change).change_id, 'off' != arguments.state)
-
-    def diff_run(arguments):
-        change = find_change(arguments.change)
-        subprocess.run(diff_command(change, arguments.first, arguments.second, arguments.tool))
-
-    def range_diff_run(arguments):
-        change = find_change(arguments.change)
-        subprocess.run(range_diff_command(change, arguments.first, arguments.second))
-
-    def author_repositories(arguments):
-        # The working directory's repository, all registered ones outside a
-        # repository or with --all
-        if arguments.repositories:
-            return arguments.repositories
-        if arguments.all or toplevel() is None:
-            return review_repositories(arguments.list)
-        return ['.']
-
-    def inbox_command(arguments):
-        print('\n'.join(inbox_lines(author_repositories(arguments), arguments.topic))
-              or 'Nothing to answer.')
-
-    def watch_command(arguments):
-        since = parse_time(arguments.since) if arguments.since else None
-        with contextlib.suppress(KeyboardInterrupt):
-            watch(author_repositories(arguments), topic=arguments.topic, since=since,
-                  minutes=arguments.minutes)
-
-    def register_command(arguments):
-        print(f'registered as {register_repository(arguments.path, arguments.name, arguments.list)}')
-
-    def unregister_command(arguments):
-        unregister_repository(arguments.name)
-
-    def repos_command(_arguments):
-        lists = repository_lists()
-        for name, path in registered_repositories().items():
-            member = [list_name for list_name, names in lists.items() if name in names]
-            print(f'{name:<16} {path}' + (f'  ({", ".join(member)})' if member else ''))
-
-    def stack_command(run):
-        def stack_run(arguments):
-            name, colon, topic = arguments.topic.rpartition(':')
-            repository = registered_repositories().get(name) if colon else None
-            if colon and repository is None:
-                raise ChangeError(f'no registered repository {name}')
-            run(topic, repository)
-            print(f'{topic}: ' + ('abandoned' if abandon_stack == run else 'restored'))
-        return stack_run
-
-    def guide_command(_arguments):
-        print(guide_text(), end='')
-
-    def serve_command(arguments):
-        # Imported here, so other commands don't load the HTTP server.
-        from plustwo.web.server import serve  # pylint: disable=import-outside-toplevel
-        repositories = arguments.repositories or review_repositories(arguments.list)
-        for repository in repositories:
-            ensure_layout(repository)
-        serve(repositories, arguments.port)
-
-    def hook_command(arguments):
-        add_change_id(arguments.message_file)
-
     optional = {'nargs': '?'}
     number = ('number', {'type': int})
     repositories = ('repositories', {'nargs': '*'})
-    command('init', init_command, 'set up this repository')
+    command('init', _init_command, 'set up this repository')
     command('list', print_overview, 'the dashboard').add_argument(
         '--list', help='only the repositories of this list', default=argparse.SUPPRESS)
     command('show', print_comments, 'threads of a change', 'change')
-    upload_parser = command('upload', upload_command, 'upload the stack of a branch',
+    upload_parser = command('upload', _upload_command, 'upload the stack of a branch',
                             ('change', optional))
     upload_parser.add_argument('--topic')
     upload_parser.add_argument('--wip', nargs='?', const='', metavar='CHANGE',
                                help='mark it (or CHANGE and the ones above) work in progress')
     upload_parser.add_argument('--ready', nargs='?', const='', metavar='CHANGE',
                                help='mark it (or CHANGE and the ones below) ready for review')
-    command('pull', pull_command, "bring the reviewer's rebase or submit into the branch")
-    command('rebase', rebase_command, 'rebase a stack onto the base branch',
+    command('pull', _pull_command, "bring the reviewer's rebase or submit into the branch")
+    command('rebase', _rebase_command, 'rebase a stack onto the base branch',
             ('change', optional)).add_argument('--topic')
-    command('submit', submit_command, 'end the review', 'change')
-    command('diff', diff_run, 'diff between patch sets', 'change', ('first', optional),
+    command('submit', _submit_command, 'end the review', 'change')
+    command('diff', _diff_command, 'diff between patch sets', 'change', ('first', optional),
             ('second', optional)).add_argument('--tool', action='store_true')
-    command('rdiff', range_diff_run, 'range-diff between patch sets', 'change',
+    command('rdiff', _range_diff_command, 'range-diff between patch sets', 'change',
             ('first', optional), ('second', optional))
-    comment = command('comment', comment_command, 'add a comment', 'change', 'place', 'text')
+    comment = command('comment', _comment_command, 'add a comment', 'change', 'place', 'text')
     comment.add_argument('--author', action='store_true', help="the author's comment")
-    status_choices = {'choices': STATUSES + tuple(OLD_STATUSES)}
+    status_choices: dict[str, Any] = {'choices': STATUSES + tuple(OLD_STATUSES)}
     comment.add_argument('--status', default=None, **status_choices)
     comment.add_argument('--resolved', action='store_const', const=RESOLVED, dest='status',
                          help='start the thread resolved, e.g. a note')
-    reply = command('reply', reply_command, 'answer a thread', 'change', number, 'text')
+    reply = command('reply', _reply_command, 'answer a thread', 'change', number, 'text')
     reply.add_argument('--resolve', action='store_true', help='and resolve the thread')
     reply.add_argument('--unresolve', action='store_true', help='and make it unresolved again')
-    command('answer', answer_command, 'answer several threads at once, from stdin')
-    move = command('move', move_command, 'move a thread to where it belongs', 'change',
+    command('answer', _answer_command, 'answer several threads at once, from stdin')
+    move = command('move', _move_command, 'move a thread to where it belongs', 'change',
                    ('number', {'type': lambda text: int(text.lstrip('#'))}), 'place')
     move.add_argument('--patch-set', type=int, help='the patch set PLACE is on, else the newest')
     move.add_argument('--old', action='store_true', help='PLACE is in the old version')
     move.add_argument('--author', action='store_true', help="the author moves it")
-    command('done', done_command, 'answer "Done" and resolve the thread', 'change', number,
+    command('done', _done_command, 'answer "Done" and resolve the thread', 'change', number,
             ('text', optional))
-    command('status', status_command, 'resolve a thread or make it unresolved again', 'change',
-            number, ('status', status_choices), ('text', optional))
-    vote = command('vote', vote_command, 'vote on a patch set', 'change', 'label',
+    command('status', _status_command, 'resolve a thread or make it unresolved again',
+            'change', number, ('status', status_choices), ('text', optional))
+    vote = command('vote', _vote_command, 'vote on a patch set', 'change', 'label',
                    ('value', {'type': int}))
     vote.add_argument('--by')
     vote.add_argument('--patch-set', type=int)
     vote.add_argument('-m', '--message')
-    command('require-verified', require_verified_command, 'whether Verified+1 is needed',
+    command('require-verified', _require_verified_command, 'whether Verified+1 is needed',
             'change', ('state', {'nargs': '?', 'choices': ('on', 'off'), 'default': 'on'}))
-    for name, run, help_text in (('inbox', inbox_command, 'what to answer'),
-                                 ('watch', watch_command, 'print new messages and votes')):
+    for name, run, help_text in (('inbox', _inbox_command, 'what to answer'),
+                                 ('watch', _watch_command, 'print new messages and votes')):
         sub = command(name, run, help_text, repositories)
         sub.add_argument('--topic', help='only this stack, e.g. for one of several agents')
         sub.add_argument('--all', action='store_true', help='all registered repositories')
@@ -510,39 +752,45 @@ def parse_arguments(argv):
                              '1970, 2026-11-13T10:00 or 10:00), instead of since the last watch')
             sub.add_argument('--for', dest='minutes', type=float,
                              help='end after this many minutes')
-    register = command('register', register_command, 'show a repository in the dashboard',
+    register = command('register', _register_command, 'show a repository in the dashboard',
                        ('path', {'nargs': '?', 'default': '.'}))
     register.add_argument('--name')
     register.add_argument('--list', help='add it to this list of repositories')
-    command('unregister', unregister_command, 'forget a registered repository', 'name')
-    command('repos', repos_command, 'the registered repositories')
-    command('check', check_command, 'run the check of a stack now, votes Verified',
+    command('unregister', _unregister_command, 'forget a registered repository', 'name')
+    command('repos', _repos_command, 'the registered repositories')
+    command('check', _check_command, 'run the check of a stack now, votes Verified',
             ('topic', optional))
     check_run = commands.add_parser('check-run', help=argparse.SUPPRESS)
     check_run.add_argument('topic')
     check_run.add_argument('commit')
-    check_run.set_defaults(run=check_run_command)
-    command('abandon', stack_command(abandon_stack), 'abandon a stack, [REPO:]TOPIC', 'topic')
-    command('restore', stack_command(restore_stack), 'bring an abandoned stack back', 'topic')
-    command('guide', guide_command, 'the guide for agents as authors')
-    serve = command('serve', serve_command, 'web interface', repositories)
-    serve.add_argument('--port', type=int, default=8022)
+    check_run.set_defaults(run=_check_run_command)
+    command('abandon', _stack_command(abandon_stack), 'abandon a stack, [REPO:]TOPIC', 'topic')
+    command('restore', _stack_command(restore_stack), 'bring an abandoned stack back', 'topic')
+    command('guide', _guide_command, 'the guide for agents as authors')
+    serve = command('serve', _serve_command, 'web interface', repositories)
+    serve.add_argument('--port', type=int, default=_DEFAULT_PORT)
     serve.add_argument('--list', help='the repositories of this list', default=argparse.SUPPRESS)
-    config = command('config', config_command, 'show or change a setting', ('key', optional),
+    config = command('config', _config_command, 'show or change a setting', ('key', optional),
                      ('value', optional))
     config.add_argument('--global', dest='user', action='store_true',
                         help="the user's settings instead of the repository's")
     config.add_argument('--unset', action='store_true', help='remove the setting')
     hook = commands.add_parser('commit-msg-hook', help=argparse.SUPPRESS)
     hook.add_argument('message_file')
-    hook.set_defaults(run=hook_command)
-
+    hook.set_defaults(run=_hook_command)
     return parser.parse_args(argv)
 
 
-def main(argv):
-    """Runs one command. Returns the exit code."""
-    arguments = parse_arguments(argv)
+def main(argv: list[str]) -> int:
+    """Runs one command.
+
+    Args:
+        argv: the command line's arguments, without the program's name.
+
+    Returns:
+        The exit code: 1 after a refused action, else 0.
+    """
+    arguments = _parse_arguments(argv)
     try:
         arguments.run(arguments)
     except ChangeError as error:
