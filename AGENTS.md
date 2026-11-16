@@ -156,6 +156,22 @@ decision you are unsure about:
 - Votes belong to a patch set. A new one keeps Code-Review after a trivial
   rebase or a message-only change, Verified only without code change.
 
+## Reporting a problem with plustwo
+
+Whoever fixes it works in another repository, often on another machine,
+and sees none of yours.
+
+- Leave out Change-Ids, thread numbers, topics and paths of your
+  repositories. They mean nothing there.
+- Give steps that reproduce it in a new scratch repository, from
+  `git init` on, with the smallest files that show it.
+- Say what you expected and what happened, with the exact output.
+- Name the plustwo commit: `git -C <plustwo checkout> log -1 --format=%h`.
+- Can't reproduce it? Describe the shape instead ("PS2 rewrites a.hh as
+  b.hh, two thirds of the lines kept") and say it isn't reproduced.
+- A proposal is welcome, under its own "Proposal:" line.
+- Write the issue for the user. Where it goes is in the README.
+
 ## Never
 
 - Submit (`plustwo submit`). Submitting is the reviewer's decision.
