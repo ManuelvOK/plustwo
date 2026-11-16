@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: Zlib
 """The actions of the interfaces and their keys in the presets."""
 
+from typing import Final
+
 
 # Every action of the interface: (name, group, short label for the footer,
 # description for the help). The keys come from a preset.
-ACTIONS = (
+ACTIONS: Final[tuple[tuple[str, str, str, str], ...]] = (
     ('quit', 'Everywhere', 'quit', 'quit, after asking'),
     ('quit-now', 'Everywhere', 'quit now', 'quit without asking (q q works too)'),
     ('help', 'Everywhere', 'help', 'this help'),
@@ -18,7 +20,8 @@ ACTIONS = (
      'that line of the new version.'),
     ('page-down', 'Moving', 'half page down', 'half a page down'),
     ('page-up', 'Moving', 'half page up', 'half a page up'),
-    ('scroll-down', 'Moving', 'scroll down', 'in the diff: the view one row down, the cursor stays. '
+    ('scroll-down', 'Moving', 'scroll down',
+     'in the diff: the view one row down, the cursor stays. '
      'j and k scroll through a thread taller than the pane, too.'),
     ('scroll-up', 'Moving', 'scroll up', 'in the diff: the view one row up, the cursor stays'),
     ('open', 'Moving', 'open', 'open. In the stack (▶ is the change shown, › and the turn '
@@ -46,7 +49,8 @@ ACTIONS = (
      'diff'),
     ('last-pane', 'Change', 'last pane', 'back to the pane focused before, again returns, like '
      'Alt+Tab'),
-    ('thread-patch-set', 'Threads', 'thread on its PS', 'show the thread on its own patch set: the diff '
+    ('thread-patch-set', 'Threads', 'thread on its PS',
+     'show the thread on its own patch set: the diff '
      'against its parent, at the thread. Again (or back in the diff) returns to the '
      'comparison before.'),
     ('sidebar', 'Change', 'sidebar', 'hide or show the left column (stack, files, comments), '
@@ -88,11 +92,14 @@ ACTIONS = (
     ('follow-latest', 'Change', 'follow latest on/off', 'whether a right side on the latest '
      'patch set moves to a new upload. Off (the start), it stays and the header says when a '
      'newer one is there. Kept for later sessions, the web page shares it.'),
-    ('set-a', 'Patch sets', 'pick left side', 'in the patch sets: the row\'s version on the left side (A), '
+    ('set-a', 'Patch sets', 'pick left side',
+     'in the patch sets: the row\'s version on the left side (A), '
      '< too'),
-    ('set-b', 'Patch sets', 'pick right side', 'in the patch sets: the row\'s patch set on the right side (B), '
+    ('set-b', 'Patch sets', 'pick right side',
+     'in the patch sets: the row\'s patch set on the right side (B), '
      '> too'),
-    ('compare-prompt', 'Patch sets', 'type versions', 'in the patch sets: type the versions to compare: '
+    ('compare-prompt', 'Patch sets', 'type versions',
+     'in the patch sets: type the versions to compare: '
      '"1 3", "2 current" or "base 2". Empty: the whole change, latest patch set.'),
     ('search', 'Change', 'search', 'in the diff: search the file for a text, from the cursor '
      'on, on both sides. Lower case finds any case. Up and Down in the prompt go through the '
@@ -103,7 +110,8 @@ ACTIONS = (
     ('search-next', 'Change', 'next match', 'in the diff: to the next match of the search, also '
      'after its marks were removed'),
     ('search-prev', 'Change', 'previous match', 'in the diff: to the previous match of the search'),
-    ('search-clear', 'Change', 'unmark matches', 'remove the marks of the search. The next match key '
+    ('search-clear', 'Change', 'unmark matches',
+     'remove the marks of the search. The next match key '
      'brings them back.'),
     ('fold-all', 'Change', 'fold/unfold all', 'fold all threads, or unfold all if all are folded'),
     ('unfold-every', 'Change', 'unfold all', 'unfold all threads'),
@@ -114,29 +122,33 @@ ACTIONS = (
      'file of the list, reviewed or not. On the last file it only marks.'),
     ('whitespace', 'Change', 'whitespace', 'which whitespace changes the diff ignores, like '
      'Gerrit: none, trailing, changed, all'),
-    ('side-old', 'Change', 'old side', 'in the diff: the cursor to the old side, comments go there'),
+    ('side-old', 'Change', 'old side',
+     'in the diff: the cursor to the old side, comments go there'),
     ('side-new', 'Change', 'new side', 'in the diff: the cursor to the new side'),
     ('reply', 'Threads', 'reply', 'reply to the thread, as a draft'),
     ('edit-draft', 'Threads', 'edit draft', 'edit your draft in the thread. Empty deletes it.'),
     ('done', 'Threads', 'Done', 'reply "Done" as a draft, which resolves the thread'),
     ('ack', 'Threads', 'Ack', 'reply "Ack" as a draft, which resolves the thread'),
-    ('resolve', 'Threads', 'resolved on/off', 'whether sending the draft resolves the thread or makes '
+    ('resolve', 'Threads', 'resolved on/off',
+     'whether sending the draft resolves the thread or makes '
      'it unresolved again (Gerrit\'s Resolved checkbox). Without a draft, it makes an empty '
      'one.'),
     ('move-thread', 'Threads', 'move', 'move the thread to the line it belongs to, when it lost '
      'its place: go to the line, Enter drops it there, Esc cancels. On a row without a line '
      'it goes on the whole file. Older patch sets keep where it was.'),
-    ('send', 'Threads', 'reply and send', 'send all drafts of this change, with an optional message on '
+    ('send', 'Threads', 'reply and send',
+     'send all drafts of this change, with an optional message on '
      'the whole change, which tells the author to start'),
 )
 
 
+# The names of all actions, in the order of ACTIONS
 ACTION_NAMES = tuple(action[0] for action in ACTIONS)
 
 
 # The keys of each action, per preset. Alternatives are separated by
 # commas, the keys of a sequence like gg by spaces. C-x is Ctrl, M-x Alt.
-VIM_KEYS = {
+_VIM_KEYS = {
     'quit': 'q', 'quit-now': 'Z Q', 'help': '?', 'reload': 'R', 'back': 'h,Esc',
     'down': 'j,Down', 'up': 'k,Up', 'top': 'g g,Home', 'bottom': 'G,End',
     'page-down': 'C-d,PageDown', 'page-up': 'C-u,PageUp', 'open': 'l,Enter',
@@ -148,7 +160,8 @@ VIM_KEYS = {
     'next-unresolved': '] u', 'prev-unresolved': '[ u',
     'next-relevant': '] n', 'prev-relevant': '[ n', 'last-pane': 'S-Tab',
     # Like vim's o and O, which open a line below and above
-    'comment': 'c,o', 'comment-above': 'O', 'file-comment': 'C', 'more-context': '+,=', 'less-context': '-',
+    'comment': 'c,o', 'comment-above': 'O', 'file-comment': 'C',
+    'more-context': '+,=', 'less-context': '-',
     'vimdiff': 't', 'patch-sets': 'p', 'fold-all': 'i', 'unfold-every': 'z R',
     'fold-every': 'z M',
     'reply': 'r', 'edit-draft': 'e', 'done': 'y', 'ack': 'Y', 'resolve': 'x', 'send': 's',
@@ -168,12 +181,12 @@ VIM_KEYS = {
 }
 
 
-PRESETS = {
-    'vim': VIM_KEYS,
+PRESETS: Final[dict[str, dict[str, str]]] = {
+    'vim': _VIM_KEYS,
     # Emacs moves with C-n, C-p, C-v, M-v, M-< and M->, and C-g cancels.
     # Like in its diff-mode, n and p go to the next and previous changes,
     # N and P to the next and previous file. Counts start with C-u.
-    'emacs': {**VIM_KEYS,
+    'emacs': {**_VIM_KEYS,
               'quit': 'q', 'quit-now': 'C-x C-c', 'reload': 'g,R',
               'next-change': 'M-n', 'prev-change': 'M-p', 'back': 'C-g,Esc,C-b',
               'down': 'C-n,Down', 'up': 'C-p,Up', 'top': 'M-<,Home', 'bottom': 'M->,End',
@@ -196,7 +209,7 @@ PRESETS = {
     # previous changes, N and P to the next and previous thread, ] and [ to
     # the next and previous file, u goes up, o opens, c comments, and a
     # opens the reply dialog, which sends the drafts.
-    'gerrit': {**VIM_KEYS,
+    'gerrit': {**_VIM_KEYS,
                'back': 'u,h,Esc', 'open': 'o,l,Enter',
                'next-chunk': 'n', 'prev-chunk': 'p', 'next-thread': 'N', 'prev-thread': 'P',
                'next-file': ']', 'prev-file': '[', 'send': 'a', 'patch-sets': 'b',

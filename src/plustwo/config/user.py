@@ -7,16 +7,21 @@ import os
 from plustwo.git.repository import git
 
 
-def current_user():
-    """Who acts: PLUSTWO_USER (agents set it to agent), else git's user.name,
-    read once per process.
+def current_user() -> str:
+    """Finds who acts.
+
+    Returns:
+        PLUSTWO_USER (agents set it to agent), else git's user.name.
     """
     return os.environ.get('PLUSTWO_USER') or git_user_name()
 
 
 @functools.lru_cache(maxsize=1)
-def git_user_name():
-    """git's user.name, 'unknown' without one. The dashboard asks for every
-    change, so git runs only once.
+def git_user_name() -> str:
+    """Reads git's user.name, once per process: the dashboard asks for every
+    change.
+
+    Returns:
+        The name, 'unknown' without one.
     """
     return git('config', 'user.name', check=False) or 'unknown'

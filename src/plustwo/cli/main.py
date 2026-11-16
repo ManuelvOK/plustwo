@@ -267,7 +267,7 @@ def parse_arguments(argv):
     def init_command(_arguments):
         moved = init_repository()
         print('commit-msg hook installed, notes follow amends and rebases')
-        print(f'registered as {register_repository(unique=True)}')
+        print(f'registered as {register_repository(do_number_on_clash=True)}')
         print("agents: add 'run plustwo guide' to your AGENTS.md or CLAUDE.md")
         for line in moved:
             print(f'moved setting {line}')

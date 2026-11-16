@@ -4,31 +4,53 @@
 import re
 from pathlib import Path
 
-from plustwo.config.state import set_state, state_path, state_regexp
+from plustwo.config.state import set_state, state_entries_matching, state_path
 from plustwo.git.errors import ChangeError
 from plustwo.git.refs import toplevel
 from plustwo.git.repository import git
 
 
-def registered_repositories():
-    """The registered repositories: name -> path, in the order of the file."""
+def registered_repositories() -> dict[str, str]:
+    """Reads the registered repositories.
+
+    Returns:
+        Each repository's name, mapped to its path, in the order of the
+        state file.
+    """
     return {key[len('repo.'):-len('.path')]: value
-            for key, value in state_regexp('repos', r'^repo\..*\.path$')}
+            for key, value in state_entries_matching('repos', r'^repo\..*\.path$')}
 
 
-def repository_lists():
-    """The lists of repositories: name -> [repository names]."""
-    lists = {}
-    for key, value in state_regexp('repos', r'^list\..*\.repo$'):
+def repository_lists() -> dict[str, list[str]]:
+    """Reads the lists of repositories.
+
+    Returns:
+        Each list's name, mapped to the names of its repositories.
+    """
+    lists: dict[str, list[str]] = {}
+    for key, value in state_entries_matching('repos', r'^list\..*\.repo$'):
         lists.setdefault(key[len('list.'):-len('.repo')], []).append(value)
     return lists
 
 
-def register_repository(path='.', name=None, list_name=None, unique=False):
-    """Registers a repository for the dashboard, under its directory's name
-    unless name is given, and adds it to a list. A name whose repository is
-    gone is taken over. With unique, a taken name gets a number instead of
-    an error, e.g. repo-2. Returns the name.
+def register_repository(path: str = '.', name: str | None = None, list_name: str | None = None,
+                        do_number_on_clash: bool = False) -> str:
+    """Registers a repository for the dashboard and adds it to a list. A
+    name whose repository is gone is taken over.
+
+    Args:
+        path: a directory in the repository.
+        name: the name to register it under, None for its directory's name.
+        list_name: the list to add it to, None for none.
+        do_number_on_clash: whether a name that is taken gets a number,
+            like repo-2, instead of an error.
+
+    Returns:
+        The repository's registered name, an earlier one if it was
+        registered already.
+
+    Raises:
+        ChangeError: the path is no repository, or the name is taken.
     """
     root = toplevel(path)
     if root is None:
@@ -40,7 +62,7 @@ def register_repository(path='.', name=None, list_name=None, unique=False):
     if existing is None:
         if name in known and not Path(known[name]).exists():
             del known[name]
-        if unique:
+        if do_number_on_clash:
             stem, number = name, 2
             while name in known:
                 name, number = f'{stem}-{number}', number + 1
@@ -49,12 +71,19 @@ def register_repository(path='.', name=None, list_name=None, unique=False):
                               'choose another with --name')
         set_state('repos', f'repo.{name}.path', root)
     if list_name and name not in repository_lists().get(list_name, []):
-        set_state('repos', f'list.{list_name}.repo', name, add=True)
+        set_state('repos', f'list.{list_name}.repo', name, do_add=True)
     return name
 
 
-def unregister_repository(name):
-    """Forgets a registered repository, also in every list."""
+def unregister_repository(name: str) -> None:
+    """Forgets a registered repository, also in every list.
+
+    Args:
+        name: the repository's registered name.
+
+    Raises:
+        ChangeError: no repository is registered under the name.
+    """
     if name not in registered_repositories():
         raise ChangeError(f'no registered repository {name}')
     path = state_path('repos')
@@ -65,12 +94,20 @@ def unregister_repository(name):
                 f'^{re.escape(name)}$', check=False)
 
 
-def review_repositories(list_name=None):
-    """The repositories reviews are shown for: the registered ones (of a
-    list, if given) that still exist. Without any registered, the one of
-    the working directory, so nothing changes until the first register.
-    The working directory's repository comes along when it isn't
-    registered, as long as no list is asked for.
+def review_repositories(list_name: str | None = None) -> list[str]:
+    """Finds the repositories reviews are shown for.
+
+    Args:
+        list_name: the list to show, None for all registered repositories.
+
+    Returns:
+        The paths of the registered repositories (of the list, if given)
+        that still exist. Without a list, the working directory's
+        repository comes first when it isn't registered, so nothing changes
+        until the first register.
+
+    Raises:
+        ChangeError: there is no list of that name.
     """
     known = registered_repositories()
     if list_name:
@@ -85,6 +122,13 @@ def review_repositories(list_name=None):
     return paths
 
 
-def repository_name(repository):
-    """Name of a repository for short messages: its directory's name."""
+def repository_name(repository: str | None) -> str:
+    """Names a repository for short messages.
+
+    Args:
+        repository: the repository's directory, None for the current one.
+
+    Returns:
+        The name of the repository's working tree directory.
+    """
     return Path(git('rev-parse', '--show-toplevel', repository=repository)).name

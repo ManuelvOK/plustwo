@@ -23,7 +23,7 @@ LIBDIR = $(PREFIX)/lib/plustwo
 SOURCES = $(sort $(shell find src -name '*.py' -not -path '*/__pycache__/*')) $(TOOLS)
 TOOLS = tools/check_layers.py tools/check_style.py
 # The layers the rule pass has reached, checked for style and full types
-STYLED_LAYERS = git
+STYLED_LAYERS = git config
 STYLED = plustwo $(TOOLS) $(wildcard src/plustwo/*.py) \
   $(foreach layer,$(STYLED_LAYERS),$(wildcard src/plustwo/$(layer)/*.py))
 PAGE = $(wildcard src/plustwo/web/page/*)
