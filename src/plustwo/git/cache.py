@@ -3,6 +3,8 @@
 
 import functools
 import re
+from collections.abc import Callable
+from typing import Any
 
 from plustwo.git.repository import current_repository
 
@@ -16,20 +18,58 @@ IMMUTABLE_NAME = re.compile(r'^[0-9a-f]{40}(\^|~[0-9]*)*$')
 CACHE_SIZE = 2048
 
 
-def cached_for_objects(*positions):
-    """Keeps a function's results, the CACHE_SIZE latest, when the
-    arguments at these positions are names of objects that never change
-    (see IMMUTABLE_NAME). Commits and blobs don't change, so neither do
-    their diffs. The repository a call acts on is part of the key.
-    Callers must not change what they get.
+def cached_for_objects(*positions: int) -> Callable[[Callable[..., Any]], Any]:
+    """Makes a decorator that keeps a function's results, the CACHE_SIZE
+    latest, when the arguments at the given positions are names of objects
+    that never change (see IMMUTABLE_NAME).
+
+    Commits and blobs don't change, so neither do their diffs. The
+    repository a call acts on is part of the key. Callers must not change
+    what they get, because the next caller gets the same object.
+
+    Args:
+        *positions: the positions of the arguments that must be immutable
+            object names for a result to be kept.
+
+    Returns:
+        The decorator. The decorated function has cache_clear(), like one
+        of functools.lru_cache.
     """
-    def decorate(function):
+    def decorate(function: Callable[..., Any]) -> Any:
+        """Wraps a function in the cache.
+
+        Args:
+            function: the function whose results are kept.
+
+        Returns:
+            The wrapper.
+        """
         @functools.lru_cache(maxsize=CACHE_SIZE)
-        def cached(repository, arguments, keywords):
+        def cached(repository: str | None, arguments: tuple[Any, ...],
+                   keywords: tuple[tuple[str, Any], ...]) -> Any:
+            """Calls the function, once per key.
+
+            Args:
+                repository: the repository the call acts on, part of the key.
+                arguments: the call's positional arguments.
+                keywords: the call's keyword arguments, sorted by name.
+
+            Returns:
+                The function's result.
+            """
             return function(*arguments, **dict(keywords))
 
         @functools.wraps(function)
-        def wrapper(*arguments, **keywords):
+        def wrapper(*arguments: Any, **keywords: Any) -> Any:
+            """Calls the function through the cache if the arguments allow.
+
+            Args:
+                *arguments: the function's positional arguments.
+                **keywords: the function's keyword arguments.
+
+            Returns:
+                The function's result.
+            """
             if all(position < len(arguments) and IMMUTABLE_NAME.match(str(arguments[position]))
                    for position in positions):
                 try:
@@ -40,6 +80,6 @@ def cached_for_objects(*positions):
                     pass
             return function(*arguments, **keywords)
 
-        wrapper.cache_clear = cached.cache_clear
+        wrapper.cache_clear = cached.cache_clear  # type: ignore[attr-defined]
         return wrapper
     return decorate

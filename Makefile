@@ -1,7 +1,8 @@
 # Installs plustwo, with git-change as a second name. The default is a system-wide install below
 # /usr/local. Use PREFIX=$(HOME)/.local for a per-user one.
 #
-#   make check          compiles the sources, checks the layers' imports
+#   make check          compiles the sources, checks the layers' imports,
+#                       the types (mypy) and the style (tools/check_style.py)
 #   make test           checks the diff rendering against git and delta.
 #                       TEST_REPOS=a:b also checks the history of a and b,
 #                       which are only read.
@@ -19,7 +20,12 @@ LIBDIR = $(PREFIX)/lib/plustwo
 # following symbolic links, and the guide (AGENTS.md) next to itself. So
 # the files stay together and bin only gets links. git-change is the old
 # name, which hooks of older repositories call.
-SOURCES = $(sort $(shell find src -name '*.py' -not -path '*/__pycache__/*')) tools/check_layers.py
+SOURCES = $(sort $(shell find src -name '*.py' -not -path '*/__pycache__/*')) $(TOOLS)
+TOOLS = tools/check_layers.py tools/check_style.py
+# The layers the rule pass has reached, checked for style and full types
+STYLED_LAYERS = git
+STYLED = plustwo $(TOOLS) $(wildcard src/plustwo/*.py) \
+  $(foreach layer,$(STYLED_LAYERS),$(wildcard src/plustwo/$(layer)/*.py))
 PAGE = $(wildcard src/plustwo/web/page/*)
 NAMES = plustwo git-change
 
@@ -31,6 +37,8 @@ check:
 	python3 -c 'import sys; [compile(open(f).read(), f, "exec") for f in sys.argv[1:]]' \
 	  plustwo $(SOURCES)
 	python3 tools/check_layers.py docs/architecture.md src/plustwo
+	mypy --config-file mypy.ini src/plustwo $(TOOLS)
+	python3 tools/check_style.py $(STYLED)
 
 # The tests get state and settings directories of their own, so they never
 # register scratch repositories with the user's dashboard.

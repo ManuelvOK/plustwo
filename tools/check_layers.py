@@ -18,14 +18,21 @@ import sys
 from pathlib import Path
 
 
-def read_layers(path):
-    """The layers of the table in a Markdown file.
+def read_layers(path: str) -> dict[str, set[str]]:
+    """Reads the table of layers from a Markdown file.
 
-    Returns a dict of each layer's name to the set of layers it uses
-    directly. Raises SystemExit if the file has no such table.
+    Args:
+        path: the path of the Markdown file.
+
+    Returns:
+        Each layer's name, mapped to the names of the layers it uses
+        directly.
+
+    Raises:
+        SystemExit: the file has no table with the columns Layer and Uses.
     """
     columns = None
-    layers = {}
+    layers: dict[str, set[str]] = {}
     for line in Path(path).read_text().split('\n'):
         if not line.startswith('|'):
             if layers:
@@ -49,11 +56,17 @@ def read_layers(path):
     return layers
 
 
-def allowed_layers(layers):
-    """Each layer's name to every layer it may import: itself and all it
+def allowed_layers(layers: dict[str, set[str]]) -> dict[str, set[str]]:
+    """Finds the layers each layer may import: itself and every layer it
     uses, directly or through other layers.
+
+    Args:
+        layers: each layer's name, mapped to the layers it uses directly.
+
+    Returns:
+        Each layer's name, mapped to the names of the layers it may import.
     """
-    allowed = {}
+    allowed: dict[str, set[str]] = {}
     for name in layers:
         reached, todo = {name}, [name]
         while todo:
@@ -65,9 +78,17 @@ def allowed_layers(layers):
     return allowed
 
 
-def imported_layers(path, package):
-    """The layers and top modules a file imports: (line, name) pairs."""
-    found = []
+def imported_layers(path: Path, package: str) -> list[tuple[int, str]]:
+    """Finds the layers and top modules a file imports.
+
+    Args:
+        path: the path of a Python file of the package.
+        package: the name of the package.
+
+    Returns:
+        (line number, name of the layer or top module) pairs, one per import.
+    """
+    found: list[tuple[int, str]] = []
     for node in ast.walk(ast.parse(path.read_text(), str(path))):
         if isinstance(node, ast.ImportFrom) and node.module:
             parts = node.module.split('.')
@@ -83,8 +104,13 @@ def imported_layers(path, package):
     return found
 
 
-def main():
-    """Checks the package against the table. Returns the exit code."""
+def main() -> int:
+    """Checks the package named on the command line against the table.
+
+    Returns:
+        The exit code: 2 for wrong arguments, 1 if there is any finding,
+        else 0.
+    """
     if 3 != len(sys.argv):
         print(__doc__.split('\n\n')[1], file=sys.stderr)
         return 2
@@ -112,5 +138,5 @@ def main():
     return 1 if findings else 0
 
 
-if __name__ == '__main__':
+if '__main__' == __name__:
     sys.exit(main())

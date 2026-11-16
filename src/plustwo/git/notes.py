@@ -3,25 +3,48 @@
 
 import json
 import subprocess
+from typing import Any
 
 from plustwo.git.refs import NOTES_REF
 from plustwo.git.repository import git, git_command
 
 
-def notes_version(repository=None):
-    """Hash of the notes ref. It changes with every write to any note."""
+def notes_version(repository: str | None = None) -> str:
+    """Reads the version of all review notes.
+
+    Args:
+        repository: the repository's directory, None for the current one.
+
+    Returns:
+        The object name of the notes ref, which changes with every write to
+        any note. '' while there is no note.
+    """
     return git('rev-parse', '--verify', '--quiet', NOTES_REF, check=False, repository=repository)
 
 
-def read_note(commit, repository=None):
-    """The review note of a commit as a dict, empty if it has none."""
+def read_note(commit: str, repository: str | None = None) -> dict[str, Any]:
+    """Reads the review note of a commit.
+
+    Args:
+        commit: the commit, any name git understands.
+        repository: the repository's directory, None for the current one.
+
+    Returns:
+        The note's JSON object, empty if the commit has no note.
+    """
     text = git('notes', f'--ref={NOTES_REF}', 'show', commit, check=False, repository=repository)
     return parse_note(text)
 
 
-def parse_note(text):
-    """A review note's text as a dict. A note broken by hand (no JSON, or
-    no object) counts as empty, so it can't stop the review of the rest.
+def parse_note(text: str) -> dict[str, Any]:
+    """Parses the text of a review note.
+
+    Args:
+        text: the note's text, JSON.
+
+    Returns:
+        The note's JSON object. A note broken by hand (no JSON, or no
+        object) counts as empty, so it can't stop the review of the rest.
     """
     try:
         note = json.loads(text) if text.strip() else {}
@@ -30,9 +53,16 @@ def parse_note(text):
     return note if isinstance(note, dict) else {}
 
 
-def read_notes(commits, repository=None):
-    """The review notes of several commits: commit -> dict, with two git
-    calls for all of them.
+def read_notes(commits: list[str], repository: str | None = None) -> dict[str, dict[str, Any]]:
+    """Reads the review notes of several commits, with two git calls for all
+    of them.
+
+    Args:
+        commits: the commits' full object names.
+        repository: the repository's directory, None for the current one.
+
+    Returns:
+        Each commit that has a note, mapped to the note's JSON object.
     """
     if not commits:
         return {}
@@ -56,7 +86,13 @@ def read_notes(commits, repository=None):
     return notes
 
 
-def write_note(commit, note, repository=None):
-    """Stores the review note of a commit."""
+def write_note(commit: str, note: dict[str, Any], repository: str | None = None) -> None:
+    """Stores the review note of a commit, replacing the one it had.
+
+    Args:
+        commit: the commit, any name git understands.
+        note: the note's JSON object.
+        repository: the repository's directory, None for the current one.
+    """
     git('notes', f'--ref={NOTES_REF}', 'add', '-f', '-F', '-', commit,
         input_text=json.dumps(note, indent=2) + '\n', repository=repository)

@@ -4,7 +4,7 @@
 import os
 import subprocess
 
-from plustwo.git.commits import raw_commit
+from plustwo.git.commits import commit_author_and_message
 from plustwo.git.errors import ChangeError
 from plustwo.git.lock import review_lock
 from plustwo.git.notes import read_note, write_note
@@ -46,7 +46,7 @@ def rebase_stack(topic, repository=None):
                 note['rebase_requested'] = True
                 write_note(top, note, repository)
                 return None
-            (name, email, date), message = raw_commit(commit, repository)
+            (name, email, date), message = commit_author_and_message(commit, repository)
             environment = dict(os.environ, GIT_AUTHOR_NAME=name, GIT_AUTHOR_EMAIL=email,
                                GIT_AUTHOR_DATE=date)
             parent = subprocess.run(
