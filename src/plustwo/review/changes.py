@@ -2,7 +2,9 @@
 """Finding changes and reading and writing their review."""
 
 import hashlib
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any, TypeVar
 
 from plustwo.config.registry import registered_repositories, review_repositories
 from plustwo.config.settings import base_branch
@@ -23,11 +25,28 @@ from plustwo.review.setup import ensure_layout
 from plustwo.review.stacks import base_branches, stack_bases, stack_ref, topics
 
 
-def change_from(commit, topic, note, repository=None, change_id=None, subject=None,
-                patch_sets=None):
-    """Builds a Change from a commit of a stack and its note. change_id,
-    subject and patch_sets are read from git unless given. A note whose
+# What an edit of update_change() returns
+T = TypeVar('T')
+
+
+def change_from(commit: str, topic: str, note: dict[str, Any], repository: str | None = None,
+                change_id: str | None = None, subject: str | None = None,
+                patch_sets: dict[int, str] | None = None) -> Change:
+    """Builds a Change from a commit of a stack and its note. A note whose
     fields were broken by hand counts as empty, see parse_note().
+
+    Args:
+        commit: the change's commit.
+        topic: the topic of the change's stack, '' for none.
+        note: the commit's review note.
+        repository: the repository's directory, None for the current one.
+        change_id: the Change-Id, None to read it from the commit.
+        subject: the commit message's first line, None to read it.
+        patch_sets: each patch set's number, mapped to its commit. None to
+            read them from git.
+
+    Returns:
+        The change.
     """
     try:
         return _change_from(commit, topic, note, repository, change_id, subject, patch_sets)
@@ -35,9 +54,28 @@ def change_from(commit, topic, note, repository=None, change_id=None, subject=No
         return _change_from(commit, topic, {}, repository, change_id, subject, patch_sets)
 
 
-def _change_from(commit, topic, note, repository, change_id, subject, patch_sets):
-    """See change_from()."""
-    change_id = change_id or change_id_of(commit, repository)
+def _change_from(commit: str, topic: str, note: dict[str, Any], repository: str | None,
+                 change_id: str | None, subject: str | None,
+                 patch_sets: dict[int, str] | None) -> Change:
+    """Builds a Change, see change_from(), failing on a broken note.
+
+    Args:
+        commit: the change's commit.
+        topic: the topic of the change's stack.
+        note: the commit's review note.
+        repository: the repository's directory, None for the current one.
+        change_id: the Change-Id, None to read it.
+        subject: the commit message's first line, None to read it.
+        patch_sets: the patch sets, None to read them.
+
+    Returns:
+        The change.
+
+    Raises:
+        TypeError: a field of the note has the wrong form, also KeyError,
+            ValueError and AttributeError.
+    """
+    change_id = change_id or change_id_of(commit, repository) or ''
     comments = []
     for comment in note.get('comments', []):
         # A copy: one note can be read for several copies of a change
@@ -72,8 +110,15 @@ def _change_from(commit, topic, note, repository, change_id, subject, patch_sets
                   is_wip=note.get('wip', False))
 
 
-def note_of(change):
-    """The note that stores a change's review."""
+def note_of(change: Change) -> dict[str, Any]:
+    """Writes a change's review as its note.
+
+    Args:
+        change: the change.
+
+    Returns:
+        The note's JSON object.
+    """
     return {'comments': [{'number': comment.number,
                           'id': comment.id,
                           'place': comment.place,
@@ -93,13 +138,18 @@ def note_of(change):
             'wip': change.is_wip}
 
 
-def changes_in_stack(repository=None):
-    """All changes of the uploaded stacks, stack by stack and oldest first
-    within a stack.
+def changes_in_stack(repository: str | None = None) -> list[Change]:
+    """Reads all changes of the uploaded stacks of a repository.
+
+    Args:
+        repository: the repository's directory, None for the current one.
+
+    Returns:
+        The changes, stack by stack and oldest first within a stack.
     """
     ensure_layout(repository)
     # A few git calls for all changes, not several per change
-    all_patch_sets = {}
+    all_patch_sets: dict[str, dict[int, str]] = {}
     output = git('for-each-ref', '--format=%(refname) %(objectname)', PATCH_SET_PREFIX,
                  repository=repository)
     for line in filter(None, output.split('\n')):
@@ -130,24 +180,36 @@ def changes_in_stack(repository=None):
     return changes
 
 
-def all_changes(list_name=None):
-    """The changes of every repository reviews are shown for, see
-    review_repositories(), repository by repository. Each change knows its
-    repository and its registered name.
+def all_changes(list_name: str | None = None) -> list[Change]:
+    """Reads the changes of every repository reviews are shown for, see
+    review_repositories().
+
+    Args:
+        list_name: the list of repositories, None for all.
+
+    Returns:
+        The changes, repository by repository. Each change knows its
+        repository and its registered name.
     """
     names = {path: name for name, path in registered_repositories().items()}
     changes = []
     for repository in review_repositories(list_name):
         for change in changes_in_stack(repository):
-            change.repository_name = names.get(change.repository, change.repository_name)
+            change.repository_name = names.get(change.repository or '', change.repository_name)
             changes.append(change)
     return changes
 
 
-def locate(change_id):
-    """The repository a change is in review in: the working directory's if
-    it has it, else the first registered one that has it. None when none
-    has it, which means the working directory.
+def locate(change_id: str) -> str | None:
+    """Finds the repository a change is in review in.
+
+    Args:
+        change_id: the full Change-Id.
+
+    Returns:
+        The working directory's repository if it has the change, else the
+        first registered one that has it. None when none has it, which
+        means the working directory.
     """
     for repository in review_repositories():
         if git('for-each-ref', '--count=1', f'{PATCH_SET_PREFIX}{change_id}/', check=False,
@@ -156,11 +218,21 @@ def locate(change_id):
     return None
 
 
-def find_change(reference, repository=None):
-    """The change an overview number, a Change-Id prefix or repo:prefix
-    refers to. Without a repository, over all repositories reviews are
-    shown for (numbers count over all of them), and later calls without a
-    repository act on the change's one.
+def find_change(reference: str, repository: str | None = None) -> Change:
+    """Finds the change a reference refers to. Without a repository, later
+    calls without one act on the change's repository.
+
+    Args:
+        reference: an overview number, a Change-Id prefix or repo:prefix.
+        repository: the repository's directory. None to search all
+            repositories reviews are shown for, numbers counting over all
+            of them.
+
+    Returns:
+        The change.
+
+    Raises:
+        ChangeError: no change or several fit, or no such repository.
     """
     if repository is not None:
         changes = changes_in_stack(repository)
@@ -179,10 +251,20 @@ def find_change(reference, repository=None):
     return change
 
 
-def submitted_change(reference, repository=None):
-    """A submitted change by a Change-Id prefix (or repo:prefix), found by
-    its patch sets, whose newest one is on the base branch. Its review is
-    the note of that commit. Raises ChangeError if there is none.
+def submitted_change(reference: str, repository: str | None = None) -> Change:
+    """Finds a submitted change by its patch sets, whose newest one is on a
+    base branch. Its review is the note of that commit.
+
+    Args:
+        reference: a Change-Id prefix or repo:prefix.
+        repository: the repository's directory, None to search all
+            repositories reviews are shown for.
+
+    Returns:
+        The change, marked submitted.
+
+    Raises:
+        ChangeError: no submitted change or several fit.
     """
     name, colon, prefix = reference.rpartition(':')
     if repository is not None:
@@ -213,13 +295,24 @@ def submitted_change(reference, repository=None):
             change.is_submitted = True
             change.base = base
             change.repository = toplevel(path)
-            change.repository_name = Path(change.repository).name
+            change.repository_name = Path(change.repository or path).name
             return change
     raise ChangeError(f'no change with a Change-Id starting with "{prefix}"')
 
 
-def _find_in(changes, reference):
-    """The change of a list a number or a Change-Id prefix refers to."""
+def _find_in(changes: list[Change], reference: str) -> Change:
+    """Finds the change of a list a reference refers to.
+
+    Args:
+        changes: the changes, in overview order.
+        reference: an overview number or a Change-Id prefix.
+
+    Returns:
+        The change.
+
+    Raises:
+        ChangeError: no change or several fit.
+    """
     if reference.isdigit():
         index = int(reference)
         if 1 <= index <= len(changes):
@@ -233,12 +326,23 @@ def _find_in(changes, reference):
     raise ChangeError(f'"{reference}" fits several changes, give more of the Change-Id')
 
 
-def update_change(change_id, edit, repository=None):
-    """Changes a change's review under the lock and stores it.
+def update_change(change_id: str, edit: Callable[[Change], T],
+                  repository: str | None = None) -> T:
+    """Changes a change's review under the lock and stores it. Reads the
+    change fresh, because another process may have written since it was
+    shown, and because an amend may have given it a new commit.
 
-    Reads the change fresh, because another process may have written since
-    it was shown, and because an amend may have given it a new commit. Then
-    calls edit(change), stores the result and returns what edit returned.
+    Args:
+        change_id: the full Change-Id.
+        edit: a function that changes the change it is given.
+        repository: the repository's directory, None for the one the
+            change is in review in.
+
+    Returns:
+        What edit returned.
+
+    Raises:
+        ChangeError: the change is not in review any more.
     """
     repository = current_repository(repository) or locate(change_id)
     with review_lock(repository):
@@ -250,26 +354,54 @@ def update_change(change_id, edit, repository=None):
     raise ChangeError(f'the change {change_id[:8]} is not in review any more')
 
 
-def comment_of(change, number):
-    """The thread with this number, or an error."""
+def comment_of(change: Change, number: int) -> Comment:
+    """Finds a thread of a change by its number.
+
+    Args:
+        change: the change.
+        number: the thread's number.
+
+    Returns:
+        The thread.
+
+    Raises:
+        ChangeError: the change has no thread with that number.
+    """
     comment = change.comment(number)
     if comment is None:
         raise ChangeError(f'{change.short_id()} has no comment {number}')
     return comment
 
 
-def reference_change_id(reference, repository=None):
-    """The Change-Id (or its prefix) a reference of an upload names: an
-    overview number of an uploaded change, else the reference itself.
+def reference_change_id(reference: str, repository: str | None = None) -> str:
+    """Finds the Change-Id a reference of an upload refers to.
+
+    Args:
+        reference: an overview number of an uploaded change, or a Change-Id
+            prefix.
+        repository: the repository's directory, None for the current one.
+
+    Returns:
+        The full Change-Id for a number, else the reference itself.
     """
     if reference.isdigit():
         return find_change(reference, repository).change_id
     return reference
 
 
-def branch_with_change(reference, repository=None):
-    """The local branch holding a change, for an upload naming one: the
-    checked out branch if it has it, else the only branch that has it.
+def branch_with_change(reference: str, repository: str | None = None) -> str:
+    """Finds the local branch holding a change, for an upload naming one.
+
+    Args:
+        reference: an overview number or a Change-Id prefix.
+        repository: the repository's directory, None for the current one.
+
+    Returns:
+        The checked out branch if it has the change, else the only branch
+        that has it.
+
+    Raises:
+        ChangeError: no branch or several have the change.
     """
     base = base_branch(repository)
     current = current_branch(repository)
@@ -282,7 +414,16 @@ def branch_with_change(reference, repository=None):
             return current
         raise
 
-    def has_change(branch):
+    def has_change(branch: str) -> bool:
+        """Tells whether a branch has the change.
+
+        Args:
+            branch: the branch's name.
+
+        Returns:
+            True if a commit between the base and the branch has the
+            Change-Id.
+        """
         return any((change_id_of(commit, repository) or '').startswith(change_id)
                    for commit in commits_between(base, branch, repository))
 

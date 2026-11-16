@@ -12,16 +12,25 @@ from plustwo.review.setup import ensure_layout
 from plustwo.review.stacks import stack_base, stack_ref, topic_of_branch
 
 
-def pull(repository=None):
+def pull(repository: str | None = None) -> str:
     """Brings what the reviewer did into the checked out branch: a rebase,
-    a submit. Like a fetch and rebase from Gerrit. Returns what happened,
-    as a short line.
+    a submit. Like a fetch and rebase from Gerrit.
 
     The branch's commits that are patch sets are the uploaded ones. Without
     newer local commits, the branch moves to the uploaded stack, or to the
     base branch when all was submitted. Newer local commits are rebased
     onto it, which stops like any rebase on a conflict. Needs a clean
     worktree. The branch is never deleted.
+
+    Args:
+        repository: the repository's directory, None for the current one.
+
+    Returns:
+        What happened, as a short line.
+
+    Raises:
+        ChangeError: HEAD is detached or the base branch, or the worktree
+            has changes.
     """
     branch = current_branch(repository)
     base = stack_base(topic_of_branch(branch or ''), repository)

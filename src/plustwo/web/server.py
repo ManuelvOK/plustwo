@@ -174,7 +174,7 @@ class Server:
         context = None if 'all' == query.get('context') else int(query.get('context', '10'))
         whitespace = query.get('whitespace', 'none')
         rows = file_diff_rows(change, first, second, path, context, repository, whitespace)
-        comparing = compare_label(change, first, second, follow=follows_latest())
+        comparing = compare_label(change, first, second, does_follow_latest=follows_latest())
         if rows is None:
             return {'binary': True, 'rows': [], 'comparing': comparing}
         old, new, paths = diff_endpoints(change, first, second, path, repository)
@@ -250,7 +250,7 @@ class Server:
             place, side, patch_set = comment_place(
                 change, path, line, body.get('side', NEW_SIDE), body.get('a') or 'base',
                 body.get('b') or 'latest', repository)
-            return {'number': add_comment(change_id, place, body['text'], sent=False,
+            return {'number': add_comment(change_id, place, body['text'], is_sent=False,
                                                side=side, repository=repository,
                                                patch_set=patch_set)}
         if 'move' == action:
@@ -263,11 +263,11 @@ class Server:
             return {'shown': move_text(move) if move
                     else f'now on {place_label(place, side)}'}
         if 'reply' == action:
-            add_message(change_id, number, REVIEWER, body['text'], sent=False,
+            add_message(change_id, number, REVIEWER, body['text'], is_sent=False,
                              repository=repository)
         elif action in ('done', 'ack'):
             add_message(change_id, number, REVIEWER,
-                             DONE if 'done' == action else ACK, sent=False,
+                             DONE if 'done' == action else ACK, is_sent=False,
                              status=RESOLVED, repository=repository)
         elif 'resolve' == action:
             return {'status': toggle_draft_status(change_id, number, repository)}

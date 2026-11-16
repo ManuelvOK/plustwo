@@ -62,14 +62,14 @@ def history_list(history):
 
 def history_json(entry):
     """One patch set of patch_set_history() for the page."""
-    return {'number': entry.number, 'uploaded': entry.uploaded, 'uploader': entry.uploader,
-            'kind': entry.kind, 'code_review': entry.vote_label(CODE_REVIEW),
+    return {'number': entry.number, 'uploaded': entry.upload_time, 'uploader': entry.uploader,
+            'kind': entry.type, 'code_review': entry.vote_label(CODE_REVIEW),
             'verified': entry.vote_label(VERIFIED), 'comments': entry.comments_label(),
             'open': len(entry.open_threads()),
-            'events': [{'kind': event.kind, 'time': event.time, 'author': event.author,
+            'events': [{'kind': event.type, 'time': event.time, 'author': event.author,
                         'text': event.text, 'number': event.number, 'place': event.place,
                         'place_label': place_label(event.place),
-                        'status': event.status, 'draft': event.draft, 'open': event.is_open(),
+                        'status': event.status, 'draft': event.is_draft, 'open': event.is_open(),
                         'yours': event.is_yours()}
                        for event in entry.events]}
 

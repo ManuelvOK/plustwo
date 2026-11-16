@@ -10,21 +10,32 @@ from plustwo.git.lock import review_lock
 from plustwo.git.notes import read_note, write_note
 from plustwo.git.refs import is_ancestor
 from plustwo.git.repository import git, git_command
+from plustwo.model.change import Change
 from plustwo.review.changes import change_from, note_of
 from plustwo.review.patch_sets import add_patch_set
 from plustwo.review.stacks import stack_base, stack_commits, stack_ref
 
 
-def rebase_stack(topic, repository=None):
-    """The reviewer's rebase of a stack onto its base branch, like Gerrit's
+def rebase_stack(topic: str, repository: str | None = None
+                 ) -> list[tuple[Change, int, str | None]] | None:
+    """Rebases a stack onto its base branch for the reviewer, like Gerrit's
     Rebase button. It needs no worktree: each commit is merged onto the new
     parent with git merge-tree. Every change gets a new patch set with its
     review, and the stack moves. The local branches stay, the author's
-    plustwo pull brings the new commits.
+    plustwo pull brings the new commits. On a conflict nothing changes. The
+    top change gets a rebase request instead, for the author to rebase
+    locally and upload.
 
-    On a conflict nothing changes. The top change gets a rebase request
-    instead, for the author to rebase locally and upload. Returns the new
-    patch sets [(change, number, kind)], or None after a conflict.
+    Args:
+        topic: the stack's topic.
+        repository: the repository's directory, None for the current one.
+
+    Returns:
+        (change, patch set number, patch set type) per new patch set, see
+        add_patch_set(). None after a conflict.
+
+    Raises:
+        ChangeError: there is no such stack, or it is on its base already.
     """
     with review_lock(repository):
         base = stack_base(topic, repository)
@@ -36,6 +47,7 @@ def rebase_stack(topic, repository=None):
             raise ChangeError(f'{topic} is on {base} already')
         commits = stack_commits(topic, repository)
         parent = git('rev-parse', base, repository=repository)
+        # Each commit merged onto the new parent, as (old, new) commits
         rebased = []
         for commit in commits:
             merge = subprocess.run([*git_command(repository),
@@ -56,13 +68,14 @@ def rebase_stack(topic, repository=None):
                 check=True).stdout.strip()
             rebased.append((commit, parent))
 
+        # A new patch set per change, with its review
         uploaded = []
         for old, new in rebased:
             change = change_from(new, topic, read_note(old, repository), repository)
             change.rebase_is_requested = False
-            number, kind = add_patch_set(change, repository)
+            number, patch_set_type_name = add_patch_set(change, repository)
             change.rebased_patch_set = number
             write_note(new, note_of(change), repository)
-            uploaded.append((change, number, kind))
+            uploaded.append((change, number, patch_set_type_name))
         git('update-ref', stack_ref(topic), parent, top, repository=repository)
         return uploaded

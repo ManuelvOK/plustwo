@@ -119,18 +119,18 @@ class PatchSetView:
                 out(row, 6, 'base', attributes | self._interface.dim(attributes))
                 continue
             entry = content[1]
-            when = time.strftime('%Y-%m-%d %H:%M', time.localtime(entry.uploaded)) \
-                if entry.uploaded else '-'
+            when = time.strftime('%Y-%m-%d %H:%M', time.localtime(entry.upload_time)) \
+                if entry.upload_time else '-'
             fold = '▾' if entry.number in self._expanded else '▸'
             out(row, 6, f'{fold} PS{entry.number:<3} {when:<17} {entry.uploader:<12.12} '
-                f'{entry.kind:<15} {entry.vote_label(CODE_REVIEW):<6} '
+                f'{entry.type:<15} {entry.vote_label(CODE_REVIEW):<6} '
                 f'{entry.vote_label(VERIFIED):<6} ', attributes)
             # A folded patch set holding the newest send says so after its
             # counts, which get shorter first when the row is narrow.
             holds_send = (self._last_send and self._last_send[0] == entry.number
                           and entry.number not in self._expanded)
             marks = (' ◂ your last send', ' ◂ last send', ' ◂') if holds_send else ('',)
-            labels = (entry.comments_label(), entry.comments_label(compact=True))
+            labels = (entry.comments_label(), entry.comments_label(is_compact=True))
             room = area.width - 72
             comments, mark = next(((label, mark) for mark in marks for label in labels
                                    if len(label) + len(mark) <= room),
@@ -155,18 +155,18 @@ class PatchSetView:
         when = time.strftime('%m-%d %H:%M', time.localtime(event.time)) if event.time else ''
         who = 'Reviewer' if REVIEWER == event.author else (
             'Author' if AUTHOR == event.author else event.author)
-        if 'vote' == event.kind:
+        if 'vote' == event.type:
             text = f'{when:<11} {who}: {event.text}'
             out_attributes = attributes | self._interface.dim(attributes)
         else:
-            label = ('draft' if event.draft else event.status)
-            what = 'reply on' if 'reply' == event.kind else 'thread'
+            label = ('draft' if event.is_draft else event.status)
+            what = 'reply on' if 'reply' == event.type else 'thread'
             text = (f'{when:<11} {what} #{event.number} [{label}] '
                     f'{place_label(event.place)}  {who}: '
                     f'{event.text}')
             out_attributes = attributes | (status_attribute('unresolved') | curses.A_BOLD
                                            if event.is_open() else
-                                           status_attribute('draft') if event.draft else 0)
+                                           status_attribute('draft') if event.is_draft else 0)
         self._interface.text(row, 10, text, out_attributes, width - 1)
 
     @staticmethod

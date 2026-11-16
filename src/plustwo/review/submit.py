@@ -8,25 +8,41 @@ from plustwo.git.lock import review_lock
 from plustwo.git.notes import read_note, write_note
 from plustwo.git.refs import current_branch, is_ancestor
 from plustwo.git.repository import current_repository, git
+from plustwo.model.change import Change
 from plustwo.model.vote import CODE_REVIEW
 from plustwo.review.changes import changes_in_stack, locate
 from plustwo.review.stacks import stack_ref, worktrees_with
 
 
-def changes_submitted_with(change, repository=None):
-    """The changes a submit of this change submits: it and all changes below
-    it in its stack, oldest first.
+def changes_submitted_with(change: Change, repository: str | None = None) -> list[Change]:
+    """Finds the changes a submit of a change submits.
+
+    Args:
+        change: the change.
+        repository: the repository's directory, None for the current one.
+
+    Returns:
+        The change and all changes below it in its stack, oldest first.
     """
     stack = [other for other in changes_in_stack(repository) if other.topic == change.topic]
     return stack[:[other.change_id for other in stack].index(change.change_id) + 1]
 
 
-def submittable_in(stack, repository=None):
-    """The Change-Ids of a stack's changes (oldest first) that submit()
-    would submit now without force: they and the changes below them have
-    their votes and nothing unresolved, and the base branch didn't move.
+def submittable_in(stack: list[Change], repository: str | None = None) -> set[str]:
+    """Finds the changes of a stack that submit() would submit now without
+    forcing: they and the changes below them have their votes and nothing
+    unresolved, and the base branch didn't move.
+
+    Args:
+        stack: the stack's changes, oldest first.
+        repository: the repository's directory, None for the current one.
+
+    Returns:
+        The Change-Ids of those changes.
     """
-    base = stack[0].base if stack else None
+    if not stack:
+        return set()
+    base = stack[0].base
     result = set()
     for change in stack:
         if change.submit_problems() or change.unfinished_comments():
@@ -37,43 +53,66 @@ def submittable_in(stack, repository=None):
 
 
 # The marks of a stack's changes, see stack_marks()
-SUBMITTABLE_MARK = '✓'
+_SUBMITTABLE_MARK = '✓'
+_APPROVED_MARK = '+2'
 
 
-APPROVED_MARK = '+2'
+def _is_review_finished(change: Change) -> bool:
+    """Tells whether the reviewer is done with a change.
 
+    Args:
+        change: the change.
 
-def is_review_finished(change):
-    """Whether the reviewer is done with a change: the highest Code-Review
-    on its latest patch set, no -2, and no thread unresolved.
+    Returns:
+        True with the highest Code-Review on its latest patch set, no -2,
+        and no thread unresolved.
     """
     return change.is_approved(CODE_REVIEW) and not change.unfinished_comments()
 
 
-def stack_marks(stack, repository=None):
-    """Marks for the changes of a stack (oldest first): Change-Id ->
-    SUBMITTABLE_MARK for those submit would take now, APPROVED_MARK for
-    those whose review is finished but which can't be submitted yet, e.g.
-    because a change below isn't ready, Verified is missing or the stack
-    needs a rebase. Changes without a mark are left out.
+def stack_marks(stack: list[Change], repository: str | None = None) -> dict[str, str]:
+    """Marks the changes of a stack for display.
+
+    Args:
+        stack: the stack's changes, oldest first.
+        repository: the repository's directory, None for the current one.
+
+    Returns:
+        Each marked change's Change-Id, mapped to _SUBMITTABLE_MARK for
+        those submit would take now, or _APPROVED_MARK for those whose
+        review is finished but which can't be submitted yet, as when a
+        change below isn't ready, Verified is missing or the stack needs a
+        rebase. Changes without a mark are left out.
     """
     submittable = submittable_in(stack, repository)
-    return {change.change_id: SUBMITTABLE_MARK if change.change_id in submittable
-            else APPROVED_MARK for change in stack
-            if change.change_id in submittable or is_review_finished(change)}
+    return {change.change_id: _SUBMITTABLE_MARK if change.change_id in submittable
+            else _APPROVED_MARK for change in stack
+            if change.change_id in submittable or _is_review_finished(change)}
 
 
-def submit(change_id, force=False, repository=None):
+def submit(change_id: str, do_force: bool = False,
+           repository: str | None = None) -> list[Change]:
     """Moves the base branch forward to a change, which submits it and every
     change below it in its stack, like Gerrit does with a chain. A stack
     with nothing left is removed. Local branches stay as they are, the
     author's plustwo pull catches up.
 
-    Refuses when one of these changes lacks the votes it needs
-    (Code-Review+2, Verified+1 if required), and when the base branch moved
-    on and the stack needs a rebase first. Without force it also refuses
-    while threads are unresolved, so no point gets lost. The interface uses
-    force after listing those threads and asking.
+    Args:
+        change_id: the full Change-Id.
+        do_force: whether to submit while threads are unresolved. The
+            interface forces after listing those threads and asking.
+        repository: the repository's directory, None for the one the
+            change is in review in.
+
+    Returns:
+        The submitted changes, oldest first.
+
+    Raises:
+        ChangeError: a change lacks the votes it needs (Code-Review+2,
+            Verified+1 if required), the base branch moved on and the stack
+            needs a rebase first, the base branch is checked out in another
+            worktree, or, without forcing, threads are unresolved, so no
+            point gets lost.
     """
     repository = current_repository(repository) or locate(change_id)
     with review_lock(repository):
@@ -87,7 +126,7 @@ def submit(change_id, force=False, repository=None):
             raise ChangeError('; '.join(problems))
         unfinished = [f'{other.short_id()} #{comment.number}' for other in submitted
                       for comment in other.unfinished_comments()]
-        if unfinished and not force:
+        if unfinished and not do_force:
             raise ChangeError(f'unresolved threads: {", ".join(unfinished)}')
 
         base = change.base

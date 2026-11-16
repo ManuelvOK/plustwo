@@ -105,6 +105,6 @@ def submit_with_confirmation(interface, change):
     if drafts:
         lines += ['', f'{drafts} draft(s) are not sent and stay unsent.']
     if interface.confirm(lines, 'Submit?'):
-        submit(change.change_id, force=True)
+        submit(change.change_id, do_force=True)
         interface.after_write()
         interface.say('Submitted: ' + ', '.join(other.short_id() for other in submitted), OK)

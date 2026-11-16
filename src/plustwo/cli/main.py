@@ -291,7 +291,7 @@ def parse_arguments(argv):
         at = arguments.wip or arguments.ready or None
         reference = arguments.change or at
         branch = branch_with_change(reference) if reference else None
-        uploaded, topic, grown, moved = upload(branch, arguments.topic, wip=wip, at=at)
+        uploaded, topic, grown, moved = upload(branch, arguments.topic, is_wip=wip, from_change=at)
         if start_check(topic):
             print(f'{topic}: check started, it votes Verified')
         if grown:

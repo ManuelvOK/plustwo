@@ -168,7 +168,7 @@ class StackView:
             out(row, column, f'{mine or TURN_LABELS.get(turn, turn):<10} ',
                 attributes | (curses.A_BOLD | curses.color_pair(3) if yours
                               else secondary_text))
-            out(row, column + 11, comment_counts(change, short=True),
+            out(row, column + 11, comment_counts(change, is_short=True),
                 attributes | secondary_text)
 
     def mouse(self, row, _column, kind):

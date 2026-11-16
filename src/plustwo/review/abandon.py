@@ -8,11 +8,18 @@ from plustwo.git.repository import git
 from plustwo.review.stacks import stack_ref
 
 
-def abandon_stack(topic, repository=None):
+def abandon_stack(topic: str, repository: str | None = None) -> None:
     """Abandons a stack, like Gerrit's Abandon: it leaves the dashboard,
     its patch sets and notes stay, restore_stack() brings it back. Whole
     stacks only, a change in the middle would leave the ones above it
     without their parent.
+
+    Args:
+        topic: the stack's topic.
+        repository: the repository's directory, None for the current one.
+
+    Raises:
+        ChangeError: there is no such stack.
     """
     with review_lock(repository):
         top = git('rev-parse', '--verify', '--quiet', stack_ref(topic), check=False,
@@ -23,8 +30,17 @@ def abandon_stack(topic, repository=None):
         git('update-ref', '-d', stack_ref(topic), repository=repository)
 
 
-def restore_stack(topic, repository=None):
-    """Brings an abandoned stack back into review."""
+def restore_stack(topic: str, repository: str | None = None) -> None:
+    """Brings an abandoned stack back into review.
+
+    Args:
+        topic: the stack's topic.
+        repository: the repository's directory, None for the current one.
+
+    Raises:
+        ChangeError: there is no such abandoned stack, or a stack of the
+            same topic is in review.
+    """
     with review_lock(repository):
         top = git('rev-parse', '--verify', '--quiet', f'{ABANDONED_PREFIX}{topic}', check=False,
                   repository=repository)

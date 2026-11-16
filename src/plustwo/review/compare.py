@@ -6,36 +6,71 @@ from plustwo.git.commit_message import COMMIT_MSG_NAME, commit_message, commit_m
 from plustwo.git.errors import ChangeError
 from plustwo.git.files import EMPTY_TREE, file_lines, files_of, renames_of
 from plustwo.git.repository import git
+from plustwo.model.change import Change
 from plustwo.model.place import COMMIT_MSG
 from plustwo.model.version import BASE, CURRENT, LATEST
 from plustwo.review.last_send import last_send_patch_set
 
 
-def compare_label(change, first=None, second=None, follow=True, short=False):
-    """The versions compared for display, like "comparing 1 [your last
-    send] -> 2 [latest]": the latest patch set and the one of the
-    reviewer's last send are tagged when they are a side. Without follow, a
-    newer patch set than the right side is mentioned instead ("PS3 is
-    newer"). short shortens the tags for narrow lines.
+# A version of a change and its commit: (label, commit). The label is a
+# patch set's number, BASE or CURRENT. The commit can be a parent like
+# abc^.
+Version = tuple[str, str]
+
+
+def compare_label(change: Change, first: str | None = None, second: str | None = None,
+                  does_follow_latest: bool = True, is_short: bool = False) -> str:
+    """Writes the compared versions for display, like "comparing 1 [your
+    last send] -> 2 [latest]". The latest patch set and the one of the
+    reviewer's last send are tagged when they are a side.
+
+    Args:
+        change: the change.
+        first: the left version, see versions_to_compare().
+        second: the right version, see versions_to_compare().
+        does_follow_latest: whether the right side moves to a new upload.
+            Without, a newer patch set than the right side is mentioned
+            ("PS3 is newer").
+        is_short: whether the tags are shortened for narrow lines.
+
+    Returns:
+        The label.
     """
     (left, _), (right, _) = versions_to_compare(change, first, second)
     latest = str(change.latest_patch_set()) if change.patch_sets else None
-    sent = last_send_patch_set(change)
-    sent = str(sent) if sent is not None else None
+    sent_patch_set = last_send_patch_set(change)
+    sent = str(sent_patch_set) if sent_patch_set is not None else None
 
-    def tagged(version):
+    def tagged(version: str) -> str:
+        """Tags a version.
+
+        Args:
+            version: the version's label.
+
+        Returns:
+            The label with its tags in brackets, if it has any.
+        """
         tags = (['latest'] if version == latest else []) + (
-            [('last send' if short else 'your last send')] if version == sent else [])
+            [('last send' if is_short else 'your last send')] if version == sent else [])
         return f'{version} [{", ".join(tags)}]' if tags else version
 
     label = f'comparing {tagged(left)} -> {tagged(right)}'
-    if not follow and latest and right.isdigit() and int(right) < int(latest):
+    if not does_follow_latest and latest and right.isdigit() and int(right) < int(latest):
         label += f'   PS{latest} is newer'
     return label
 
 
-def can_compare(change, first=None, second=None):
-    """Whether the change has the versions, see versions_to_compare()."""
+def can_compare(change: Change, first: str | None = None, second: str | None = None) -> bool:
+    """Tells whether a change has two versions, see versions_to_compare().
+
+    Args:
+        change: the change.
+        first: the left version.
+        second: the right version.
+
+    Returns:
+        True if both exist.
+    """
     try:
         versions_to_compare(change, first, second)
     except ChangeError:
@@ -43,27 +78,50 @@ def can_compare(change, first=None, second=None):
     return True
 
 
-def versions_to_compare(change, first=None, second=None):
-    """The two versions a diff compares, as (label, commit) pairs.
+def versions_to_compare(change: Change, first: str | None = None,
+                        second: str | None = None) -> tuple[Version, Version]:
+    """Finds the two versions a diff compares.
 
-    Without patch sets given: the latest patch set against the current
-    commit if it changed since, else the last two patch sets, else the only
-    patch set against its parent ("base").
-    first can be "base" too: the parent of the second version, which shows
-    the whole change as of that version. Either can be "latest".
+    Args:
+        change: the change.
+        first: the left version: a patch set's number, BASE (the parent of
+            the second version, which shows the whole change as of that
+            version), LATEST or CURRENT. None for the default.
+        second: the right version: a patch set's number, LATEST or CURRENT.
+            None for the current commit, or the default with first None.
+
+    Returns:
+        (left, right), see Version. Without versions given: the latest
+        patch set against the current commit if it changed since, else the
+        last two patch sets, else the only patch set against its parent.
+
+    Raises:
+        ChangeError: a patch set doesn't exist, or second is BASE.
     """
     latest = change.latest_patch_set()
     first, second = (
         (str(latest) if latest else CURRENT) if LATEST == version else version
         for version in (first, second))
 
-    def commit_of(version):
+    def commit_of(version: str) -> str:
+        """Finds the commit of a version.
+
+        Args:
+            version: a patch set's number or CURRENT.
+
+        Returns:
+            The commit.
+
+        Raises:
+            ChangeError: the patch set doesn't exist.
+        """
         if CURRENT == version:
             return change.commit
         if int(version) not in change.patch_sets:
             raise ChangeError(f'{change.short_id()} has no patch set {version}')
         return change.patch_sets[int(version)]
 
+    # The defaults
     if first is None:
         if 0 == latest:
             return (BASE, f'{change.commit}^'), (CURRENT, change.commit)
@@ -75,6 +133,7 @@ def versions_to_compare(change, first=None, second=None):
             first, second = str(latest), CURRENT
     elif second is None:
         second = CURRENT
+    assert second is not None
     if BASE == second:
         raise ChangeError('base can only be the first of the two versions')
     if BASE == first:
@@ -85,13 +144,22 @@ def versions_to_compare(change, first=None, second=None):
     return (first, commit_of(first)), (second, commit_of(second))
 
 
-def diff_endpoints(change, first=None, second=None, path=None, repository=None):
-    """What git diff compares for two versions of a change: (old, new,
-    paths).
+def diff_endpoints(change: Change, first: str | None = None, second: str | None = None,
+                   path: str | None = None,
+                   repository: str | None = None) -> tuple[str, str, list[str]]:
+    """Finds what git diff compares for two versions of a change.
 
-    path limits the diff to one file. Without it, the diff covers the files
-    the change touches in either version. For /COMMIT_MSG, old and new are
-    trees holding the two commit messages. Base has no commit message.
+    Args:
+        change: the change.
+        first: the left version, see versions_to_compare().
+        second: the right version, see versions_to_compare().
+        path: the one file to diff, None for the files the change touches
+            in either version.
+        repository: the repository's directory, None for the current one.
+
+    Returns:
+        (old, new, paths). For COMMIT_MSG, old and new are trees holding
+        the two commit messages, and BASE has none.
     """
     (first, old), (_second, new) = versions_to_compare(change, first, second)
     if COMMIT_MSG == path:
@@ -106,10 +174,18 @@ def diff_endpoints(change, first=None, second=None, path=None, repository=None):
 
 
 @cached_for_objects(0, 1)
-def numstat(old, new, repository=None):
-    """Files that differ between two commits, with added and removed line
-    counts: path -> (added, removed). Binary files count as 0. /COMMIT_MSG
-    is in it too, with (0, 0), when the messages differ.
+def _numstat(old: str, new: str, repository: str | None = None) -> dict[str, tuple[int, int]]:
+    """Finds the files that differ between two commits.
+
+    Args:
+        old: the old commit, a parent like abc^ too.
+        new: the new commit.
+        repository: the repository's directory, None for the current one.
+
+    Returns:
+        Each path, mapped to (number of added lines, number of removed
+        lines). Binary files count 0 for both. COMMIT_MSG is in it too, with
+        (0, 0), when the messages differ.
     """
     # The parent of a root commit: nothing
     exists = git('rev-parse', '--verify', '--quiet', old, check=False, repository=repository)
@@ -117,38 +193,73 @@ def numstat(old, new, repository=None):
                  repository=repository)
     files = {}
     for line in filter(None, output.split('\n')):
-        added, removed, path = line.split('\t', 2)
-        files[path] = (int(added) if added.isdigit() else 0,
-                       int(removed) if removed.isdigit() else 0)
+        n_added, n_removed, path = line.split('\t', 2)
+        files[path] = (int(n_added) if n_added.isdigit() else 0,
+                       int(n_removed) if n_removed.isdigit() else 0)
     if not exists or commit_message(old, repository) != commit_message(new, repository):
         files[COMMIT_MSG] = (0, 0)
     return files
 
 
-def compared_files(change, first=None, second=None, repository=None):
-    """The files that differ between the two compared versions of a change,
-    with the added and removed lines between them: path -> (added,
-    removed). The file box shows these counts, and the change's other
-    files as unchanged. /COMMIT_MSG is in it, with (0, 0), when the
-    message differs (always against base).
+def compared_files(change: Change, first: str | None = None, second: str | None = None,
+                   repository: str | None = None) -> dict[str, tuple[int, int]]:
+    """Finds the files that differ between the two compared versions of a
+    change. The file box shows their counts, and the change's other files
+    as unchanged.
+
+    Args:
+        change: the change.
+        first: the left version, see versions_to_compare().
+        second: the right version, see versions_to_compare().
+        repository: the repository's directory, None for the current one.
+
+    Returns:
+        Each path, mapped to (number of added lines, number of removed
+        lines) between the versions. COMMIT_MSG is in it, with (0, 0), when
+        the message differs (always against base).
     """
     (first, old), (_second, new) = versions_to_compare(change, first, second)
-    files = dict(numstat(old, new, repository))
+    files = dict(_numstat(old, new, repository))
     if BASE == first:
         files[COMMIT_MSG] = (0, 0)
     return files
 
 
-def diff_command(change, first=None, second=None, tool=False, path=None):
-    """The git command showing the diff between two versions of a change."""
+def diff_command(change: Change, first: str | None = None, second: str | None = None,
+                 uses_difftool: bool = False, path: str | None = None) -> list[str]:
+    """Builds the git command showing the diff between two versions of a
+    change.
+
+    Args:
+        change: the change.
+        first: the left version, see versions_to_compare().
+        second: the right version, see versions_to_compare().
+        uses_difftool: whether the command is git difftool, else git diff.
+        path: the one file to diff, None for all, see diff_endpoints().
+
+    Returns:
+        The command line.
+    """
     old, new, files = diff_endpoints(change, first, second, path)
-    command = ['difftool', '-y'] if tool else ['diff']
+    command = ['difftool', '-y'] if uses_difftool else ['diff']
     return ['git', *command, old, new, '--', *files]
 
 
-def old_path_of(change, first, second, path, repository=None):
-    """The path of a file in the older of two versions, if the change
-    renamed it there and the older version doesn't have it. Else None.
+def old_path_of(change: Change, first: str | None, second: str | None, path: str,
+                repository: str | None = None) -> str | None:
+    """Finds the path of a file in the older of two versions, when the
+    change renamed it.
+
+    Args:
+        change: the change.
+        first: the left version, see versions_to_compare().
+        second: the right version, see versions_to_compare().
+        path: the file's path in the newer version.
+        repository: the repository's directory, None for the current one.
+
+    Returns:
+        The old path, if the change renamed the file and the older version
+        doesn't have it under path. Else None.
     """
     old, new, _ = diff_endpoints(change, first, second, path, repository)
     if COMMIT_MSG == path or file_lines(old, path, repository) != []:
@@ -158,8 +269,21 @@ def old_path_of(change, first, second, path, repository=None):
     return source if source and file_lines(old, source, repository) else None
 
 
-def range_diff_command(change, first=None, second=None):
-    """The git command showing the range-diff between two versions."""
+def range_diff_command(change: Change, first: str | None = None,
+                       second: str | None = None) -> list[str]:
+    """Builds the git command showing the range-diff between two versions.
+
+    Args:
+        change: the change.
+        first: the left version, a patch set, see versions_to_compare().
+        second: the right version, a patch set, see versions_to_compare().
+
+    Returns:
+        The command line.
+
+    Raises:
+        ChangeError: a version is BASE.
+    """
     if BASE in (first, second):
         raise ChangeError('a range-diff needs two patch sets, not base')
     (_first, old), (_second, new) = versions_to_compare(change, first, second)

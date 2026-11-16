@@ -42,7 +42,7 @@ from plustwo.review.compare import can_compare, compare_label, compared_files
 from plustwo.review.history import follow_latest, message_patch_sets, patch_set_history, right_side
 from plustwo.review.last_send import last_send, last_send_compare, last_send_patch_set
 from plustwo.review.moves import move_text, move_thread
-from plustwo.review.patch_sets import patch_set_kind
+from plustwo.review.patch_sets import patch_set_type
 from plustwo.review.porting import (
     EDITED, FILE_GONE, MOVED, SAME, PortedPlace, ShownThread, comment_place, moved_place,
     path_in, ported_line, thread_place)
@@ -312,24 +312,24 @@ class PortTest(unittest.TestCase):
                               .replace('line 10\n', 'line ten\n')}, 'PS2', newer_base)
         self.assertNotEqual(patch_id(first, self.directory),
                             patch_id(second, self.directory))
-        self.assertEqual(TRIVIAL_REBASE, patch_set_kind(first, second, self.directory))
+        self.assertEqual(TRIVIAL_REBASE, patch_set_type(first, second, self.directory))
 
     def test_kind_real_edit_and_conflict_are_rework(self):
         first = self.commit({'a.txt': LINES.replace('line 10\n', 'line ten\n')}, 'PS1', self.base)
         edited = self.commit({'a.txt': LINES.replace('line 10\n', 'line TEN\n')}, 'PS2',
                              self.base)
-        self.assertEqual(REWORK, patch_set_kind(first, edited, self.directory))
+        self.assertEqual(REWORK, patch_set_type(first, edited, self.directory))
         # The base changed the same line: the rebase conflicts.
         newer_base = self.commit({'a.txt': LINES.replace('line 10\n', 'line 10!\n')
                                   .replace('line 1\n', 'line one\n')}, 'Newer base', self.base)
         rebased = self.commit({'a.txt': LINES.replace('line 10\n', 'line ten\n')
                                .replace('line 1\n', 'line one\n')}, 'PS2', newer_base)
         self.assertEqual('', rebased_tree(first, newer_base, self.directory))
-        self.assertEqual(REWORK, patch_set_kind(first, rebased, self.directory))
+        self.assertEqual(REWORK, patch_set_type(first, rebased, self.directory))
         # Only a new message: no code change
         message = self.commit({'a.txt': LINES.replace('line 10\n', 'line ten\n')}, 'Other',
                               self.base)
-        self.assertEqual(NO_CODE_CHANGE, patch_set_kind(first, message, self.directory))
+        self.assertEqual(NO_CODE_CHANGE, patch_set_type(first, message, self.directory))
 
     def test_patch_set_history(self):
         first = self.commit({'a.txt': LINES.replace('line 10\n', 'line ten\n')}, 'PS1', self.base)
@@ -363,13 +363,13 @@ class PortTest(unittest.TestCase):
                              patch_sets={1: first, 2: second, 3: third},
                              uploads={1: 100, 2: 200, 3: 300}, uploaders={1: 'a', 2: 'a', 3: 'b'})
         history = patch_set_history(change, repository=self.directory)
-        self.assertEqual([entry.kind for entry in history],
+        self.assertEqual([entry.type for entry in history],
                          ['-', NO_CODE_CHANGE, REWORK])
         # Whose they are: "you" is the reviewer, drafts count as yours
         self.assertEqual([entry.comments_label() for entry in history],
                          ['you: 2 threads (1 open)', 'you: 1 thread (1 open) · author: 1 reply',
                           'you: 1 thread, 1 reply · author: 1 reply'])
-        self.assertEqual([entry.comments_label(compact=True) for entry in history],
+        self.assertEqual([entry.comments_label(is_compact=True) for entry in history],
                          ['you 2 (1 open)', 'you 1 (1 open) · author 1', 'you 2 · author 1'])
         # The newest send ends with thread 4 on PS2, the author's reply after it
         # is newer. Copied votes and drafts are no sends.
@@ -380,10 +380,10 @@ class PortTest(unittest.TestCase):
                                    uploads={1: 100})
         self.assertIsNone(last_send(patch_set_history(nothing_sent,
                                                                 repository=self.directory)))
-        self.assertEqual([(event.kind, event.number) for event in history[0].events],
+        self.assertEqual([(event.type, event.number) for event in history[0].events],
                          [('thread', 1), ('thread', 2), ('vote', None)])
         self.assertEqual(history[0].events[1].text, 'Why?')
-        self.assertEqual([(event.kind, event.number, event.draft) for event in history[2].events],
+        self.assertEqual([(event.type, event.number, event.is_draft) for event in history[2].events],
                          [('reply', 2, False), ('vote', None, False), ('thread', 3, True),
                           ('reply', 4, True)])
         self.assertEqual([entry.vote_label('Code-Review') for entry in history], ['+1', '(+1)', ''])
@@ -395,8 +395,8 @@ class PortTest(unittest.TestCase):
         self.assertEqual(message_patch_sets(change, comments[3]), [2, 3])
         # Draft replies follow the patch set shown, a draft thread stays on its own.
         shown = patch_set_history(change, shown=2, repository=self.directory)
-        self.assertEqual([4], [event.number for event in shown[1].events if event.draft])
-        self.assertEqual([3], [event.number for event in shown[2].events if event.draft])
+        self.assertEqual([4], [event.number for event in shown[1].events if event.is_draft])
+        self.assertEqual([3], [event.number for event in shown[2].events if event.is_draft])
 
     def test_commit_message_parts(self):
         commit = self.commit({'a.txt': 'x\n'}, 'Subject line\n\nFirst paragraph\ngoes on.\n\n'
@@ -562,7 +562,7 @@ class MoveTest(unittest.TestCase):
 
     def test_draft_moves_without_a_trace(self):
         change_id = changes_in_stack(self.directory)[0].change_id
-        number = add_comment(change_id, 'a.txt:2', 'Draft', sent=False,
+        number = add_comment(change_id, 'a.txt:2', 'Draft', is_sent=False,
                                   repository=self.directory)
         self.assertIsNone(move_thread(change_id, number, 'b.txt:4',
                                            repository=self.directory))
@@ -686,10 +686,10 @@ class CompareTest(unittest.TestCase):
         self.assertEqual(last_send_compare(fresh(one)), ('1', LATEST))
         self.assertEqual(compare_label(fresh(one), '1', 'latest'),
                          'comparing 1 [your last send] -> 2 [latest]')
-        self.assertEqual(compare_label(fresh(one), '1', 'latest', short=True),
+        self.assertEqual(compare_label(fresh(one), '1', 'latest', is_short=True),
                          'comparing 1 [last send] -> 2 [latest]')
         # Without follow, a newer patch set than the right side is mentioned
-        self.assertEqual(compare_label(fresh(one), 'base', '1', follow=False),
+        self.assertEqual(compare_label(fresh(one), 'base', '1', does_follow_latest=False),
                          'comparing base -> 1 [your last send]   PS2 is newer')
 
         # Follow latest: a symbolic right side moves along, else it stays
@@ -701,7 +701,7 @@ class CompareTest(unittest.TestCase):
         self.assertEqual(follow_latest(('base', 'latest'), 2, 2, True),
                          (('base', 'latest'), False))
         self.assertEqual(right_side(fresh(one), '2'), LATEST)
-        self.assertEqual(right_side(fresh(one), '2', follow=False), '2')
+        self.assertEqual(right_side(fresh(one), '2', does_follow_latest=False), '2')
         self.assertEqual(right_side(fresh(one), '1'), '1')
         # The switch is state, off by default
         self.assertFalse(follows_latest())

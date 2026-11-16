@@ -17,11 +17,16 @@ from plustwo.review.stacks import stack_ref
 from plustwo.review.votes import set_vote
 
 
-CHECK_LOG_LINES = 20
+# How many lines of the check's log end the Verified vote's message
+_N_LOG_LINES_IN_VOTE = 20
 
 
-def cancel_check(repository=None):
-    """Stops a running check of the repository, if there is one."""
+def _cancel_check(repository: str | None = None) -> None:
+    """Stops a running check of the repository, if there is one.
+
+    Args:
+        repository: the repository's directory, None for the current one.
+    """
     pid_file = git_path('plustwo/check.pid', repository)
     if not pid_file.exists():
         return
@@ -30,14 +35,21 @@ def cancel_check(repository=None):
     pid_file.unlink(missing_ok=True)
 
 
-def start_check(topic, repository=None):
+def start_check(topic: str, repository: str | None = None) -> bool:
     """Starts the check (setting checks.command) of a stack's top change in
     the background, after stopping one still running: a newer upload makes
-    its result useless. Returns whether a check started.
+    its result useless.
+
+    Args:
+        topic: the stack's topic.
+        repository: the repository's directory, None for the current one.
+
+    Returns:
+        Whether a check started, False without checks.command.
     """
     if not setting('checks.command', repository=repository):
         return False
-    cancel_check(repository)
+    _cancel_check(repository)
     top = git('rev-parse', stack_ref(topic), repository=repository)
     root = toplevel(repository)
     process = subprocess.Popen([sys.executable, str(LAUNCHER), 'check-run',
@@ -50,16 +62,26 @@ def start_check(topic, repository=None):
     return True
 
 
-def run_check(topic, commit=None, repository=None):
-    """Runs the check of a stack's top change (or commit) in the worktree
-    .git/plustwo/check, setting checks.setup first if there is one, and
+def run_check(topic: str, commit: str | None = None,
+              repository: str | None = None) -> int | None:
+    """Runs the check of a stack's top change in the worktree
+    .git/plustwo/check, the setting checks.setup first if there is one, and
     votes Verified by ci with the end of the log. The log stays in
-    .git/plustwo/check.log. Returns the vote, None without checks.command.
+    .git/plustwo/check.log.
+
+    Args:
+        topic: the stack's topic.
+        commit: the commit to check, None for the stack's top.
+        repository: the repository's directory, None for the current one.
+
+    Returns:
+        The vote, None without checks.command.
     """
     command = setting('checks.command', repository=repository)
     if not command:
         return None
     commit = commit or git('rev-parse', stack_ref(topic), repository=repository)
+    # The worktree at the commit
     worktree = git_path('plustwo/check', repository)
     if not (worktree / '.git').exists():
         git('worktree', 'prune', repository=repository)
@@ -67,6 +89,7 @@ def run_check(topic, commit=None, repository=None):
             repository=repository)
     else:
         git('checkout', '--quiet', '--detach', '--force', commit, repository=str(worktree))
+    # The steps, logged
     log_path = git_path('plustwo/check.log', repository)
     with open(log_path, 'w') as log:
         status = 0
@@ -77,9 +100,10 @@ def run_check(topic, commit=None, repository=None):
                                     stderr=subprocess.STDOUT).returncode
             if status:
                 break
+    # The vote on the checked patch set
     value = 1 if 0 == status else -1
     tail = '\n'.join(log_path.read_text(errors='replace').rstrip('\n').split('\n')
-                     [-CHECK_LOG_LINES:])
+                     [-_N_LOG_LINES_IN_VOTE:])
     change = next((change for change in changes_in_stack(repository)
                    if change.topic == topic and commit in change.patch_sets.values()), None)
     if change is not None:

@@ -361,9 +361,9 @@ class ChangeView:
         patch_sets = patch_set_count(len(change.patch_sets))
         try:
             follow = self._interface.follow_latest
-            comparing = compare_label(change, *self._compare, follow=follow)
+            comparing = compare_label(change, *self._compare, does_follow_latest=follow)
             if len(patch_sets) + 3 + len(comparing) > area.width - 2:
-                comparing = compare_label(change, *self._compare, follow=follow, short=True)
+                comparing = compare_label(change, *self._compare, does_follow_latest=follow, is_short=True)
         except ChangeError as error:
             comparing = str(error)
         header = f'{patch_sets}   {comparing}'
@@ -563,7 +563,7 @@ class ChangeView:
         each group under a header (▶ for the file in the diff). A thread
         has ↩ when the author answered last and the start of its last
         message. Threads the comparison leaves as they were (see
-        is_touched()) get a · and a grey place, resolved ones go grey
+        touched_threads()) get a · and a grey place, resolved ones go grey
         all over. Unresolved ones keep their text.
         """
         out = self._interface.text
@@ -1077,7 +1077,7 @@ class ChangeView:
         elif 'open' == action:
             self._open()
         elif 'vimdiff' == action and self._selected_file():
-            interface.run_outside(diff_command(change, *self._compare, tool=True,
+            interface.run_outside(diff_command(change, *self._compare, uses_difftool=True,
                                                     path=self._selected_file()))
         elif 'patch-sets' == action:
             interface.open(PatchSetView(interface, self))
@@ -1437,7 +1437,7 @@ class ChangeView:
             return
         place, side, patch_set = comment_place(
             self._change, path, int(line) if line else None, side, *self._compare)
-        add_comment(self._change_id, place, text, sent=False, side=side,
+        add_comment(self._change_id, place, text, is_sent=False, side=side,
                                    patch_set=patch_set)
         interface.after_write()
         interface.say(f'Draft saved. {interface.keymap.label("send")} sends all drafts.', OK)
@@ -1459,7 +1459,7 @@ def reply_to_thread(interface, change_id, comment, anchor=None):
         return
     text = interface.write_text(f'Reply to #{comment.number}', anchor=anchor)
     if text:
-        add_message(change_id, comment.number, REVIEWER, text, sent=False)
+        add_message(change_id, comment.number, REVIEWER, text, is_sent=False)
         interface.after_write()
         interface.say(f'Reply saved as a draft. {interface.keymap.label("send")} sends all drafts.', OK)
 
@@ -1524,7 +1524,7 @@ def thread_action(interface, change, comment, action):
                           f'{interface.keymap.label("edit-draft")} edits it.')
             return
         text = DONE if 'done' == action else ACK
-        add_message(change.change_id, comment.number, REVIEWER, text, sent=False,
+        add_message(change.change_id, comment.number, REVIEWER, text, is_sent=False,
                          status=RESOLVED)
         interface.after_write()
         interface.say(f'"{text}" saved as a draft, it resolves #{comment.number}. '

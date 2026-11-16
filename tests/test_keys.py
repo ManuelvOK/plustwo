@@ -432,7 +432,7 @@ class UsabilityTest(unittest.TestCase):
         self.assertTrue(answered_by_author(answered))
         self.assertFalse(answered_by_author(comments[1]))
         change = types.SimpleNamespace(comments=comments)
-        self.assertEqual('2 open · 2 done', comment_counts(change, short=True))
+        self.assertEqual('2 open · 2 done', comment_counts(change, is_short=True))
         self.assertEqual('2 unresolved, 2 resolved', comment_counts(change))
 
     def test_relevant_reviewed_next_and_last_pane(self):
