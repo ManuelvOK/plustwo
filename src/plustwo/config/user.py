@@ -4,7 +4,8 @@
 import functools
 import os
 
-from plustwo.git.repository import git
+from plustwo.git.repository import run_git
+
 
 
 def current_user() -> str:
@@ -24,4 +25,4 @@ def git_user_name() -> str:
     Returns:
         The name, 'unknown' without one.
     """
-    return git('config', 'user.name', check=False) or 'unknown'
+    return run_git('config', 'user.name', check=False) or 'unknown'

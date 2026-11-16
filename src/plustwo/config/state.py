@@ -10,8 +10,9 @@ import os
 import re
 from pathlib import Path
 
+from plustwo.git.repository import run_git
+
 from plustwo.config.settings import config_entries, config_values
-from plustwo.git.repository import git
 
 
 def state_path(name: str) -> Path:
@@ -67,7 +68,7 @@ def set_state(name: str, key: str, value: str | None, do_add: bool = False) -> N
     path = state_path(name)
     if value is None:
         if path.exists():
-            git('config', '--file', str(path), '--unset-all', key, check=False)
+            run_git('config', '--file', str(path), '--unset-all', key, check=False)
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    git('config', '--file', str(path), *(['--add'] if do_add else []), key, value)
+    run_git('config', '--file', str(path), *(['--add'] if do_add else []), key, value)

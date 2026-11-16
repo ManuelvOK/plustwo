@@ -3,10 +3,9 @@
 
 import functools
 import os
-import subprocess
 from pathlib import Path
 
-from plustwo.git.repository import current_repository, git
+from plustwo.git.repository import Repository, run_git
 
 
 # The base branch without the setting review.base
@@ -15,11 +14,6 @@ _DEFAULT_BASE = 'main'
 # Settings that lived in git config before, read from there as a fallback:
 # each setting's key, mapped to its old key
 _LEGACY_SETTINGS = {'review.base': 'change.base'}
-
-# Each directory, mapped to its repository's settings file, see
-# _config_files(). The interfaces read settings on every poll, so git is
-# asked once.
-_REPOSITORY_CONFIG_FILES: dict[str, Path] = {}
 
 # A file's modification time in nanoseconds and its size, see _file_stamp()
 FileStamp = tuple[int, int]
@@ -37,41 +31,17 @@ def _user_config_path() -> Path:
     return Path(home) / 'plustwo' / 'config'
 
 
-def _repository_config_path(repository: str | None = None) -> Path:
-    """Finds the repository's settings file, inside .git.
-
-    Args:
-        repository: the repository's directory, None for the current one.
-
-    Returns:
-        The absolute path of the file, in git config syntax, which need not
-        exist.
-    """
-    repository = current_repository(repository)
-    path = Path(git('rev-parse', '--git-path', 'plustwo/config', repository=repository))
-    return Path(repository) / path if repository and not path.is_absolute() else path.absolute()
-
-
-def _config_files(repository: str | None = None) -> list[Path]:
+def _config_files(repository: Repository) -> list[Path]:
     """Finds the settings files.
 
     Args:
-        repository: the repository's directory, None for the current one.
+        repository: the repository.
 
     Returns:
         The files, the one that wins first: the repository's, then the
-        user's. The repository's only inside a repository.
+        user's.
     """
-    directory = os.path.abspath(current_repository(repository) or os.getcwd())
-    repository_file = _REPOSITORY_CONFIG_FILES.get(directory)
-    if repository_file is None:
-        is_inside = 0 == subprocess.run(['git', '-C', directory, 'rev-parse', '--git-dir'],
-                                        capture_output=True).returncode
-        repository_file = _repository_config_path(directory) if is_inside else None
-        # Only a found one is kept: a directory can become a repository.
-        if repository_file is not None:
-            _REPOSITORY_CONFIG_FILES[directory] = repository_file
-    return ([repository_file] if repository_file else []) + [_user_config_path()]
+    return [repository.config_file, _user_config_path()]
 
 
 # ── reading files in git config syntax ────────────────────────────────────────
@@ -121,7 +91,7 @@ def _read_config_entries(path: str, stamp: FileStamp | None) -> tuple[tuple[str,
     """
     if stamp is None:
         return ()
-    output = git('config', '--file', path, '--list', '-z', check=False)
+    output = run_git('config', '--file', path, '--list', '-z', check=False)
     entries = []
     for entry in filter(None, output.split('\0')):
         key, _, value = entry.partition('\n')
@@ -160,15 +130,15 @@ def config_values(path: str | Path, key: str) -> list[str]:
 
 # ── settings ──────────────────────────────────────────────────────────────────
 
-def setting(key: str, default: str | None = None, repository: str | None = None) -> str | None:
+def setting(repository: Repository, key: str, default: str | None = None) -> str | None:
     """Reads a setting like review.base. The files use git config syntax
     and are read with git config --file, so no setting of plustwo goes into
     git's own config.
 
     Args:
+        repository: the repository.
         key: the setting's key.
         default: the value when no file has the setting.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         The value from the repository's file, else the user's, else (for
@@ -180,19 +150,19 @@ def setting(key: str, default: str | None = None, repository: str | None = None)
             return values[-1]
     legacy_key = _LEGACY_SETTINGS.get(key)
     if legacy_key:
-        value = _legacy_setting(legacy_key, current_repository(repository) or os.getcwd())
+        value = _legacy_setting(legacy_key, repository)
         if value:
             return value
     return default
 
 
-def _legacy_setting(key: str, repository: str) -> str:
+def _legacy_setting(key: str, repository: Repository) -> str:
     """Reads an older setting from git's own config, again only when one of
     git's config files changed.
 
     Args:
         key: the setting's old key, like change.base.
-        repository: the repository's directory.
+        repository: the repository.
 
     Returns:
         The value, '' without one.
@@ -200,33 +170,33 @@ def _legacy_setting(key: str, repository: str) -> str:
     home = Path.home()
     xdg = Path(os.environ.get('XDG_CONFIG_HOME') or home / '.config')
     stamps = tuple(_file_stamp(path) for path in (
-        Path(repository) / '.git' / 'config', home / '.gitconfig', xdg / 'git' / 'config'))
+        repository.git_directory / 'config', home / '.gitconfig', xdg / 'git' / 'config'))
     return _read_legacy_setting(key, repository, stamps)
 
 
 @functools.lru_cache(maxsize=64)
-def _read_legacy_setting(key: str, repository: str,
+def _read_legacy_setting(key: str, repository: Repository,
                          _stamps: tuple[FileStamp | None, ...]) -> str:
     """Reads an older setting from git's own config, once per stamps.
 
     Args:
         key: the setting's old key.
-        repository: the repository's directory.
+        repository: the repository.
         _stamps: the stamps of git's config files, only part of the
             cache's key.
 
     Returns:
         The value, '' without one.
     """
-    return git('config', key, check=False, repository=repository)
+    return repository.git('config', key, check=False)
 
 
-def settings_section(section: str, repository: str | None = None) -> dict[str, str]:
+def settings_section(repository: Repository, section: str) -> dict[str, str]:
     """Reads all settings of a section, like keys.
 
     Args:
+        repository: the repository.
         section: the section's name.
-        repository: the repository's directory, None for the current one.
 
     Returns:
         Each name in the section, mapped to its value, the repository's
@@ -241,31 +211,31 @@ def settings_section(section: str, repository: str | None = None) -> dict[str, s
     return values
 
 
-def set_setting(key: str, value: str | None, is_for_user: bool = False,
-                repository: str | None = None) -> None:
+def set_setting(repository: Repository, key: str, value: str | None,
+                is_for_user: bool = False) -> None:
     """Stores a setting.
 
     Args:
+        repository: the repository.
         key: the setting's key.
         value: the new value, None to remove the setting.
         is_for_user: whether the setting goes into the user's file instead
             of the repository's.
-        repository: the repository's directory, None for the current one.
     """
-    path = _user_config_path() if is_for_user else _repository_config_path(repository)
+    path = _user_config_path() if is_for_user else repository.config_file
     if value is None:
         if path.exists():
-            git('config', '--file', str(path), '--unset', key, check=False)
+            run_git('config', '--file', str(path), '--unset', key, check=False)
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    git('config', '--file', str(path), key, value)
+    run_git('config', '--file', str(path), key, value)
 
 
-def list_settings(repository: str | None = None) -> list[str]:
+def list_settings(repository: Repository) -> list[str]:
     """Lists every setting.
 
     Args:
-        repository: the repository's directory, None for the current one.
+        repository: the repository.
 
     Returns:
         Lines like "key=value  (file)", the user's file first.
@@ -273,42 +243,43 @@ def list_settings(repository: str | None = None) -> list[str]:
     lines = []
     for path in reversed(_config_files(repository)):
         if path.exists():
-            output = git('config', '--file', str(path), '--list', check=False)
+            output = run_git('config', '--file', str(path), '--list', check=False)
             lines += [f'{line}  ({path})' for line in filter(None, output.split('\n'))]
     return lines
 
 
-def migrate_settings(repository: str | None = None) -> list[str]:
+def migrate_settings(repository: Repository) -> list[str]:
     """Moves settings of older versions out of the repository's git config
     into its own file. Ones in the user's global git config are left alone,
     they still count as a fallback.
 
     Args:
-        repository: the repository's directory, None for the current one.
+        repository: the repository.
 
     Returns:
         A line like "change.base -> review.base" per moved setting.
     """
     moved = []
     for key, legacy_key in _LEGACY_SETTINGS.items():
-        value = git('config', '--local', legacy_key, check=False, repository=repository)
+        value = repository.git('config', '--local', legacy_key, check=False)
         if not value:
             continue
-        path = _repository_config_path(repository)
-        if not (path.exists() and git('config', '--file', str(path), '--get', key, check=False)):
-            set_setting(key, value, repository=repository)
-        git('config', '--local', '--unset', legacy_key, repository=repository)
+        path = repository.config_file
+        if not (path.exists()
+                and run_git('config', '--file', str(path), '--get', key, check=False)):
+            set_setting(repository, key, value)
+        repository.git('config', '--local', '--unset', legacy_key)
         moved.append(f'{legacy_key} -> {key}')
     return moved
 
 
-def base_branch(repository: str | None = None) -> str:
+def base_branch(repository: Repository) -> str:
     """Finds the branch reviewed changes go to.
 
     Args:
-        repository: the repository's directory, None for the current one.
+        repository: the repository.
 
     Returns:
         The setting review.base, else main.
     """
-    return setting('review.base', _DEFAULT_BASE, repository) or _DEFAULT_BASE
+    return setting(repository, 'review.base', _DEFAULT_BASE) or _DEFAULT_BASE
