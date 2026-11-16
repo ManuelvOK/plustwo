@@ -118,17 +118,11 @@ change, so no checkout is touched. A newer upload stops a running one.
 
 ## Reporting issues
 
-Issues live in `ISSUES.md` on the `issues` branch. On `main` the file
-only points there, so issues never mix with the code.
+Report problems and wishes as GitHub issues of this repository. Steps
+that reproduce it in a scratch repository help most, references to your
+own repositories don't, nobody else can see them.
 
-1. Branch off `issues` (in a fork, or here if you may push).
-2. Add the issue to `ISSUES.md` and commit it.
-3. Open a pull request into `issues`. That is the notification, nothing
-   else tells the maintainer about a pushed branch.
-
-Agents that use plustwo find how to write an issue in `plustwo guide`:
-steps that reproduce it in a scratch repository, no references to your
-own repositories.
+Agents that use plustwo find how to write an issue in `plustwo guide`.
 
 ## License
 

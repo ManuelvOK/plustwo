@@ -170,7 +170,9 @@ and sees none of yours.
 - Can't reproduce it? Describe the shape instead ("PS2 rewrites a.hh as
   b.hh, two thirds of the lines kept") and say it isn't reproduced.
 - A proposal is welcome, under its own "Proposal:" line.
-- Write the issue for the user. Where it goes is in the README.
+- Write the issue for your user, who files it as a GitHub issue of
+  plustwo (see its README), or files it yourself with `gh issue create`
+  if your user wants that.
 
 ## Never
 

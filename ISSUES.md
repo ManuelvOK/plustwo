@@ -1,4 +1,4 @@
 # Issues
 
-Issues are collected on the `issues` branch, see "Reporting issues" in
-README.md. This file stays empty on `main`.
+Issues are GitHub issues of this repository, see "Reporting issues" in
+README.md.
