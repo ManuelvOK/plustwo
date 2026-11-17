@@ -41,7 +41,8 @@ def print_comments(arguments: argparse.Namespace) -> None:
     """Prints the votes and threads of a change, also of a submitted one.
     A thread of an older patch set says where its line is now. With
     --ported only the threads that aren't at their exact old place, with
-    the old and the new lines around them, see ported_threads().
+    the old and the new lines around them, except for plain moves, which
+    get only a head line, see ported_threads().
 
     Args:
         arguments: the command line, with change and ported.

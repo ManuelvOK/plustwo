@@ -501,10 +501,9 @@ class InboxTest(unittest.TestCase):
             repo.change('upload')
             ported = repo.change('show', '--ported', '1')
             # Resolved threads too, with the old and the new lines
-            self.assertIn('#1 [resolved] (PS1, now :4) a.txt:3\n  PS1 a.txt:3\n'
-                          '      1 | line 1\n', ported)
-            self.assertIn('  PS2 a.txt:4\n      2 | line 1\n      3 | line 2\n'
-                          '    > 4 | line 3\n', ported)
+            # A plain move has its head line and no quotes
+            self.assertIn('#1 [resolved] (PS1, now :4) a.txt:3\nI', ported)
+            self.assertNotIn('PS2 a.txt:4', ported)
             self.assertIn('#2 [unresolved] (PS1, line removed) a.txt:7\n', ported)
             # The new file has a line more on top: line 7 is old line 6
             self.assertIn('  PS2 a.txt, line removed after line 7\n      6 | line 5\n'

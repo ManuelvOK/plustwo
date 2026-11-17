@@ -51,7 +51,8 @@ Usage:
                                         the threads not at their exact old
                                         place in the newest patch set,
                                         resolved ones too, with the old and
-                                        the new lines around them.
+                                        the new lines around them (a plain
+                                        move: head line only).
     plustwo diff CHANGE [A [B]]         diff between patch sets, shown by
                                         git's pager. --tool opens vimdiff.
     plustwo rdiff CHANGE [A [B]]        range-diff between patch sets
@@ -756,7 +757,8 @@ def _parse_arguments(argv: list[str]) -> Arguments:
         '--list', help='only the repositories of this list', default=argparse.SUPPRESS)
     command('show', print_comments, 'threads of a change', 'change').add_argument(
         '--ported', action='store_true',
-        help='only threads not at their old place, with the lines around them')
+        help='only threads not at their old place, with the lines around them '
+        '(plain moves: head line only)')
     upload_parser = command('upload', _upload_command, 'upload the stack of a branch',
                             ('change', optional))
     upload_parser.add_argument('--topic')

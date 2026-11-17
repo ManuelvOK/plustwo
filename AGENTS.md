@@ -96,7 +96,8 @@ touches your branch. `plustwo pull` brings it in.
    Leave a thread alone if its code is really gone.
    `plustwo show --ported <CHANGE>` lists every thread that isn't at its
    exact old place, resolved ones too, with the old line and the new
-   guess, each with two lines around it. Use it to check the guesses or
+   guess, each with two lines around it (a plain move only its head
+   line). Use it to check the guesses or
    to get the list again later. Never import plustwo's modules for this.
 6. Then answer all threads in one call with `plustwo answer` (below). Your
    messages are sent immediately, so answering after the upload makes

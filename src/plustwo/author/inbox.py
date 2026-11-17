@@ -10,7 +10,7 @@ from plustwo.model.vote import LABEL_RANGES
 from plustwo.review.changes import changes_in_stack
 from plustwo.review.labels import message_text
 from plustwo.review.porting import (
-    EDITED, FILE_GONE, REMOVED, SAME, UNCERTAIN, PortedPlace, port_thread, ported_version,
+    EDITED, FILE_GONE, MOVED, REMOVED, SAME, UNCERTAIN, PortedPlace, port_thread, ported_version,
     thread_version, version_line, version_lines)
 from plustwo.review.threads import line_at
 
@@ -153,13 +153,15 @@ def ported_threads(change: Change) -> list[str]:
     patch set, resolved ones too, with the line it was written on and
     where it is now, each with _N_CONTEXT_LINES lines around it, so the
     author can judge the guess and move the thread where it belongs.
+    A plain move (MOVED, a safe shift) gets only its head, to save
+    tokens.
 
     Args:
         change: the change.
 
     Returns:
         Per thread a head like 'I3f2a #4 [unresolved] (PS1, now :50)
-        a.cc:44', then the two quotes, indented.
+        a.cc:44', then, unless it only moved, the two quotes, indented.
     """
     lines = []
     for comment in change.comments:
@@ -173,6 +175,8 @@ def ported_threads(change: Change) -> list[str]:
         status = 'unresolved' if comment.is_unresolved() else 'resolved'
         lines.append(f'{change.short_id()} #{comment.number} [{status}] '
                      f'{patch_set_note(change, comment)}{anchor.place_label()}')
+        if MOVED == ported.state:
+            continue
         _path, line = split_place(anchor.place)
         version = thread_version(change, anchor)
         if line is None or version is None:
