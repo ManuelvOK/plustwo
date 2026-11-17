@@ -33,7 +33,8 @@ from plustwo.model.place import COMMIT_MSG, NEW_SIDE, place_label, split_place
 from plustwo.model.roles import REVIEWER
 from plustwo.model.vote import CODE_REVIEW
 from plustwo.review.changes import changes_in_stack, find_change
-from plustwo.review.compare import compare_label, compared_files, diff_endpoints, old_path_of
+from plustwo.review.compare import (
+    compare_label, compared_files, compared_renames, diff_endpoints, old_path_of)
 from plustwo.review.file_diff import file_diff_rows
 from plustwo.review.history import message_patch_sets, patch_set_history
 from plustwo.review.moves import move_text, move_thread
@@ -218,13 +219,16 @@ class Server:
             The JSON object.
         """
         change, repository = self._change(query)
-        renames = renames_of(repository, change.commit)
-        # Counts between the compared versions, unchanged files greyed
+        # Counts between the compared versions, unchanged files greyed,
+        # renamed ones named with their path in the older version
         try:
             compared = compared_files(change, query.get('a') or 'base',
                                            query.get('b') or 'latest')
+            renames = compared_renames(change, query.get('a') or 'base',
+                                       query.get('b') or 'latest')
         except ChangeError:
             compared = None
+            renames = renames_of(repository, change.commit)
         # Threads the comparison leaves as they were are quiet on the page.
         touched = touched_threads(change, query.get('a') or 'base',
                                        query.get('b') or 'latest')

@@ -19,7 +19,8 @@ from plustwo.model.place import COMMIT_MSG, PATCHSET_LEVEL, split_place
 from plustwo.model.version import BASE, LATEST
 from plustwo.model.vote import CODE_REVIEW, VERIFIED
 from plustwo.review.changes import changes_in_stack
-from plustwo.review.compare import can_compare, compare_label, diff_command, versions_to_compare
+from plustwo.review.compare import (
+    can_compare, compare_label, compared_renames, diff_command, versions_to_compare)
 from plustwo.review.history import follow_latest, right_side
 from plustwo.review.labels import version_label
 from plustwo.review.last_send import last_send_compare, last_send_patch_set
@@ -269,9 +270,12 @@ class ChangeView:
         # The commit message comes first, like in Gerrit.
         # A renamed file is listed once, under its new name.
         files = self._files_pane
-        files.renames = renames_of(self._repository, change.commit)
         files.counts = files_of(self._repository, change.commit)
-        files.files = [COMMIT_MSG] + sorted(set(files.counts) - set(files.renames.values()))
+        files.files = [COMMIT_MSG] + sorted(
+            set(files.counts) - set(renames_of(self._repository, change.commit).values()))
+        # Named with the path in the older compared version, which may come
+        # from a rename between patch sets
+        files.renames = compared_renames(change, *self._compare)
         if self._extra_file and self._extra_file not in files.files:
             files.files.append(self._extra_file)
         if not files.has_cursor:

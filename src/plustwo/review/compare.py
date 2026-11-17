@@ -4,7 +4,7 @@
 from plustwo.git.cache import cached_for_objects
 from plustwo.git.commit_message import COMMIT_MSG_NAME, commit_message, commit_message_tree
 from plustwo.git.errors import ChangeError
-from plustwo.git.files import EMPTY_TREE, file_lines, files_of, renames_of
+from plustwo.git.files import EMPTY_TREE, file_lines, files_of, renames_between, renames_of
 from plustwo.git.repository import Repository
 from plustwo.model.change import Change
 from plustwo.model.place import COMMIT_MSG
@@ -187,10 +187,18 @@ def _numstat(repository: Repository, old: str, new: str) -> dict[str, tuple[int,
     """
     # The parent of a root commit: nothing
     exists = repository.git('rev-parse', '--verify', '--quiet', old, check=False)
-    output = repository.git('diff', '--numstat', '--no-renames', old if exists else EMPTY_TREE, new)
+    # A renamed file counts its edits under its new path, like git diff -M.
+    fields = repository.git('diff', '--numstat', '-M', '-z', old if exists else EMPTY_TREE,
+                            new).split('\0')
     files = {}
-    for line in filter(None, output.split('\n')):
-        n_added, n_removed, path = line.split('\t', 2)
+    index = 0
+    while index < len(fields) and fields[index]:
+        n_added, n_removed, path = fields[index].split('\t', 2)
+        index += 1
+        if not path:
+            # A rename: the old and the new path follow.
+            path = fields[index + 1]
+            index += 2
         files[path] = (int(n_added) if n_added.isdigit() else 0,
                        int(n_removed) if n_removed.isdigit() else 0)
     if not exists or commit_message(repository, old) != commit_message(repository, new):
@@ -258,9 +266,29 @@ def old_path_of(change: Change, first: str | None, second: str | None, path: str
     old, new, _ = diff_endpoints(change, first, second, path)
     if COMMIT_MSG == path or file_lines(change.repository, old, path) != []:
         return None
-    # Renamed by the change: the new version's own rename
-    source = renames_of(change.repository, new).get(path)
+    # Renamed between the versions, as when two patch sets add the file
+    # under different names, else by the change itself
+    source = (renames_between(change.repository, old, new).get(path)
+              or renames_of(change.repository, new).get(path))
     return source if source and file_lines(change.repository, old, source) else None
+
+
+def compared_renames(change: Change, first: str | None = None,
+                     second: str | None = None) -> dict[str, str]:
+    """Finds the files that have another path in the older of two versions,
+    see old_path_of().
+
+    Args:
+        change: the change.
+        first: the left version, see versions_to_compare().
+        second: the right version, see versions_to_compare().
+
+    Returns:
+        Each path in the newer version, mapped to its path in the older one.
+    """
+    _old, _new, paths = diff_endpoints(change, first, second)
+    return {path: source for path in paths
+            if (source := old_path_of(change, first, second, path))}
 
 
 def range_diff_command(change: Change, first: str | None = None,

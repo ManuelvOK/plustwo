@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from plustwo.git.errors import ChangeError
 from plustwo.model.change import Change
 from plustwo.model.comment import Comment
-from plustwo.review.compare import compared_files
+from plustwo.review.compare import compared_files, compared_renames
 from plustwo.review.reviewed import is_approved, is_reviewed
 from plustwo.tui.file_names import diff_path, file_label
 from plustwo.tui.lists import keyed_cursor, position_after
@@ -160,6 +160,8 @@ class FilesPane:
         # doesn't change are grey.
         try:
             compared = compared_files(change, *compare)
+            # Changing the compared versions changes renames too.
+            self.renames = compared_renames(change, *compare)
         except ChangeError:
             compared = self.counts
         # Threads per file, as the diff shows them: N● with N unresolved

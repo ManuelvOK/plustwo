@@ -37,6 +37,34 @@ def renames_of(repository: Repository, commit: str) -> dict[str, str]:
     return renames
 
 
+@cached_for_objects(1, 2)
+def renames_between(repository: Repository, old: str, new: str) -> dict[str, str]:
+    """Finds the files renamed between two commits, by git's rename
+    detection. A file that two patch sets of a change add under different
+    names is renamed between them, though the change renames nothing.
+
+    Args:
+        repository: the repository.
+        old: the old commit, any name git understands.
+        new: the new commit.
+
+    Returns:
+        Each path in new, mapped to its path in old.
+    """
+    # check=False: the parent of a root commit has nothing renamed.
+    fields = repository.git('diff-tree', '-M', '-r', '--name-status', '-z', old, new,
+                            '--', check=False).split('\0')
+    renames = {}
+    index = 0
+    while index < len(fields) and fields[index]:
+        if fields[index].startswith(('R', 'C')):
+            renames[fields[index + 2]] = fields[index + 1]
+            index += 3
+        else:
+            index += 2
+    return renames
+
+
 @cached_for_objects(1)
 def files_of(repository: Repository, commit: str) -> dict[str, tuple[int, int]]:
     """Finds the files a commit changes, with their added and removed lines.
