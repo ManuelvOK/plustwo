@@ -549,7 +549,13 @@ def thread_place(change: Change, comment: Comment, first: str | None = None,
         side, target = OLD_SIDE, left
     else:
         side, target = NEW_SIDE, right
-    if version[0] == target or PATCHSET_LEVEL == path:
+    if PATCHSET_LEVEL == path:
+        return ShownThread(path, line, side)
+    if version[0] == target:
+        # On the left version itself: the file under its name in the right
+        # one, as when the patch sets add it under different names
+        if target != right and COMMIT_MSG != path:
+            path = path_in(change.repository, target, right, path) or path
         return ShownThread(path, line, side)
     place, number, state = _place_in(change.repository, comment, version, target, right)
     origin = f'PS{comment.patch_set}'

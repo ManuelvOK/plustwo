@@ -39,7 +39,8 @@ from plustwo.model.roles import AUTHOR, REVIEWER
 from plustwo.model.version import LATEST
 from plustwo.model.vote import Vote
 from plustwo.review.changes import changes_in_stack, comment_of, find_change
-from plustwo.review.compare import can_compare, compare_label, compared_files
+from plustwo.review.compare import (
+    can_compare, compare_label, compared_files, compared_renames, old_path_of)
 from plustwo.review.history import follow_latest, message_patch_sets, patch_set_history, right_side
 from plustwo.review.last_send import last_send, last_send_compare, last_send_patch_set
 from plustwo.review.moves import move_text, move_thread
@@ -253,6 +254,28 @@ class PortTest(unittest.TestCase):
         self.assertEqual(shown(4, 'base', '3'), ShownThread('a.txt', 12, new))
         # A newer thread shown on an older patch set moves back
         self.assertEqual(shown(4, 'base', '2'), ShownThread('a.txt', 11, new, 'PS3'))
+
+    def test_renamed_between_patch_sets(self):
+        # Two patch sets add a file under different names: the diff of the
+        # two pairs them, and a thread on the left one shows on the file of
+        # the right one's name, see issue I8cc4da6 PS2 -> PS3.
+        first = self.commit({'queue.txt': LINES}, 'PS1', self.base)
+        second = self.commit({'pending.txt': LINES.replace('line 9', 'line nine')}, 'PS2',
+                             self.base)
+        threads = [Comment(number=1, place='queue.txt:3', patch_set=1, side=NEW_SIDE),
+                   Comment(number=2, place='pending.txt:4', patch_set=2, side=NEW_SIDE)]
+        change = Change(change_id='I' + '0' * 40, commit=second, subject='', topic='t',
+                        repository=Repository(self.directory),
+                        comments=threads, patch_sets={1: first, 2: second})
+        self.assertEqual('queue.txt', old_path_of(change, '1', '2', 'pending.txt'))
+        self.assertEqual({'pending.txt': 'queue.txt'}, compared_renames(change, '1', '2'))
+        self.assertEqual((1, 1), compared_files(change, '1', '2')['pending.txt'])
+        self.assertEqual(ShownThread('pending.txt', 3, OLD_SIDE),
+                         thread_place(change, threads[0], '1', '2'))
+        self.assertEqual(ShownThread('pending.txt', 4, NEW_SIDE),
+                         thread_place(change, threads[1], '1', '2'))
+        # Against base, the left version has none of them.
+        self.assertEqual({}, compared_renames(change, 'base', '2'))
 
     def test_touched_threads(self):
         first = self.commit({'a.txt': LINES.replace('line 5', 'line five')}, 'PS1', self.base)
