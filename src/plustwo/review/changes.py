@@ -106,6 +106,7 @@ def _change_from(repository: Repository, commit: str, topic: str, note: dict[str
                   rebased_patch_set=note.get('rebased_patch_set', 0),
                   uploads={int(number): time for number, time in note.get('uploads', {}).items()},
                   reviewed=note.get('reviewed', {}),
+                  approved=note.get('approved', {}),
                   uploaders={int(number): name
                              for number, name in note.get('uploaders', {}).items()},
                   is_wip=note.get('wip', False))
@@ -135,6 +136,7 @@ def note_of(change: Change) -> dict[str, Any]:
             'rebased_patch_set': change.rebased_patch_set,
             'uploads': {str(number): time for number, time in change.uploads.items()},
             'reviewed': change.reviewed,
+            'approved': change.approved,
             'uploaders': {str(number): name for number, name in change.uploaders.items()},
             'wip': change.is_wip}
 

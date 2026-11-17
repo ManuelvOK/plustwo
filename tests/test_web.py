@@ -126,6 +126,7 @@ class WebTest(unittest.TestCase):
         self.assertEqual('unresolved', act('resolve', number=number)['status'])
         act('resolve', number=number)
         act('reviewed', path='base.txt')
+        self.assertTrue(act('approve-file', path='base.txt')['approved'])
         self.assertEqual(1, act('approve', send=True)['sent'])
         _, change = self.request(f'/api/change?id={change_id}')
         thread = next(comment for comment in change['comments'] if comment['number'] == number)
@@ -135,6 +136,7 @@ class WebTest(unittest.TestCase):
         self.assertTrue(thread['touched'])
         self.assertEqual('+2', change['code_review'])
         self.assertTrue(change['files'][1]['reviewed'])
+        self.assertTrue(change['files'][1]['approved'])
         self.assertTrue(any(comment['path'] == '/PATCHSET_LEVEL'
                             for comment in change['comments']))
         # The reviewer's newest send is marked once, on its last event

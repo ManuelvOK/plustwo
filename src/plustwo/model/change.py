@@ -50,6 +50,8 @@ class Change:
             seconds since 1970.
         reviewed: each file the reviewer marked reviewed, mapped to a hash
             of the file's diff.
+        approved: each file the reviewer marked approved (done), mapped to
+            a hash of the file's diff, like reviewed.
         uploaders: each patch set's number, mapped to who uploaded it, see
             current_user().
         is_submitted: whether the change was found on the base branch by
@@ -73,6 +75,7 @@ class Change:
     rebased_patch_set: int = 0
     uploads: dict[int, int] = field(default_factory=dict)
     reviewed: dict[str, str] = field(default_factory=dict)
+    approved: dict[str, str] = field(default_factory=dict)
     uploaders: dict[int, str] = field(default_factory=dict)
     is_submitted: bool = False
     is_wip: bool = False

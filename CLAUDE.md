@@ -71,7 +71,8 @@ every command and docs/architecture.md for the layers of the code.
   from a move's patch set on, the thread is ported from it, older patch
   sets keep the place it was written on (`Comment.anchored()`). A draft
   thread just changes its place. Messages and votes carry a `time`, `uploads` the patch
-  sets' upload times: whose turn it is follows from them. `reviewed` maps
+  sets' upload times: whose turn it is follows from them. `reviewed` and `approved` (private
+  marks, `approved` also sets `reviewed`) map
   files to a hash of their own diff. `/PATCHSET_LEVEL` threads are
   messages on the whole change. `submit` (time, topic, base) is written
   on the submitted patch sets, so a restarted `watch` finds submits it

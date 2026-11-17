@@ -62,7 +62,7 @@ every other registered repository (`plustwo register PATH`,
    `·` in the comments pane.
 3. `c` (or `o`) comments on the cursor line, `O` on the line above, `<`
    and `>` choose the old or new side. `m` marks a file reviewed, `M`
-   marks it and opens the next file. In the
+   marks it and opens the next file, `f` marks it approved (+2 for this file). In the
    comment box, Esc on written text asks once before it discards it.
 4. On a thread: `r` replies, `y` answers Done, `Y` Ack, `x` toggles
    resolved. A reply that only acknowledges, like "Ack." or "OK, thanks",

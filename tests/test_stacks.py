@@ -8,12 +8,17 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / 'src'))
+from plustwo.git.repository import Repository as GitRepository
+from plustwo.review.changes import find_change
+from plustwo.review.reviewed import is_approved, is_reviewed, toggle_approved, toggle_reviewed
 # State and settings of their own, so no test registers its scratch
 # repositories with the user's dashboard
 _HOME = tempfile.mkdtemp(prefix='plustwo-test-')
@@ -149,6 +154,45 @@ class FlowTest(unittest.TestCase):
         self.assertNotIn('/PATCHSET_LEVEL', repo.change('inbox'))
         # status says what it did
         self.assertIn('#1 resolved', repo.change('status', '2', '1', 'resolved'))
+
+    def test_approved_mark(self):
+        repo = self.repo
+        self.two_changes()
+        repo.change('upload')
+        git_repository = GitRepository(self.directory)
+
+        def change():
+            return find_change(git_repository, '2')
+
+        change_id = change().change_id
+        # Approving marks the file reviewed too, the action toggles
+        self.assertFalse(is_approved(change(), 'b.txt'))
+        self.assertTrue(toggle_approved(git_repository, change_id, 'b.txt'))
+        self.assertTrue(is_approved(change(), 'b.txt'))
+        self.assertTrue(is_reviewed(change(), 'b.txt'))
+        # The marks of other files stay as they are
+        self.assertFalse(is_approved(change(), 'a.txt'))
+        # The mark stays with an unchanged re-upload
+        repo.git('commit', '--quiet', '--amend', '--no-edit', '--date', '2001-01-01T00:00:00')
+        repo.change('upload')
+        self.assertTrue(is_approved(change(), 'b.txt'))
+        # Not for the author's outputs
+        for command in (('show', '2'), ('inbox',)):
+            self.assertNotIn('approved', repo.change(*command))
+        # Unapproving leaves reviewed
+        self.assertFalse(toggle_approved(git_repository, change_id, 'b.txt'))
+        self.assertFalse(is_approved(change(), 'b.txt'))
+        self.assertTrue(is_reviewed(change(), 'b.txt'))
+        # Another change of the file drops the mark
+        toggle_approved(git_repository, change_id, 'b.txt')
+        repo.write('b.txt', 'b2\n')
+        repo.git('commit', '--quiet', '--amend', '--no-edit', '-a')
+        repo.change('upload')
+        self.assertFalse(is_approved(change(), 'b.txt'))
+        self.assertFalse(is_reviewed(change(), 'b.txt'))
+        # Reviewing alone does not approve
+        toggle_reviewed(git_repository, change_id, 'b.txt')
+        self.assertFalse(is_approved(change(), 'b.txt'))
 
     def test_review_note_follows_upload(self):
         repo = self.repo

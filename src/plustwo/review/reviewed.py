@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Zlib
-"""Files the reviewer marked as reviewed."""
+"""Files the reviewer marked as reviewed or approved."""
 
 import functools
 import hashlib
@@ -98,6 +98,53 @@ def mark_reviewed(repository: Repository, change_id: str, path: str) -> None:
         change.reviewed[path] = _file_diff_hash(repository, change.commit, path)
 
     update_change(repository, change_id, edit)
+
+
+def is_approved(change: Change, path: str) -> bool:
+    """Tells whether the reviewer marked a file approved and its diff is
+    the same as then.
+
+    Args:
+        change: the change.
+        path: the file's path.
+
+    Returns:
+        True if the mark holds.
+    """
+    mark = change.approved.get(path)
+    return bool(mark) and mark == _file_diff_hash(change.repository, change.commit, path)
+
+
+def toggle_approved(repository: Repository, change_id: str, path: str) -> bool:
+    """Marks a file of a change approved, or unmarks it. Approving also
+    marks the file reviewed, unmarking leaves reviewed as it is.
+
+    Args:
+        repository: the repository.
+        change_id: the full Change-Id.
+        path: the file's path.
+
+    Returns:
+        Whether the file is approved now.
+    """
+    def edit(change: Change) -> bool:
+        """Flips the mark.
+
+        Args:
+            change: the change, read fresh.
+
+        Returns:
+            Whether the file is approved now.
+        """
+        if is_approved(change, path):
+            del change.approved[path]
+            return False
+        mark = _file_diff_hash(repository, change.commit, path)
+        change.approved[path] = mark
+        change.reviewed[path] = mark
+        return True
+
+    return update_change(repository, change_id, edit)
 
 
 def file_after(files: Sequence[str], path: str) -> str | None:

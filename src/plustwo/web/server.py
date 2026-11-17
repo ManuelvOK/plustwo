@@ -40,7 +40,7 @@ from plustwo.review.moves import move_text, move_thread
 from plustwo.review.porting import comment_place, thread_place
 from plustwo.review.rebase_lines import rebase_lines
 from plustwo.review.reply import quick_approve, reply
-from plustwo.review.reviewed import is_reviewed, toggle_reviewed
+from plustwo.review.reviewed import is_approved, is_reviewed, toggle_approved, toggle_reviewed
 from plustwo.review.stacks import needs_rebase, stack_version
 from plustwo.review.threads import (
     add_comment, add_message, delete_draft, edit_draft, toggle_draft_status)
@@ -235,6 +235,7 @@ class Server:
             files.append({'path': path, 'added': added, 'removed': removed,
                           'changed': compared is None or path in compared,
                           'reviewed': is_reviewed(change, path),
+                          'approved': is_approved(change, path),
                           'renamed_from': renames.get(path)})
         return {**change_summary(change),
                 'message': commit_message(repository, change.commit),
@@ -409,6 +410,8 @@ class Server:
             return {'patch_set': patch_set, 'sent': sent}
         elif 'reviewed' == action:
             return {'reviewed': toggle_reviewed(repository, change_id, body['path'])}
+        elif 'approve-file' == action:
+            return {'approved': toggle_approved(repository, change_id, body['path'])}
         else:
             raise ChangeError(f'unknown action "{action}"')
         return {}

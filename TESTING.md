@@ -31,6 +31,7 @@ In terminal 1 (you), `cd` to the printed directory and start `plustwo`.
 | 5   | `]c`, then `c`, write "Why words?", Enter              | a draft thread under line 30                     |
 | 6   | `<`, `c`, write "old side", Enter                      | a second draft, marked `(old)`                   |
 | 7   | `m`                                                    | `✓` before a.txt, title `1/2 reviewed`           |
+| 7a  | `f`                                                    | `+2` before a.txt, title `1/2 reviewed · 1/2 +2` |
 | 8   | `W` a few times                                        | the title shows the whitespace mode              |
 | 9   | `s`, write "Looks good otherwise", Enter               | drafts sent. Terminal 2 prints `review ...`      |
 | 9a  | `]u` a few times                                       | goes through the unresolved threads of all files |

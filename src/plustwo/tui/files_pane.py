@@ -8,7 +8,7 @@ from plustwo.git.errors import ChangeError
 from plustwo.model.change import Change
 from plustwo.model.comment import Comment
 from plustwo.review.compare import compared_files
-from plustwo.review.reviewed import is_reviewed
+from plustwo.review.reviewed import is_approved, is_reviewed
 from plustwo.tui.file_names import diff_path, file_label
 from plustwo.tui.lists import keyed_cursor, position_after
 from plustwo.tui.pane_frame import PaneBox, draw_frame
@@ -134,7 +134,7 @@ class FilesPane:
 
     def draw(self, box: PaneBox, is_focused: bool, change: Change, compare: tuple[str, str],
              groups: list[tuple[str, list[Comment]]]) -> None:
-        """Draws the file list: ✓ for reviewed files, the threads per file
+        """Draws the file list: ✓ for reviewed files, +2 for approved ones, the threads per file
         and a bar of the lines the comparison adds and removes.
 
         Args:
@@ -146,9 +146,15 @@ class FilesPane:
         """
         out = self._interface.text
         reviewed = [is_reviewed(change, path) for path in self.files]
+        approved = [is_approved(change, path) for path in self.files]
+        title = f'Files  {sum(reviewed)}/{len(self.files)} reviewed'
+        if any(approved):
+            title += f' · {sum(approved)}/{len(self.files)} +2'
+        # The column only appears once a file is approved
+        mark_width = 5 if any(approved) else 2
         top, left, height, width = box
         first = self.first(height)
-        draw_frame(self._interface, box, f'Files  {sum(reviewed)}/{len(self.files)} reviewed',
+        draw_frame(self._interface, box, title,
                    is_focused, first, len(self.files) - first - height)
         # The counts between the compared versions. Files the comparison
         # doesn't change are grey.
@@ -167,7 +173,7 @@ class FilesPane:
                            for unresolved, total in counts.values()), default=0)
         # Like Gerrit's size column: a short bar of added and removed lines
         bar_width = 6 if any(sum(compared.get(path, (0, 0))) for path in self.files) else 0
-        name_width = max(width - 2 - count_width - bar_width, 1)
+        name_width = max(width - mark_width - count_width - bar_width, 1)
         for row, path in enumerate(self.files[first:first + height]):
             index = first + row
             selected = index == self.index
@@ -177,13 +183,16 @@ class FilesPane:
             out(top + row, left, '✓ ' if reviewed[index] else '  ',
                 attributes | curses.color_pair(2), left + width)
             out(top + row, left + 2, ' ' * (width - 2), attributes, left + width)
+            if mark_width > 2:
+                out(top + row, left + 2, '+2 ' if approved[index] else '   ',
+                    attributes | curses.color_pair(2), left + width)
             changed = path in compared
-            out(top + row, left + 2, f'{name:<{name_width}.{name_width}}',
+            out(top + row, left + mark_width, f'{name:<{name_width}.{name_width}}',
                 attributes | (0 if changed else self._interface.dim(attributes)), left + width)
             unresolved, total = counts.get(path, (0, 0))
             if total:
                 label = f'{unresolved or total}●'.rjust(count_width)
-                out(top + row, left + 2 + name_width, label,
+                out(top + row, left + mark_width + name_width, label,
                     attributes | (0 if unresolved else self._interface.dim(attributes)),
                     left + width)
             added, removed = compared.get(path, (0, 0))

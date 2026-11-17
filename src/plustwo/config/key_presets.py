@@ -118,6 +118,8 @@ ACTIONS: Final[tuple[tuple[str, str, str, str], ...]] = (
     ('fold-every', 'Change', 'fold all', 'fold all threads'),
     ('reviewed', 'Change', 'reviewed', 'mark the file reviewed, or unmark it. The mark stays while '
      'the file\'s diff stays the same.'),
+    ('approve-file', 'Change', 'approved', 'mark the file approved (+2 for this file), or unmark '
+     'it. Also marks it reviewed. The mark stays while the file\'s diff is unchanged.'),
     ('reviewed-next', 'Change', 'reviewed, next file', 'mark the file reviewed and open the next '
      'file of the list, reviewed or not. On the last file it only marks.'),
     ('whitespace', 'Change', 'whitespace', 'which whitespace changes the diff ignores, like '
@@ -166,7 +168,7 @@ _VIM_KEYS = {
     'fold-every': 'z M',
     'reply': 'r', 'edit-draft': 'e', 'done': 'y', 'ack': 'Y', 'resolve': 'x', 'send': 's',
     'whitespace': 'W', 'approve': 'A', 'next-turn': 'T', 'reviewed': 'm,Space',
-    'reviewed-next': 'M', 'side-old': '<', 'side-new': '>',
+    'reviewed-next': 'M', 'approve-file': 'f', 'side-old': '<', 'side-new': '>',
     'section-down': 'J', 'section-up': 'K',
     # Like vim's C-w o, which keeps only the current window
     'sidebar': 'C-w o,z s',

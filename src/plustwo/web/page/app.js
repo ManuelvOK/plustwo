@@ -385,6 +385,8 @@ function fileList(change) {
                             + (file.changed ? '' : ' unchanged')},
       el('td', {}, el('input', {type: 'checkbox', checked: file.reviewed, title: 'reviewed',
                                 onchange: () => act('reviewed', {path: file.path})})),
+      el('td', {}, el('input', {type: 'checkbox', checked: file.approved, title: '+2 for this file',
+                                onchange: () => act('approve-file', {path: file.path})})),
       el('td', {class: 'path', onclick: () => openFile(file.path)},
          file.path === COMMIT_MSG ? 'Commit message' : file.path,
          file.renamed_from ? el('div', {class: 'dim'}, `from ${file.renamed_from}`) : null),
@@ -393,6 +395,7 @@ function fileList(change) {
          file.removed ? el('span', {class: 'bar del', style: `width:${width(file.removed)}`}) : null));
   });
   const reviewed = change.files.filter((file) => file.reviewed).length;
+  const approved = change.files.filter((file) => file.approved).length;
   const {subject, body, trailers} = change.message_parts;
   // The message itself, without /COMMIT_MSG's header. A click opens that
   // file in the diff, to comment on it.
@@ -401,7 +404,8 @@ function fileList(change) {
     el('div', {class: 'subject'}, subject), body ? el('div', {class: 'body'}, body) : null,
     trailers.length ? el('div', {class: 'trailers dim'}, trailers.join('\n')) : null);
   return el('div', {class: 'files'}, message,
-    el('div', {class: 'dim'}, `${reviewed}/${change.files.length} reviewed`),
+    el('div', {class: 'dim'}, `${reviewed}/${change.files.length} reviewed`
+                       + (approved ? ` · ${approved}/${change.files.length} +2` : '')),
     el('table', {}, el('tbody', {}, rows)));
 }
 
@@ -832,6 +836,7 @@ function runAction(action, times) {
     case 'send': openReply(); return true;
     case 'approve': quickApprove(); return true;
     case 'reviewed': act('reviewed', {path: state.file}); return true;
+    case 'approve-file': act('approve-file', {path: state.file}); return true;
     case 'more-context': state.context = CONTEXTS[Math.min(CONTEXTS.indexOf(state.context) + 1, CONTEXTS.length - 1)]; render(); return true;
     case 'less-context': state.context = CONTEXTS[Math.max(CONTEXTS.indexOf(state.context) - 1, 0)]; render(); return true;
     case 'whitespace': state.whitespace = WHITESPACE[(WHITESPACE.indexOf(state.whitespace) + 1) % WHITESPACE.length]; render(); return true;
@@ -842,7 +847,7 @@ function runAction(action, times) {
 // Actions the page can do, for the help
 const WEB_ACTIONS = new Set(['help', 'reload', 'down', 'up', 'top', 'bottom', 'page-down', 'page-up',
   'open', 'back', 'next-file', 'prev-file', 'next-chunk', 'prev-chunk', 'next-thread',
-  'prev-thread', 'side-old', 'side-new', 'comment', 'file-comment', 'send', 'approve', 'reviewed',
+  'prev-thread', 'side-old', 'side-new', 'comment', 'file-comment', 'send', 'approve', 'reviewed', 'approve-file',
   'more-context', 'less-context', 'whitespace', 'sidebar']);
 
 // Light or dark: the choice of the toggle, kept in the browser if it lets

@@ -24,7 +24,7 @@ from plustwo.review.history import follow_latest, right_side
 from plustwo.review.labels import version_label
 from plustwo.review.last_send import last_send_compare, last_send_patch_set
 from plustwo.review.porting import comment_place
-from plustwo.review.reviewed import file_after, mark_reviewed, toggle_reviewed
+from plustwo.review.reviewed import file_after, mark_reviewed, toggle_approved, toggle_reviewed
 from plustwo.review.stacks import needs_rebase
 from plustwo.review.submit import stack_marks
 from plustwo.review.threads import add_comment
@@ -389,7 +389,8 @@ class ChangeView:
             entries = [(('down', 'up'), 'scroll'), (('open',), 'comment on it')]
         elif FILES == self._focus:
             entries = [(('open',), 'diff'), (('reviewed',), 'reviewed'),
-                       (('reviewed-next',), 'reviewed, next'), (('file-comment',), 'comment')]
+                       (('reviewed-next',), 'reviewed, next'), (('approve-file',), '+2 file'),
+                       (('file-comment',), 'comment')]
         elif COMMENTS == self._focus:
             entries = [(('open',), 'go to')] + thread_footer(self._comments_pane.selected())
         elif self._diff.rows and self._diff.thread_at(self._diff.cursor) is not None:
@@ -699,6 +700,7 @@ class ChangeView:
             'side-new': lambda _count: self._set_side('new'),
             'reviewed': lambda _count: self._toggle_reviewed(),
             'reviewed-next': lambda _count: self._reviewed_next(),
+            'approve-file': lambda _count: self._toggle_approved(),
             'approve': lambda _count: approve(interface, self._change),
             'comment': lambda _count: self._comment(),
             'file-comment': lambda _count: self._new_comment(is_whole_file=True),
@@ -945,6 +947,16 @@ class ChangeView:
         self._interface.after_write()
         self._interface.say(f'{file_label(path)} '
                             + ('reviewed.' if marked else 'not reviewed any more.'))
+
+    def _toggle_approved(self) -> None:
+        """Marks the selected file as approved, or not any more."""
+        path = self._files_pane.selected()
+        if not path:
+            return
+        marked = toggle_approved(self._repository, self._change_id, path)
+        self._interface.after_write()
+        self._interface.say(f'{file_label(path)} '
+                            + ('approved, also reviewed.' if marked else 'not approved any more.'))
 
     def _reviewed_next(self) -> None:
         """Marks the selected file as reviewed and goes to the next one."""
