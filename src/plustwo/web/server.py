@@ -25,13 +25,14 @@ from plustwo.diff.sgr import Segment
 from plustwo.diff.syntax import syntax_segments
 from plustwo.git.commit_message import commit_message, commit_message_parts
 from plustwo.git.errors import ChangeError
-from plustwo.git.files import file_lines, files_of, renames_of
+from plustwo.git.files import file_lines, files_of
 from plustwo.git.repository import Repository
 from plustwo.model.change import Change
 from plustwo.model.comment import ACK, DONE, RESOLVED
 from plustwo.model.place import COMMIT_MSG, NEW_SIDE, place_label, split_place
 from plustwo.model.roles import REVIEWER
 from plustwo.model.vote import CODE_REVIEW
+from plustwo.review.renames import own_sources
 from plustwo.review.changes import changes_in_stack, find_change
 from plustwo.review.compare import (
     compare_label, compared_files, compared_renames, diff_endpoints, old_path_of)
@@ -228,7 +229,7 @@ class Server:
                                        query.get('b') or 'latest')
         except ChangeError:
             compared = None
-            renames = renames_of(repository, change.commit)
+            renames = own_sources(repository, change.commit)
         # Threads the comparison leaves as they were are quiet on the page.
         touched = touched_threads(change, query.get('a') or 'base',
                                        query.get('b') or 'latest')

@@ -7,7 +7,7 @@ import time
 
 from plustwo.git.commit_message import commit_message_text
 from plustwo.git.errors import ChangeError
-from plustwo.git.files import file_lines, renames_of
+from plustwo.git.files import file_lines
 from plustwo.git.repository import Repository
 from plustwo.model.acknowledgement import is_acknowledgement
 from plustwo.model.change import Change
@@ -17,6 +17,7 @@ from plustwo.model.place import COMMIT_MSG, NEW_SIDE, OLD_SIDE, PATCHSET_LEVEL, 
 from plustwo.model.roles import AUTHOR, REVIEWER
 from plustwo.review.changes import comment_of, update_change
 from plustwo.review.porting import thread_version
+from plustwo.review.renames import own_sources
 
 
 def line_at(repository: Repository, commit: str, place: str, side: str = NEW_SIDE) -> str:
@@ -42,7 +43,7 @@ def line_at(repository: Repository, commit: str, place: str, side: str = NEW_SID
         text = commit_message_text(repository, commit)
     elif OLD_SIDE == side:
         # A renamed file had its old path in the parent
-        old_path = renames_of(repository, commit).get(path, path)
+        old_path = own_sources(repository, commit).get(path, path)
         text = repository.git('show', f'{commit}^:{old_path}', check=False)
     else:
         text = repository.git('show', f'{commit}:{path}', check=False)

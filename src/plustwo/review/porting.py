@@ -6,9 +6,10 @@ from dataclasses import dataclass
 
 from plustwo.diff.edits import Edit, edits_of
 from plustwo.diff.pairing import paired_lines
+from plustwo.diff.substitutions import BARE_LINES
 from plustwo.git.cache import cached_for_objects
 from plustwo.git.commit_message import COMMIT_MSG_NAME, commit_message_text, commit_message_tree
-from plustwo.git.files import file_lines, renames_of
+from plustwo.git.files import file_lines
 from plustwo.git.repository import Repository
 from plustwo.model.change import Change
 from plustwo.model.comment import Comment
@@ -16,6 +17,7 @@ from plustwo.model.place import (
     COMMIT_MSG, NEW_SIDE, OLD_SIDE, PATCHSET_LEVEL, join_place, split_place)
 from plustwo.model.version import CURRENT
 from plustwo.review.compare import old_path_of, versions_to_compare
+from plustwo.review.renames import own_sources, path_in
 
 
 # How a thread's line fared on the way to another patch set
@@ -35,7 +37,7 @@ ThreadVersion = tuple[str, str]
 MovedPlace = tuple[str, int | None, str]
 
 # Lines that don't tell where code went
-_BARE_LINES = ('', '{', '}', '};')
+_BARE_LINES = BARE_LINES
 
 # A line of a gone file is looked for in the new files around it: this many
 # lines on each side, and at least _FOUND_MIN_LINES of them unchanged.
@@ -93,35 +95,6 @@ class PortedPlace:
 # ── following files ───────────────────────────────────────────────────────────
 
 @cached_for_objects(1, 2)
-def path_in(repository: Repository, old: str, new: str, path: str) -> str | None:
-    """Finds the path a file of one commit has in another.
-
-    Args:
-        repository: the repository.
-        old: the commit the file is in.
-        new: the other commit.
-        path: the file's path in old.
-
-    Returns:
-        The same path if new has it, else where git's rename detection
-        finds it or _rewritten_path(), None if the file is gone.
-    """
-    if repository.git('rev-parse', '--verify', '--quiet', f'{new}:{path}', check=False):
-        return path
-    fields = repository.git('diff-tree', '-M', '-r', '--name-status', '-z', old, new,
-                            '--').split('\0')
-    index = 0
-    while index < len(fields) and fields[index]:
-        if fields[index].startswith(('R', 'C')):
-            if fields[index + 1] == path:
-                return fields[index + 2]
-            index += 3
-        else:
-            index += 2
-    return _rewritten_path(repository, old, new, path)
-
-
-@cached_for_objects(1, 2)
 def _added_files(repository: Repository, old: str, new: str) -> list[str]:
     """Finds the files one commit has and another hasn't.
 
@@ -174,35 +147,10 @@ def _n_kept_lines(repository: Repository, old: str, new: str, path: str, name: s
 
 
 @cached_for_objects(1, 2)
-def _rewritten_path(repository: Repository, old: str, new: str, path: str) -> str | None:
-    """Finds the file a file became when git finds no rename, its content
-    too different by git's measure, which counts bytes.
-
-    Args:
-        repository: the repository.
-        old: the commit the file is in.
-        new: the newer commit.
-        path: the file's path in old.
-
-    Returns:
-        The path of the file new added that keeps more than half of the
-        file's lines. None if no file does, as when it was split into
-        several.
-    """
-    lines = file_lines(repository, old, path) or []
-    numbers = range(1, len(lines) + 1)
-    n_real_lines = sum(1 for text in lines if text.strip() not in _BARE_LINES)
-    n_kept, name = max(((_n_kept_lines(repository, old, new, path, name, numbers), name)
-                        for name in _added_files(repository, old, new)),
-                       default=(0, None))
-    return name if n_kept >= _FOUND_MIN_LINES and n_kept > n_real_lines / 2 else None
-
-
-@cached_for_objects(1, 2)
 def _found_line(repository: Repository, source: str, target: str, path: str,
                 line: int) -> MovedPlace | None:
     """Finds where a line of a file went when it isn't in that file in the
-    other version, gone or renamed (see path_in()), as when the file was
+    other version, gone or renamed (see renames.path_in()), as when the file was
     split into several. The added file whose diff with the gone one keeps
     the most lines around the line wins, if it keeps at least
     _FOUND_MIN_LINES. Gerrit has no such search, its comments stay behind
@@ -395,7 +343,7 @@ def thread_version(change: Change, comment: Comment) -> ThreadVersion | None:
         return origin, path
     if path in (COMMIT_MSG, PATCHSET_LEVEL):
         return f'{origin}^', path
-    return f'{origin}^', renames_of(change.repository, origin).get(path, path)
+    return f'{origin}^', own_sources(change.repository, origin).get(path, path)
 
 
 def port_thread(change: Change, comment: Comment,
@@ -604,7 +552,7 @@ def ported_version(change: Change, comment: Comment,
         return commit, path
     if path in (COMMIT_MSG, PATCHSET_LEVEL):
         return f'{commit}^', path
-    return f'{commit}^', renames_of(change.repository, commit).get(path, path)
+    return f'{commit}^', own_sources(change.repository, commit).get(path, path)
 
 
 def version_lines(repository: Repository, version: ThreadVersion) -> list[str]:

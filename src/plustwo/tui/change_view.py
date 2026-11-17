@@ -11,13 +11,14 @@ from plustwo.config.view_state import set_follows_latest
 from plustwo.diff.edits import WHITESPACE_MODES
 from plustwo.git.commit_message import commit_message_parts
 from plustwo.git.errors import ChangeError
-from plustwo.git.files import files_of, renames_of
+from plustwo.git.files import files_of
 from plustwo.git.repository import Repository
 from plustwo.model.change import Change
 from plustwo.model.comment import Comment
 from plustwo.model.place import COMMIT_MSG, PATCHSET_LEVEL, split_place
 from plustwo.model.version import BASE, LATEST
 from plustwo.model.vote import CODE_REVIEW, VERIFIED
+from plustwo.review.renames import own_sources
 from plustwo.review.changes import changes_in_stack
 from plustwo.review.compare import (
     can_compare, compare_label, compared_renames, diff_command, versions_to_compare)
@@ -272,7 +273,7 @@ class ChangeView:
         files = self._files_pane
         files.counts = files_of(self._repository, change.commit)
         files.files = [COMMIT_MSG] + sorted(
-            set(files.counts) - set(renames_of(self._repository, change.commit).values()))
+            set(files.counts) - set(own_sources(self._repository, change.commit).values()))
         # Named with the path in the older compared version, which may come
         # from a rename between patch sets
         files.renames = compared_renames(change, *self._compare)

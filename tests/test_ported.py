@@ -47,7 +47,8 @@ from plustwo.review.moves import move_text, move_thread
 from plustwo.review.patch_sets import patch_set_type
 from plustwo.review.porting import (
     EDITED, FILE_GONE, MOVED, SAME, UNCERTAIN, PortedPlace, ShownThread, comment_place, moved_place,
-    path_in, ported_line, thread_place)
+    ported_line, thread_place)
+from plustwo.review.renames import file_sources, path_in
 from plustwo.review.stacks import stack_version
 from plustwo.review.submit import stack_marks, submittable_in
 from plustwo.review.threads import add_comment
@@ -276,6 +277,30 @@ class PortTest(unittest.TestCase):
                          thread_place(change, threads[1], '1', '2'))
         # Against base, the left version has none of them.
         self.assertEqual({}, compared_renames(change, 'base', '2'))
+
+    def test_class_renamed_with_its_file(self):
+        # The class name is on every line, too much for git's -M. The name
+        # swap pairs the files, words replaced on several lines too.
+        old = ''.join(f'int Parser::get_{n}() {{ return m_value_{n} + parser_offset; }}\n'
+                      for n in range(12))
+        new = ''.join(f'int Reader::get_{n}() {{ return m_value_{n} + base_offset; }}\n'
+                      for n in range(12))
+        unrelated = ''.join(f'static char const *name_{n} = "x";\n' for n in range(12))
+        first = self.commit({'parser.cc': old, 'other.cc': unrelated}, 'Old', self.base)
+        second = self.commit({'reader.cc': new, 'unrelated.cc': unrelated.replace('x', 'y')},
+                             'New', self.base)
+        repository = Repository(self.directory)
+        self.assertIn('D', self.git('diff', '-M', '--name-status', first, second))
+        self.assertEqual({'reader.cc': 'parser.cc', 'unrelated.cc': 'other.cc'},
+                         file_sources(repository, first, second))
+        self.assertEqual('reader.cc', path_in(repository, first, second, 'parser.cc'))
+
+    def test_unrelated_files_stay_apart(self):
+        first = self.commit({'one.txt': ''.join(f'apple {n}\n' for n in range(10))}, 'Old',
+                            self.base)
+        second = self.commit({'two.txt': ''.join(f'pear {n * 7}\n' for n in range(10))}, 'New',
+                             self.base)
+        self.assertEqual({}, file_sources(Repository(self.directory), first, second))
 
     def test_touched_threads(self):
         first = self.commit({'a.txt': LINES.replace('line 5', 'line five')}, 'PS1', self.base)

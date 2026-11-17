@@ -4,12 +4,13 @@
 from plustwo.git.cache import cached_for_objects
 from plustwo.git.commit_message import COMMIT_MSG_NAME, commit_message, commit_message_tree
 from plustwo.git.errors import ChangeError
-from plustwo.git.files import EMPTY_TREE, file_lines, files_of, renames_between, renames_of
+from plustwo.git.files import EMPTY_TREE, file_lines, files_of
 from plustwo.git.repository import Repository
 from plustwo.model.change import Change
 from plustwo.model.place import COMMIT_MSG
 from plustwo.model.version import BASE, CURRENT, LATEST
 from plustwo.review.last_send import last_send_patch_set
+from plustwo.review.renames import file_sources, own_sources
 
 
 # A version of a change and its commit: (label, commit). The label is a
@@ -201,6 +202,15 @@ def _numstat(repository: Repository, old: str, new: str) -> dict[str, tuple[int,
             index += 2
         files[path] = (int(n_added) if n_added.isdigit() else 0,
                        int(n_removed) if n_removed.isdigit() else 0)
+    # Renames git doesn't find, see file_sources(): counted blob to blob
+    for path, source in file_sources(repository, old, new).items() if exists else ():
+        if source in files and path in files:
+            del files[source]
+            blobs = [repository.git('rev-parse', f'{version}:{name}')
+                     for version, name in ((old, source), (new, path))]
+            counts = repository.git('diff', '--numstat', *blobs).split('\t')
+            files[path] = (int(counts[0]) if counts[0].isdigit() else 0,
+                           int(counts[1]) if len(counts) > 1 and counts[1].isdigit() else 0)
     if not exists or commit_message(repository, old) != commit_message(repository, new):
         files[COMMIT_MSG] = (0, 0)
     return files
@@ -268,8 +278,8 @@ def old_path_of(change: Change, first: str | None, second: str | None, path: str
         return None
     # Renamed between the versions, as when two patch sets add the file
     # under different names, else by the change itself
-    source = (renames_between(change.repository, old, new).get(path)
-              or renames_of(change.repository, new).get(path))
+    source = (file_sources(change.repository, old, new).get(path)
+              or own_sources(change.repository, new).get(path))
     return source if source and file_lines(change.repository, old, source) else None
 
 
