@@ -45,7 +45,7 @@ from plustwo.review.last_send import last_send, last_send_compare, last_send_pat
 from plustwo.review.moves import move_text, move_thread
 from plustwo.review.patch_sets import patch_set_type
 from plustwo.review.porting import (
-    EDITED, FILE_GONE, MOVED, SAME, PortedPlace, ShownThread, comment_place, moved_place,
+    EDITED, FILE_GONE, MOVED, SAME, UNCERTAIN, PortedPlace, ShownThread, comment_place, moved_place,
     path_in, ported_line, thread_place)
 from plustwo.review.stacks import stack_version
 from plustwo.review.submit import stack_marks, submittable_in
@@ -116,6 +116,20 @@ class PortTest(unittest.TestCase):
         self.assertEqual(self.port(first, second, 'a.txt:15'), ('a.txt:16', 16, MOVED))
         self.assertEqual(self.port(first, second, 'b.txt:3'), ('b.txt:3', 3, SAME))
         self.assertEqual(self.port(first, second, 'a.txt'), ('a.txt', None, SAME))
+
+    def test_bare_line_without_code_around(self):
+        # The diff keeps the blank line and the last brace, although both
+        # functions around them were replaced: the move is a guess.
+        first = self.commit({'a.cc': 'int a() {\n    return 1;\n}\n\nint b() {\n'
+                                     '    return 2;\n}\n'}, 'PS1', self.base)
+        second = self.commit({'a.cc': 'int c() {\n\n    return 3;\n}\n'}, 'PS2', self.base)
+        self.assertEqual(self.port(first, second, 'a.cc:4'), ('a.cc:2', 2, UNCERTAIN))
+        self.assertEqual(self.port(first, second, 'a.cc:7'), ('a.cc:4', 4, UNCERTAIN))
+        # With kept code next to it, a blank line moves safely
+        third = self.commit({'a.cc': '// top\nint a() {\n    return 1;\n}\n\nint d() {\n'
+                                     '}\n'}, 'PS3', self.base)
+        self.assertEqual(self.port(first, third, 'a.cc:4'), ('a.cc:5', 5, MOVED))
+        self.assertEqual(self.port(first, third, 'a.cc:3'), ('a.cc:4', 4, MOVED))
 
     def test_renamed_and_gone(self):
         first = self.commit({'a.txt': LINES + 'end\n'}, 'PS1', self.base)
@@ -471,6 +485,35 @@ class InboxTest(unittest.TestCase):
         finally:
             shutil.rmtree(directory)
 
+
+    def test_show_ported(self):
+        directory = tempfile.mkdtemp(prefix='plustwo-port-show-')
+        try:
+            repo = test_stacks.Repository(directory)
+            repo.git('switch', '--quiet', '-c', 'feature')
+            repo.commit('a.txt', LINES, 'Add a')
+            repo.change('upload')
+            for place in ('a.txt:3', 'a.txt:7', 'a.txt:12'):
+                repo.change('comment', '1', place, f'On {place}')
+            repo.change('status', '1', '1', 'resolved')
+            repo.write('a.txt', 'top\n' + LINES.replace('line 7\n', ''))
+            repo.git('commit', '--quiet', '--amend', '--no-edit', '-a')
+            repo.change('upload')
+            ported = repo.change('show', '--ported', '1')
+            # Resolved threads too, with the old and the new lines
+            self.assertIn('#1 [resolved] (PS1, now :4) a.txt:3\n  PS1 a.txt:3\n'
+                          '      1 | line 1\n', ported)
+            self.assertIn('  PS2 a.txt:4\n      2 | line 1\n      3 | line 2\n'
+                          '    > 4 | line 3\n', ported)
+            self.assertIn('#2 [unresolved] (PS1, line removed) a.txt:7\n', ported)
+            # The new file has a line more on top: line 7 is old line 6
+            self.assertIn('  PS2 a.txt, line removed after line 7\n      6 | line 5\n'
+                          '      7 | line 6\n      8 | line 8\n', ported)
+            # A thread that only moved but kept its number isn't listed
+            self.assertNotIn('#3 [', ported)
+            self.assertIn('a.txt:3 (PS1, now :4)', repo.change('show', '1'))
+        finally:
+            shutil.rmtree(directory)
 
     def test_whole_change(self):
         # A message on the whole change is resolved, but asks all the same,

@@ -24,6 +24,9 @@ MOVED = 'moved'
 EDITED = 'edited'
 REMOVED = 'removed'
 FILE_GONE = 'file gone'
+# Kept by the diff, but a bare line (see _BARE_LINES) without kept code
+# around it, like a blank line between two replaced functions
+UNCERTAIN = 'uncertain'
 
 # A place in a version: (commit or parent like abc^, path of a file in it)
 ThreadVersion = tuple[str, str]
@@ -39,6 +42,10 @@ _BARE_LINES = ('', '{', '}', '};')
 _FOUND_RANGE = 5
 _FOUND_MIN_LINES = 3
 
+# A kept bare line counts as moved when a kept line that isn't bare is at
+# most this many kept lines away
+_KEPT_RANGE = 3
+
 
 @dataclass
 class PortedPlace:
@@ -49,8 +56,9 @@ class PortedPlace:
         line: the thread's line there, None for a thread on a whole file,
             or when the line or file is gone.
         state: SAME (same line number and text), MOVED (same text, other
-            number or file), EDITED (the line was changed, line is the best
-            guess), REMOVED or FILE_GONE.
+            number or file), UNCERTAIN (a bare line kept without code
+            around it, line is a guess), EDITED (the line was changed, line
+            is the best guess), REMOVED or FILE_GONE.
         patch_set: the newer patch set's number, or CURRENT.
     """
     place: str
@@ -77,6 +85,8 @@ class PortedPlace:
         moved = f'{new_path if new_path != path else ""}:{new_line}'
         if EDITED == self.state:
             return f'edited, now {moved}'
+        if UNCERTAIN == self.state:
+            return f'moved?, now {moved}'
         return '' if self.place == place else f'now {moved}'
 
 
@@ -233,12 +243,15 @@ def _line_in_file(repository: Repository, source: str, target: str, path: str, n
         line: the line's number.
 
     Returns:
-        (line, state), see ported_line(). SAME counts as MOVED.
+        (line, state), see ported_line() and kept_state(). SAME counts as
+        MOVED.
     """
     edits = edits_of(repository, source, target, name, path, 'all')
     number, state = ported_line(line, edits)
     if state in (SAME, MOVED):
-        return number, MOVED
+        lines = file_lines(repository, source, path) or []
+        return number, UNCERTAIN if UNCERTAIN == kept_state(lines, line, edits, state) \
+            else MOVED
     old_begin, old_end, new_begin, new_end = next(
         edit for edit in edits if edit[0] <= line < edit[1])
     old = file_lines(repository, source, path) or []
@@ -277,6 +290,39 @@ def ported_line(line: int, edits: list[Edit]) -> tuple[int, str]:
         if old_end <= line:
             shift += new_end - new_begin - (old_end - old_begin)
     return line + shift, SAME if 0 == shift else MOVED
+
+
+def kept_state(lines: list[str], line: int, edits: list[Edit], state: str) -> str:
+    """Checks a line the diff keeps. The diff lines up equal lines, so a
+    blank line or a lone brace may be kept although all code around it was
+    replaced, and a thread on it would land somewhere unrelated. Gerrit
+    trusts the diff here, we report the move as a guess.
+
+    Args:
+        lines: the lines of the old version.
+        line: the line's number there.
+        edits: the diff's edits, see edits_of().
+        state: the line's state, see ported_line().
+
+    Returns:
+        UNCERTAIN for a bare line (see _BARE_LINES) with no kept line that
+        isn't bare within _KEPT_RANGE kept lines, else state.
+    """
+    if (state not in (SAME, MOVED) or not edits or not 1 <= line <= len(lines)
+            or lines[line - 1].strip() not in _BARE_LINES):
+        return state
+    number = ported_line(line, edits)[0]
+    for step in (-1, 1):
+        for distance in range(1, _KEPT_RANGE + 1):
+            other = line + step * distance
+            if not 1 <= other <= len(lines):
+                break
+            other_number, other_state = ported_line(other, edits)
+            if other_state not in (SAME, MOVED) or other_number != number + step * distance:
+                break
+            if lines[other - 1].strip() not in _BARE_LINES:
+                return state
+    return UNCERTAIN
 
 
 @cached_for_objects(1, 2)
@@ -318,7 +364,9 @@ def moved_place(repository: Repository, source: str, target: str, path: str,
     if new_path != path:
         number, state = _line_in_file(repository, source, target, path, new_path, line)
     else:
-        number, state = ported_line(line, edits_of(repository, source, target, path))
+        edits = edits_of(repository, source, target, path)
+        number, state = ported_line(line, edits)
+        state = kept_state(file_lines(repository, source, path) or [], line, edits, state)
     if REMOVED == state:
         # Maybe moved into a new file, as when a file was split
         return _found_line(repository, source, target, path, line) or (new_path, number, state)
@@ -518,9 +566,56 @@ def thread_place(change: Change, comment: Comment, first: str | None = None,
     where = f'{origin} {comment.place}' if new_path != path else origin
     if EDITED == state:
         note = f'in {where}: {version_line(change.repository, version, line)}'
+    elif UNCERTAIN == state:
+        text = version_line(change.repository, version, line)
+        note = f'moved?, line {line} in {where}' + (f': {text}' if text else '')
     elif MOVED == state and new_path != path:
         note = f'in {where}'
     return ShownThread(new_path, number, side, origin, note)
+
+
+def ported_version(change: Change, comment: Comment,
+                   ported: PortedPlace) -> ThreadVersion | None:
+    """Finds the version a ported place counts in, like thread_version()
+    for the place a thread was written on.
+
+    Args:
+        change: the thread's change.
+        comment: the thread, or the move it was ported from (see
+            Comment.anchored()), for its side.
+        ported: the place, see port_thread().
+
+    Returns:
+        (version, path there). None when the file is gone or the patch set
+        isn't known.
+    """
+    commit = (change.commit if isinstance(ported.patch_set, str)
+              else change.patch_sets.get(ported.patch_set))
+    if commit is None or FILE_GONE == ported.state:
+        return None
+    path, _line = split_place(ported.place)
+    if OLD_SIDE != comment.side:
+        return commit, path
+    if path in (COMMIT_MSG, PATCHSET_LEVEL):
+        return f'{commit}^', path
+    return f'{commit}^', renames_of(change.repository, commit).get(path, path)
+
+
+def version_lines(repository: Repository, version: ThreadVersion) -> list[str]:
+    """Reads the lines of a thread's version.
+
+    Args:
+        repository: the repository.
+        version: the version, see thread_version().
+
+    Returns:
+        The lines, without line ends. [] if there are none.
+    """
+    source, path = version
+    if COMMIT_MSG == path:
+        return (commit_message_text(repository, source).split('\n')
+                if not source.endswith('^') else [])
+    return file_lines(repository, source, path) or []
 
 
 def version_line(repository: Repository, version: ThreadVersion, line: int | None) -> str:
@@ -534,12 +629,7 @@ def version_line(repository: Repository, version: ThreadVersion, line: int | Non
     Returns:
         The line, stripped. '' if there is none.
     """
-    source, path = version
     if line is None:
         return ''
-    if COMMIT_MSG == path:
-        lines = (commit_message_text(repository, source).split('\n')
-                 if not source.endswith('^') else [])
-    else:
-        lines = file_lines(repository, source, path) or []
+    lines = version_lines(repository, version)
     return lines[line - 1].strip() if 1 <= line <= len(lines) else ''

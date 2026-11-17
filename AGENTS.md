@@ -77,6 +77,7 @@ touches your branch. `plustwo pull` brings it in.
        repo I3f2a #6 (PS2, now :50) a.py:44  | moved to line 50
        repo I3f2a #7 (PS2, edited, now :52) a.py:46  | changed since
        repo I3f2a #8 (PS2, line removed) a.py:59  | gone (also: file gone)
+       repo I3f2a #9 (PS2, moved?, now :61) a.py:60  | a guess, see below
 3. Work through all threads of the batch before answering (see below).
 4. Fold each fix into the commit it belongs to, not into a new commit:
 
@@ -86,11 +87,17 @@ touches your branch. `plustwo pull` brings it in.
 5. Upload once: `plustwo upload` in the branch. Every changed change of
    the stack gets a new patch set. If your changes moved code so that
    threads lost their line (file gone, line removed or edited), upload
-   lists them. You know where the code went: move each one you can place
-   to its line in the new patch set, in the same `answer` call as your
-   answers (`I3f2a #4 move b.py:12`, `... move a.py:7 (old)` for the old
-   version). The reviewer sees who moved it, older patch sets keep the
-   old place. Leave a thread alone if its code is really gone.
+   lists them. So does a "moved?" thread: a blank line or a lone brace
+   kept without the code around it, its new place is a guess. You know
+   where the code went: move each one you can place to its line in the
+   new patch set, in the same `answer` call as your answers (`I3f2a #4
+   move b.py:12`, `... move a.py:7 (old)` for the old version). The
+   reviewer sees who moved it, older patch sets keep the old place.
+   Leave a thread alone if its code is really gone.
+   `plustwo show --ported <CHANGE>` lists every thread that isn't at its
+   exact old place, resolved ones too, with the old line and the new
+   guess, each with two lines around it. Use it to check the guesses or
+   to get the list again later. Never import plustwo's modules for this.
 6. Then answer all threads in one call with `plustwo answer` (below). Your
    messages are sent immediately, so answering after the upload makes
    "Done" refer to a patch set the reviewer can already see.

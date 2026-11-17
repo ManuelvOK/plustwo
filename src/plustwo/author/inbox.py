@@ -10,12 +10,16 @@ from plustwo.model.vote import LABEL_RANGES
 from plustwo.review.changes import changes_in_stack
 from plustwo.review.labels import message_text
 from plustwo.review.porting import (
-    EDITED, FILE_GONE, REMOVED, port_thread, thread_version, version_line)
+    EDITED, FILE_GONE, REMOVED, SAME, UNCERTAIN, PortedPlace, port_thread, ported_version,
+    thread_version, version_line, version_lines)
 from plustwo.review.threads import line_at
 
 
 # How many lines of a negative vote's message the inbox shows
 _N_VOTE_MESSAGE_LINES = 10
+
+# How many lines around a thread's line ported_threads() quotes
+_N_CONTEXT_LINES = 2
 
 
 def inbox_lines(repositories: list[Repository], topic: str | None = None) -> list[str]:
@@ -115,8 +119,8 @@ def _news_lines(name: str, change: Change) -> list[str]:
 
 def lost_threads(changes: list[Change]) -> list[str]:
     """Lists the unresolved threads whose line the newest patch set lost or
-    changed (file gone, line removed or edited), for the author to move
-    where they belong.
+    changed (file gone, line removed or edited), or whose move is a guess
+    (see kept_state()), for the author to move where they belong.
 
     Args:
         changes: the changes.
@@ -131,7 +135,7 @@ def lost_threads(changes: list[Change]) -> list[str]:
             if PATCHSET_LEVEL == comment.place or not comment.is_unresolved():
                 continue
             ported = port_thread(change, comment)
-            if ported is None or ported.state not in (FILE_GONE, REMOVED, EDITED):
+            if ported is None or ported.state not in (FILE_GONE, REMOVED, EDITED, UNCERTAIN):
                 continue
             anchor = comment.anchored(ported.patch_set if isinstance(ported.patch_set, int)
                                       else None)
@@ -142,6 +146,91 @@ def lost_threads(changes: list[Change]) -> list[str]:
             lines.append(f'{change.short_id()} #{comment.number} {note}{anchor.place_label()}'
                          + (f': {text[:60]}' if text else ''))
     return lines
+
+
+def ported_threads(change: Change) -> list[str]:
+    """Lists every thread that isn't at its exact old place in the newest
+    patch set, resolved ones too, with the line it was written on and
+    where it is now, each with _N_CONTEXT_LINES lines around it, so the
+    author can judge the guess and move the thread where it belongs.
+
+    Args:
+        change: the change.
+
+    Returns:
+        Per thread a head like 'I3f2a #4 [unresolved] (PS1, now :50)
+        a.cc:44', then the two quotes, indented.
+    """
+    lines = []
+    for comment in change.comments:
+        if PATCHSET_LEVEL == comment.place:
+            continue
+        ported = port_thread(change, comment)
+        if ported is None or SAME == ported.state:
+            continue
+        anchor = comment.anchored(ported.patch_set if isinstance(ported.patch_set, int)
+                                  else None)
+        status = 'unresolved' if comment.is_unresolved() else 'resolved'
+        lines.append(f'{change.short_id()} #{comment.number} [{status}] '
+                     f'{patch_set_note(change, comment)}{anchor.place_label()}')
+        _path, line = split_place(anchor.place)
+        version = thread_version(change, anchor)
+        if line is None or version is None:
+            continue
+        lines += _quote(f'PS{anchor.patch_set} {anchor.place_label()}',
+                        version_lines(change.repository, version), line, line)
+        lines += _ported_quote(change, anchor, ported)
+    return lines
+
+
+def _ported_quote(change: Change, anchor: Comment, ported: PortedPlace) -> list[str]:
+    """Quotes where a thread is in the newest patch set, see
+    ported_threads().
+
+    Args:
+        change: the thread's change.
+        anchor: the thread, or the move it was ported from.
+        ported: where it is now, see port_thread().
+
+    Returns:
+        A head and the quoted lines, indented.
+    """
+    new_version = ported_version(change, anchor, ported)
+    head = f'PS{ported.patch_set}'
+    if new_version is None:
+        return [f'  {head}: file gone']
+    path, number = split_place(ported.place)
+    if number is None:
+        return [f'  {head} {path}: line gone']
+    new_lines = version_lines(change.repository, new_version)
+    if REMOVED == ported.state:
+        # number is the line before where it was, 0 at the top
+        where = f'after line {number}' if number else 'at the top'
+        return _quote(f'{head} {path}, line removed {where}', new_lines,
+                      number + 1, None)
+    return _quote(f'{head} {ported.place}', new_lines, number, number)
+
+
+def _quote(head: str, lines: list[str], middle: int, marked: int | None) -> list[str]:
+    """Quotes lines of a file around one.
+
+    Args:
+        head: the first line, like 'PS1 a.cc:12'.
+        lines: the file's lines.
+        middle: the line in the middle.
+        marked: the line marked with '>', None for none.
+
+    Returns:
+        The head and the lines, numbered and indented.
+    """
+    first = max(1, middle - _N_CONTEXT_LINES)
+    last = min(len(lines), middle + _N_CONTEXT_LINES - (marked is None))
+    width = len(str(last))
+    quoted = [f'  {head}']
+    for number in range(first, last + 1):
+        mark = '>' if number == marked else ' '
+        quoted.append(f'    {mark} {number:{width}} | {lines[number - 1]}'.rstrip())
+    return quoted
 
 
 def patch_set_note(change: Change, comment: Comment) -> str:

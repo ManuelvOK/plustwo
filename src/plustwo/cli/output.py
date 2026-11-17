@@ -3,6 +3,7 @@
 
 import argparse
 
+from plustwo.author.inbox import patch_set_note, ported_threads
 from plustwo.config.view_state import SECTION_TITLES, folded_sections
 from plustwo.git.errors import ChangeError
 from plustwo.model.vote import CODE_REVIEW, VERIFIED
@@ -38,9 +39,12 @@ def print_overview(arguments: argparse.Namespace) -> None:
 
 def print_comments(arguments: argparse.Namespace) -> None:
     """Prints the votes and threads of a change, also of a submitted one.
+    A thread of an older patch set says where its line is now. With
+    --ported only the threads that aren't at their exact old place, with
+    the old and the new lines around them, see ported_threads().
 
     Args:
-        arguments: the command line, with change.
+        arguments: the command line, with change and ported.
 
     Raises:
         ChangeError: no change fits.
@@ -51,6 +55,9 @@ def print_comments(arguments: argparse.Namespace) -> None:
         if arguments.change.isdigit():
             raise
         change = submitted_change_anywhere(arguments.change)
+    if arguments.ported:
+        print('\n'.join(ported_threads(change)) or 'No thread moved.')
+        return
     print(f'{change.short_id()} ({change.state()}): {change.subject}')
     if change.needs_verified:
         print('Needs Verified+1.')
@@ -64,8 +71,8 @@ def print_comments(arguments: argparse.Namespace) -> None:
     if not change.comments:
         print('No comments.')
     for comment in change.comments:
-        print(f'\n#{comment.number} [{comment.status}] {comment.place_label()} '
-              f'(PS{comment.patch_set})')
+        note = patch_set_note(change, comment).strip() or f'(PS{comment.patch_set})'
+        print(f'\n#{comment.number} [{comment.status}] {comment.place_label()} {note}')
         for message in comment.messages:
             draft_note = ' (draft)' if not message.sent else ''
             print(f'  {message.author}{draft_note}: {message_text(message)}')

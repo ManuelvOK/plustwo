@@ -46,8 +46,12 @@ Usage:
                                         Work in progress, Outgoing, Incoming
     plustwo abandon [REPO:]TOPIC        abandons a stack, restore brings it
     plustwo restore [REPO:]TOPIC        back
-    plustwo show CHANGE                 comment threads of a change, also
-                                        of a submitted one
+    plustwo show CHANGE [--ported]      comment threads of a change, also
+                                        of a submitted one. --ported: only
+                                        the threads not at their exact old
+                                        place in the newest patch set,
+                                        resolved ones too, with the old and
+                                        the new lines around them.
     plustwo diff CHANGE [A [B]]         diff between patch sets, shown by
                                         git's pager. --tool opens vimdiff.
     plustwo rdiff CHANGE [A [B]]        range-diff between patch sets
@@ -91,7 +95,7 @@ Usage:
                                         for the old version. Older patch
                                         sets keep where it was. upload
                                         lists the threads that lost their
-                                        line.
+                                        line, show --ported all moved ones.
     plustwo done CHANGE NUMBER [TEXT]
                                         answers "Done" (or TEXT) and resolves
                                         the thread
@@ -374,6 +378,7 @@ def _upload_command(arguments: Arguments) -> None:
         print('threads that lost their line, move the ones you know with '
               '`plustwo answer` lines like "I3f2a #4 move a.cc:12":')
         print('\n'.join(f'  {line}' for line in lost))
+        print('`plustwo show --ported CHANGE` shows them with the lines around them')
 
 
 def _rebase_command(arguments: Arguments) -> None:
@@ -749,7 +754,9 @@ def _parse_arguments(argv: list[str]) -> Arguments:
     command('init', _init_command, 'set up this repository')
     command('list', print_overview, 'the dashboard').add_argument(
         '--list', help='only the repositories of this list', default=argparse.SUPPRESS)
-    command('show', print_comments, 'threads of a change', 'change')
+    command('show', print_comments, 'threads of a change', 'change').add_argument(
+        '--ported', action='store_true',
+        help='only threads not at their old place, with the lines around them')
     upload_parser = command('upload', _upload_command, 'upload the stack of a branch',
                             ('change', optional))
     upload_parser.add_argument('--topic')
