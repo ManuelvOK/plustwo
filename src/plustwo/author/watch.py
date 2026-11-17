@@ -2,6 +2,7 @@
 """Watching repositories for the author."""
 
 import datetime
+import hashlib
 import re
 import sys
 import time
@@ -233,7 +234,36 @@ def last_watched(topic: str | None = None) -> int | None:
         The time, seconds since 1970. None if never.
     """
     values = state_values('watch', _watch_key(topic))
-    return int(values[-1]) if values and values[-1].isdigit() else None
+    words = values[-1].split() if values else []
+    return int(words[0]) if words and words[0].isdigit() else None
+
+
+def _known_in_last_second(topic: str | None = None) -> set[str]:
+    """Reads the events the user's last watch knew from the second it
+    reported in, see last_watched(). Event times are whole seconds, so
+    catching up from that second would say them again.
+
+    Args:
+        topic: the one stack watched, None for all.
+
+    Returns:
+        The events' keys, see _event_key().
+    """
+    values = state_values('watch', _watch_key(topic))
+    return set(values[-1].split()[1:]) if values else set()
+
+
+def _event_key(name: str, event: Event) -> str:
+    """Names an event shortly, for the state file.
+
+    Args:
+        name: the repository's name.
+        event: the event.
+
+    Returns:
+        The key, a short hash.
+    """
+    return hashlib.sha1(repr((name, event)).encode()).hexdigest()[:12]
 
 
 def parse_time(text: str) -> int:
@@ -307,6 +337,7 @@ class _RepositoryWatch:
         topic: the one stack watched, None for all.
         version: the refs as stack_version() read them last.
         known: the events reported or known before.
+        by_id: the changes of the last look, see _changes_by_id().
         stacks: the stacks at the last look.
         bases: the stacks' base branches, as they were before a submit.
     """
@@ -325,10 +356,12 @@ class _RepositoryWatch:
         self.topic = topic
         self.version = version
         self.known = events_of(repository, topic, current)
+        self.by_id = _changes_by_id(current)
         self.stacks = _stacks_of(repository, topic)
         self.bases = stack_bases(repository)
 
-    def catch_up(self, since: int, current: list[Change], say: Callable[[str], None]) -> bool:
+    def catch_up(self, since: int, current: list[Change], say: Callable[[str], None],
+                 known: set[str] | None = None) -> bool:
         """Says what happened since a time, while no watch ran. A rebase
         request still open is said again.
 
@@ -336,15 +369,21 @@ class _RepositoryWatch:
             since: the time, seconds since 1970.
             current: the stacks' changes now.
             say: the function that prints a line.
+            known: the keys of events from the second since that the last
+                watch knew, see _event_key(). They are not said again.
 
         Returns:
             Whether anything was said.
         """
         submitted = submitted_since(self.repository, since, self.topic, current)
         by_id = _changes_by_id(current + submitted)
-        missed = {event for event in events_of(self.repository, self.topic, current, submitted)
-                  if 'rebase' == event[0] or (_event_time(event, by_id) or 0) >= since}
         name = repository_name(self.repository)
+        missed = set()
+        for event in events_of(self.repository, self.topic, current, submitted):
+            moment = _event_time(event, by_id) or 0
+            if 'rebase' == event[0] or moment > since or (
+                    moment == since and _event_key(name, event) not in (known or set())):
+                missed.add(event)
         n_submitted_by_topic: dict[str, int] = {}
         for change in submitted:
             n_submitted_by_topic[change.topic] = n_submitted_by_topic.get(change.topic, 0) + 1
@@ -377,7 +416,8 @@ class _RepositoryWatch:
         events = events_of(self.repository, self.topic, current, submitted)
         new = events - self.known
         self.known = events
-        _report_events(name, new, _changes_by_id(current + submitted), lines.append)
+        self.by_id = _changes_by_id(current + submitted)
+        _report_events(name, new, self.by_id, lines.append)
         return checked, lines
 
     def _left_stack_lines(self, name: str, stacks_before: Stacks,
@@ -408,6 +448,20 @@ class _RepositoryWatch:
             if gone:
                 lines.append(_submitted_line(name, stack_topic, len(gone)))
         return lines
+
+    def known_in_second(self, second: int) -> set[str]:
+        """Finds the events known at the last look that happened in a given
+        second, see _event_key().
+
+        Args:
+            second: the time, seconds since 1970.
+
+        Returns:
+            The events' keys.
+        """
+        name = repository_name(self.repository)
+        return {_event_key(name, event) for event in self.known
+                if 'rebase' != event[0] and _event_time(event, self.by_id) == second}
 
     def _submitted_changes(self, current: list[Change], stacks_before: Stacks,
                            bases_before: dict[str, str]) -> list[Change]:
@@ -459,8 +513,10 @@ def watch(repositories: list[Repository], output: TextIO = sys.stdout,
         minutes: how long to run, None until stopped.
     """
     end = time.time() + 60 * minutes if minutes else None
+    known: set[str] = set()
     if since is None:
         since = last_watched(topic)
+        known = _known_in_last_second(topic)
 
     def say(line: str) -> None:
         """Prints a line at once.
@@ -471,23 +527,29 @@ def watch(repositories: list[Repository], output: TextIO = sys.stdout,
         print(line, file=output, flush=True)
 
     def mark_reported(moment: float) -> None:
-        """Keeps when the watch last reported something.
+        """Keeps when the watch last reported something, with the events
+        it knew from that second, which the next catch-up skips.
 
         Args:
             moment: the time of the look that found it, seconds since 1970.
         """
-        set_state('watch', _watch_key(topic), str(int(moment)))
+        second = int(moment)
+        keys = sorted(set().union(*(watch.known_in_second(second) for watch in watches)))
+        set_state('watch', _watch_key(topic), ' '.join([str(second), *keys]))
 
     # The first look, which also catches up
     watches = []
+    caught_up_at = None
     for repository in repositories:
         checked = time.time()
         version = stack_version(repository)
         current = changes_in_stack(repository)
         repository_watch = _RepositoryWatch(repository, topic, version, current)
         watches.append(repository_watch)
-        if since is not None and repository_watch.catch_up(since, current, say):
-            mark_reported(checked)
+        if since is not None and repository_watch.catch_up(since, current, say, known):
+            caught_up_at = checked
+    if caught_up_at is not None:
+        mark_reported(caught_up_at)
     # Then a look per interval
     while end is None or time.time() < end:
         time.sleep(_WATCH_INTERVAL_SECONDS)

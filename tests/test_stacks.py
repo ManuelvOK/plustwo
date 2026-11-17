@@ -346,6 +346,22 @@ class FlowTest(unittest.TestCase):
         self.assertIn(f'fyi {name} {ids[0]} #1 (resolved) a.txt:1',
                       self.watch('--since', '0', '--for', '0.01'))
 
+    def test_watch_restart_same_second(self):
+        # Times are whole seconds. An event from the second a watch reported
+        # in is not said again by the next start, see issue "watch replays
+        # the last reported event after a restart".
+        repo = self.repo
+        self.two_changes()
+        repo.change('upload')
+        for _ in range(3):
+            repo.approve('1')
+            moment = time.time()
+            lines = self.watch('--since', '0', '--for', '0.01')
+            self.assertTrue(any(line.startswith('vote') for line in lines), lines)
+            if int(moment) == int(time.time()):
+                break
+        self.assertEqual(['watch ended, restart it to continue', ''], self.watch('--for', '0.01'))
+
     def test_watch_change_in_several_stacks(self):
         # An old commit of a change can stay in another stack, e.g. when a
         # base branch moved. Its copy there lacks the newer messages.
