@@ -217,6 +217,7 @@ class ChangeView:
         if not path or not self._layout:
             return False
         width = self._layout[DIFF][3] - 2
+        self._diff.height = self._layout[DIFF][2]
         search_mode = self._interface.search_mode
         self._diff.show(self._change, self._compare, path, width,
                         CONTEXT_STEPS[self._interface.context_step], self._interface.whitespace,

@@ -110,6 +110,8 @@ class DiffPane:
         self._anchors: list[int] = []
         self.cursor = 0
         self.scroll = 0
+        # The pane's rows, set before each layout, see _place_cursor()
+        self.height = 0
         self.gap: tuple[int, int] | None = None
         self.marks_from_below = (False, False)
         self.has_moved = False
@@ -329,7 +331,10 @@ class DiffPane:
 
     def _place_cursor(self, offset: int) -> None:
         """Puts the cursor back on the kept row: the same one, else the
-        thread's first row, else the diff line it was below.
+        thread's first row, else the diff line it was below. A pane shown
+        from its top stays at the top while the cursor still fits, so rows
+        added above it, like a file thread or more context, come into view.
+        Else the cursor keeps its row in the pane.
 
         Args:
             offset: the cursor's row in the pane before, kept if possible.
@@ -345,7 +350,8 @@ class DiffPane:
         index = next((self.rows.index(candidate) for candidate in candidates
                       if candidate in self.rows), 0)
         self.cursor = index = self.stop_of(index)
-        self.scroll = 0 if self._is_from_top else max(0, index - max(offset, 0))
+        is_at_top = self._is_from_top or (0 == self.scroll and index < self.height)
+        self.scroll = 0 if is_at_top else max(0, index - max(offset, 0))
         self._is_from_top = False
 
     def thread_at(self, index: int) -> int | None:
