@@ -7,7 +7,8 @@ from dataclasses import dataclass, field
 from plustwo.diff.edits import Edit
 from plustwo.diff.intraline import intraline_pair
 from plustwo.diff.moved import moved_lines
-from plustwo.diff.pairing import paired_lines
+from plustwo.diff.pairing import LinePair, paired_lines
+from plustwo.diff.reflow import reflowed
 
 
 # Types of the halves of a side by side row
@@ -33,6 +34,10 @@ class Half:
             without a partner, or too different from it for intraline
             edits. The interfaces give it the strong shade, a paired line
             only on its edits.
+        is_reflowed: whether the line is part of a reflowed block, see
+            reflowed(): its words stay, only the line breaks moved. Its
+            edits are the words that really changed. The interfaces show
+            it like a moved line.
     """
     type: str
     number: int | None = None
@@ -40,6 +45,7 @@ class Half:
     edits: list[tuple[int, int]] = field(default_factory=list)
     is_moved: bool = False
     is_whole: bool = False
+    is_reflowed: bool = False
 
 
 @dataclass
@@ -136,7 +142,8 @@ def side_by_side_rows(old_lines: Sequence[str], new_lines: Sequence[str], edits:
 
 def _edit_rows(old_lines: Sequence[str], new_lines: Sequence[str], edit: Edit,
                moved: tuple[set[int], set[int]], whitespace: str) -> list[Row]:
-    """Lays out the lines of one edit side by side, paired by similarity.
+    """Lays out the lines of one edit side by side, paired by similarity,
+    or a reflowed paragraph by where its words went, see reflowed().
 
     Args:
         old_lines: the lines of the old version.
@@ -153,21 +160,82 @@ def _edit_rows(old_lines: Sequence[str], new_lines: Sequence[str], edit: Edit,
     removed = range(old_begin - 1, old_end - 1)
     added = range(new_begin - 1, new_end - 1)
     rows = []
-    for old_index, new_index in paired_lines([old_lines[line] for line in removed],
-                                             [new_lines[line] for line in added]):
-        old = (Half(REMOVED, removed[old_index] + 1, old_lines[removed[old_index]])
-               if old_index is not None else Half(EMPTY))
-        new = (Half(ADDED, added[new_index] + 1, new_lines[added[new_index]])
-               if new_index is not None else Half(EMPTY))
-        old.is_moved, new.is_moved = old.number in moved[0], new.number in moved[1]
-        pair = (intraline_pair(old.text, new.text, whitespace)
-                if old.number and new.number else None)
-        if pair is not None:
-            old.edits, new.edits = pair
-        old.is_whole = old.number is not None and pair is None
-        new.is_whole = new.number is not None and pair is None
-        rows.append(Row(old, new))
+    for old_part, new_part in _parts(old_lines, new_lines, removed, added):
+        old_texts = [old_lines[line] for line in old_part]
+        new_texts = [new_lines[line] for line in new_part]
+        reflow = reflowed(old_texts, new_texts)
+        pairs: list[LinePair] = reflow.pairs if reflow else paired_lines(old_texts, new_texts)
+        for old_index, new_index in pairs:
+            old = (Half(REMOVED, old_part[old_index] + 1, old_texts[old_index])
+                   if old_index is not None else Half(EMPTY))
+            new = (Half(ADDED, new_part[new_index] + 1, new_texts[new_index])
+                   if new_index is not None else Half(EMPTY))
+            old.is_moved, new.is_moved = old.number in moved[0], new.number in moved[1]
+            if reflow:
+                for half, index, edits in ((old, old_index, reflow.old_edits),
+                                           (new, new_index, reflow.new_edits)):
+                    if index is not None:
+                        half.is_reflowed, half.edits = True, edits[index]
+                rows.append(Row(old, new))
+                continue
+            pair = (intraline_pair(old.text, new.text, whitespace)
+                    if old.number and new.number else None)
+            if pair is not None:
+                old.edits, new.edits = pair
+            old.is_whole = old.number is not None and pair is None
+            new.is_whole = new.number is not None and pair is None
+            rows.append(Row(old, new))
     return rows
+
+
+def _parts(old_lines: Sequence[str], new_lines: Sequence[str], removed: range, added: range
+           ) -> list[tuple[range, range]]:
+    """Splits an edit into its paragraphs, so a reflowed one is found next
+    to a rewritten one. Only when a part is reflowed and both sides have
+    the same runs of blank and other lines. Else the edit stays whole, and
+    its lines pair as before.
+
+    Args:
+        old_lines: the lines of the old version.
+        new_lines: the lines of the new version.
+        removed: the indexes of the edit's removed lines.
+        added: the indexes of the edit's added lines.
+
+    Returns:
+        (removed indexes, added indexes) per part, in order.
+    """
+    whole = [(removed, added)]
+    if reflowed([old_lines[line] for line in removed], [new_lines[line] for line in added]):
+        return whole
+    old_runs, new_runs = _runs(old_lines, removed), _runs(new_lines, added)
+    if len(old_runs) < 2 or [is_blank for is_blank, _ in old_runs] \
+            != [is_blank for is_blank, _ in new_runs]:
+        return whole
+    parts = [(old_run, new_run) for (_, old_run), (_, new_run) in zip(old_runs, new_runs)]
+    if not any(reflowed([old_lines[line] for line in old_part],
+                        [new_lines[line] for line in new_part]) for old_part, new_part in parts):
+        return whole
+    return parts
+
+
+def _runs(lines: Sequence[str], indexes: range) -> list[tuple[bool, range]]:
+    """Splits lines into runs of blank and of other lines.
+
+    Args:
+        lines: the lines of a version.
+        indexes: the indexes of the lines to split.
+
+    Returns:
+        (whether the run is blank, its indexes) per run, in order.
+    """
+    runs: list[tuple[bool, range]] = []
+    for index in indexes:
+        is_blank = not lines[index].strip()
+        if runs and runs[-1][0] == is_blank:
+            runs[-1] = (is_blank, range(runs[-1][1].start, index + 1))
+        else:
+            runs.append((is_blank, range(index, index + 1)))
+    return runs
 
 
 def expand_gaps(rows: list[Row], starts: set[int] | frozenset[int],

@@ -160,4 +160,5 @@ def half_json(half: Half, colours: list[Segment] | None) -> dict[str, Any]:
         The JSON object.
     """
     return {'kind': half.type, 'number': half.number, 'text': half.text, 'edits': half.edits,
-            'moved': half.is_moved, 'whole': half.is_whole, 'colours': colours}
+            'moved': half.is_moved, 'reflowed': half.is_reflowed, 'whole': half.is_whole,
+            'colours': colours}

@@ -29,6 +29,7 @@ from plustwo.diff.edits import edits_of
 from plustwo.diff.intraline import intraline_edits
 from plustwo.diff.moved import moved_lines
 from plustwo.diff.pairing import paired_lines
+from plustwo.diff.reflow import reflowed
 from plustwo.diff.rows import ADDED, CONTEXT, REMOVED, side_by_side_rows
 from plustwo.git.files import file_lines
 from plustwo.git.repository import Repository
@@ -223,6 +224,38 @@ class FixtureTest(Checks, unittest.TestCase):
         # Too few letters and digits to count as moved, like in git
         self.assertEqual(moved_lines(['}', 'a', '}'], ['a', '}', '}'],
                                           [(1, 2, 1, 1), (4, 4, 3, 4)]), (set(), set()))
+
+    def test_reflowed(self):
+        # Rewrapped prose: only the changed word is an edit, the lines pair
+        reflow = reflowed(['The quick brown fox jumps over', 'the lazy dog and runs away.'],
+                          ['The quick brown fox leaps over the', 'lazy dog and runs away.'])
+        self.assertEqual((reflow.pairs, reflow.old_edits, reflow.new_edits),
+                         ([(0, 0), (1, 1)], [[(20, 25)], []], [[(20, 25)], []]))
+        # Comment markers on every line and rebroken argument lists
+        reflow = reflowed(['    # A long comment that was', '    # wrapped at a narrow width.'],
+                          ['    # A long comment that was wrapped', '    # at a narrow width.'])
+        self.assertEqual((reflow.old_edits, reflow.new_edits), ([[], []], [[], []]))
+        reflow = reflowed(['result = compute(alpha, beta,', '                 gamma)'],
+                          ['result = compute(', '    alpha, beta, gamma)'])
+        self.assertEqual((reflow.old_edits, reflow.new_edits), ([[], []], [[], []]))
+        # Edits line by line, rewrites and single lines are no reflow
+        self.assertIsNone(reflowed(['x = 1', 'y = 2'], ['x = 10', 'y = 20']))
+        self.assertIsNone(reflowed(['completely', 'other text'], ['nothing alike', 'at all']))
+        self.assertIsNone(reflowed(['one line'], ['one  line']))
+
+    def test_reflowed_rows(self):
+        # A reflowed paragraph next to a rewritten one is found on its own
+        old_lines = ['Some words that are', 'wrapped here and there.', '',
+                     'first = 1', 'second = 2']
+        new_lines = ['Some words that are wrapped', 'here and there.', '',
+                     'totally different', 'stuff']
+        edits = [(1, 6, 1, 6)]
+        rows = side_by_side_rows(old_lines, new_lines, edits)
+        self.check_whole_file(old_lines, new_lines, edits, rows, 'reflowed rows')
+        reflowed_numbers = [(half.type, half.number) for row in rows
+                            for half in (row.old, row.new) if half.is_reflowed]
+        self.assertEqual(reflowed_numbers, [(REMOVED, 1), (ADDED, 1), (REMOVED, 2), (ADDED, 2)])
+        self.assertFalse(any(half.edits for row in rows[:2] for half in (row.old, row.new)))
 
     def test_intraline_whitespace(self):
         # What the whitespace mode ignores isn't marked

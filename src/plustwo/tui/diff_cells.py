@@ -102,7 +102,7 @@ def _half_backgrounds(half: Half, marks: SideMarks) -> tuple[Colour, Colour]:
             backgrounds = ((PARTLY_BASIC,) * 2 if is_partly else (FROM_BELOW_BASIC,) * 2) \
                 if curses.COLORS < 256 else (PARTLY_BACKGROUNDS if is_partly
                                              else FROM_BELOW_BACKGROUNDS)
-        elif half.is_moved:
+        elif half.is_moved or half.is_reflowed:
             backgrounds = (MOVED_BASIC,) * 2 if curses.COLORS < 256 else MOVED_BACKGROUNDS
         elif curses.COLORS < 256:
             backgrounds = (REMOVED_BASIC,) * 2 if REMOVED == half.type else (ADDED_BASIC,) * 2
@@ -111,8 +111,8 @@ def _half_backgrounds(half: Half, marks: SideMarks) -> tuple[Colour, Colour]:
         if tui_colours.TRUE_COLOUR:
             backgrounds = TRUE_SHADES[
                 'partly' if half.number in marks[1] and half.number not in marks[0]
-                else 'below' if half.number in marks[0] else 'moved' if half.is_moved
-                else half.type]
+                else 'below' if half.number in marks[0]
+                else 'moved' if half.is_moved or half.is_reflowed else half.type]
     if half.is_whole:
         # New text all over gets the strong shade, see Half.
         backgrounds = (backgrounds[1], backgrounds[1])

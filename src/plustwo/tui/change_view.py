@@ -593,7 +593,7 @@ class ChangeView:
             (', blue: from changes below', ', purple: partly from below'),
             self._diff.marks_from_below) if shown)
         if self._diff.has_moved:
-            below += ', teal: moved'
+            below += ', teal: moved or reflowed'
         title = f'{self._files_pane.label(path)}  ({context_label}{below})' if path else 'Diff'
         draw_frame(self._interface, self._layout[DIFF], title, DIFF == self._focus)
         height = self._layout[DIFF][2]

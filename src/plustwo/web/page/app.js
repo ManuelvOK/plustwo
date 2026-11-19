@@ -469,7 +469,7 @@ function diffView(change) {
       if ((kind === 'removed' || kind === 'added') && half.number) {
         if (below[side].has(half.number)) kind = 'below';
         else if (partly[side].has(half.number)) kind = 'partly';
-        else if (half.moved) kind = 'moved';
+        else if (half.moved || half.reflowed) kind = 'moved';
       }
       const isCursorSide = index === state.cursor && side === state.side;
       // New text all over gets the strong shade, see Half in the core.
@@ -875,7 +875,7 @@ function showHelp() {
   document.getElementById('help-keys').replaceChildren(
     el('p', {class: 'dim'}, `Preset ${state.keys.preset}. Click a line number to comment.`),
     el('p', {class: 'dim'}, 'Colours: red removed, green added, blue from changes below, '
-       + 'purple partly from below, teal moved (like git diff --color-moved). The strong '
+       + 'purple partly from below, teal moved (like git diff --color-moved) or reflowed (only the line breaks moved). The strong '
        + 'shade is new text: a whole line without a partner, or the changed part of a line.'),
     el('table', {}, el('tbody', {}, rows)));
   document.getElementById('help-dialog').showModal();

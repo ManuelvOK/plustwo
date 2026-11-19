@@ -66,7 +66,8 @@ class DiffPane:
             without, see DiffGap.
         marks_from_below: whether the diff has lines from below, and lines
             partly from below.
-        has_moved: whether the diff has moved lines, see moved_lines().
+        has_moved: whether the diff has moved or reflowed lines, see
+            moved_lines() and reflowed().
     """
 
     def __init__(self, pairs: ColourPairs, theme: Callable[[], str | None]) -> None:
@@ -178,7 +179,8 @@ class DiffPane:
                                           for numbers in self._diff_numbers for side in (0, 1))
                                       for type_index in (0, 1))
         self.marks_from_below = (has_from_below, has_partly)
-        self.has_moved = any(row.old.is_moved or row.new.is_moved for row in rows or ())
+        self.has_moved = any(half.is_moved or half.is_reflowed
+                             for row in rows or () for half in (row.old, row.new))
         if not is_other_file:
             if self.rows and not self._keep:
                 self._keep = (self.rows[self.cursor], self._anchors[self.cursor])

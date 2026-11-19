@@ -9,17 +9,17 @@ One Python package, `src/plustwo/`, without dependencies beyond the standard
 library and git. Each layer is a sub-package `src/plustwo/<layer>/`, and each
 file in it holds one concept, named after it.
 
-| Layer    | Contains                                                              | Uses                     |
-|----------|-----------------------------------------------------------------------|--------------------------|
-| `git`    | running git, the object cache, refs, commits, files, notes, the lock  | nothing                  |
-| `config` | settings, state files, registered repositories, the user, key presets | git                      |
-| `model`  | changes, threads, messages, moves, votes, places, roles               | git                      |
-| `diff`   | edits, side by side rows, intraline edits, moved lines, colours       | git                      |
-| `review` | finding, uploading, threads, answers, votes, porting, submit, checks  | git, config, model, diff |
-| `author` | the inbox and watch                                                   | review                   |
-| `tui`    | the curses interface                                                  | review                   |
-| `web`    | the web interface: HTTP server, JSON API, the page in `page/`         | review                   |
-| `cli`    | the command line, which also starts the two interfaces                | author, tui, web         |
+| Layer    | Contains                                                                     | Uses                     |
+|----------|------------------------------------------------------------------------------|--------------------------|
+| `git`    | running git, the object cache, refs, commits, files, notes, the lock         | nothing                  |
+| `config` | settings, state files, registered repositories, the user, key presets        | git                      |
+| `model`  | changes, threads, messages, moves, votes, places, roles                      | git                      |
+| `diff`   | edits, side by side rows, intraline edits, moved and reflowed lines, colours | git                      |
+| `review` | finding, uploading, threads, answers, votes, porting, submit, checks         | git, config, model, diff |
+| `author` | the inbox and watch                                                          | review                   |
+| `tui`    | the curses interface                                                         | review                   |
+| `web`    | the web interface: HTTP server, JSON API, the page in `page/`                | review                   |
+| `cli`    | the command line, which also starts the two interfaces                       | author, tui, web         |
 
 "Uses" lists the direct dependencies. What those use may be used too.
 
